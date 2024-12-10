@@ -1,0 +1,75 @@
+# Bazel
+/bazel-*
+/external/
+.bazelrc.user
+
+# Build outputs
+/build/
+/bin/
+/lib/
+compile_commands.json
+
+# C++ specific
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Protocol Buffers
+*.pb.h
+*.pb.cc
+*.pb.cpp
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+.clangd/
+.cache/
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ROS specific
+/install/
+/log/
+*.bag
+
+# Python (for any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+
+# Dependency directories
+/third_party/downloads/
+/vendor/
+
+# Testing
+/Testing/
+*.test
+*.gcno
+*.gcda
+*.gcov
+
+# Documentation
+/docs/_build/
+/docs/api/
+/docs/html/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+core.*

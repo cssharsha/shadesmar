@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/keyframe.proto";
+import "core/proto/factor.proto";
+
+message MapMetadata {
+  string version = 1;
+  string description = 2;
+  double creation_timestamp = 3;
+  string created_by = 4;
+
+  message SpatialBounds {
+    double min_x = 1;
+    double min_y = 2;
+    double min_z = 3;
+    double max_x = 4;
+    double max_y = 5;
+    double max_z = 6;
+  }
+  SpatialBounds bounds = 5;
+}
+
+message Map {
+  MapMetadata metadata = 1;
+  repeated KeyFrame keyframes = 2;
+  repeated Factor factors = 3;
+}

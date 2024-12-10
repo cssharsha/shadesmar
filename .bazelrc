@@ -1,0 +1,6 @@
+# Import CUDA configuration
+import %workspace%/dev/bazel/cuda.bazelrc
+
+# Enable C++17
+build --cxxopt=-std=c++17
+build --host_cxxopt=-std=c++17

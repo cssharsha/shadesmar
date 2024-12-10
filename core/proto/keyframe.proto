@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+import "core/proto/sensor_data.proto";
+
+message KeyFrame {
+  uint64 id = 1;
+  Pose pose = 2;
+
+  oneof data {
+    PointCloud point_cloud = 3;
+    Image image = 4;
+  }
+
+  CameraInfo camera_info = 5; // Optional, present if image data exists
+}

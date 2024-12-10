@@ -1,0 +1,21 @@
+# CUDA specific build configurations
+build:cuda --define=using_cuda=true
+build:cuda --define=using_cuda_nvcc=true
+build:cuda --define=using_cuda_clang=false
+
+# CUDA compute capabilities
+build:cuda --action_env=TF_CUDA_COMPUTE_CAPABILITIES="7.5,8.0,8.6"
+
+# CUDA paths
+build:cuda --action_env=CUDA_TOOLKIT_PATH="/usr/local/cuda"
+build:cuda --action_env=CUDNN_INSTALL_PATH="/usr/lib/x86_64-linux-gnu"
+
+# Compiler flags
+build:cuda --copt=-DGOOGLE_CUDA=1
+build:cuda --copt=-mavx2
+build:cuda --copt=-DEIGEN_USE_GPU
+
+# CUDA device compiler configurations
+build:cuda --crosstool_top=@local_config_cuda//crosstool:toolchain
+build:cuda --compiler=clang
+build:cuda --copt="-stdlib=libc++"
