@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package core.proto;
+
+message Vector3 {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+}
+
+message Quaternion {
+    double w = 1;
+    double x = 2;
+    double y = 3;
+    double z = 4;
+}
+
+message Pose {
+    Vector3 position = 1;
+    Quaternion orientation = 2;
+    double timestamp = 3;
+}

@@ -1,0 +1,14 @@
+# This file is gitignored and can contain user-specific settings
+# Import CI settings as base
+import %workspace%/dev/bazel/ci.bazelrc
+
+# Development convenience features
+build --color=yes
+build --show_timestamps
+build --keep_going
+build --jobs=12
+
+# Development specific settings
+build:dev --compilation_mode=dbg
+build:dev --copt=-g
+build:dev --strip=never

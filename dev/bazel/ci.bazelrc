@@ -1,0 +1,13 @@
+# Build options
+build --compilation_mode=opt
+build --copt=-O3
+build --cxxopt=-std=c++17
+build --host_cxxopt=-std=c++17
+
+# Test options
+test --test_output=errors
+test --test_verbose_timeout_warnings
+
+# Platform options
+build --incompatible_enable_cc_toolchain_resolution
+build --workspace_status_command=tools/workspace/status.sh

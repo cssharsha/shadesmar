@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+
+message PointCloud {
+  repeated Vector3 points = 1;
+  repeated Vector3 colors = 2; // RGB values normalized to [0,1]
+}
+
+message Image {
+  bytes data = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 channels = 4;
+  string encoding = 5; // e.g., "rgb8", "bgr8"
+}
+
+message CameraInfo {
+  repeated double k = 1; // 3x3 camera matrix
+  repeated double d = 2; // distortion coefficients
+  uint32 width = 3;
+  uint32 height = 4;
+  string distortion_model = 5;
+}

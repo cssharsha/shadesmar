@@ -1,0 +1,100 @@
+#!/bin/bash
+set -e
+
+# Part 1: All setup before shell switch
+sudo apt-get update
+sudo apt-get install -y git-lfs htop tmux vim zsh
+
+# Install clangd and bear first
+sudo apt-get install -y \
+    clangd \
+    bear
+
+# Create and write the script
+sudo tee /usr/local/bin/gen-compile-commands << 'EOF'
+#!/bin/bash
+# Clean any existing compilation database
+rm -f compile_commands.json
+
+# Generate compilation database using bear
+bear -- bazel build //...
+
+# Move it to the workspace root
+mv compile_commands.json $(git rev-parse --show-toplevel)/
+EOF
+
+# Make the script executable
+sudo chmod +x /usr/local/bin/gen-compile-commands
+
+# Then continue with oh-my-zsh installation
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+# Download and install Dracula theme
+git clone https://github.com/dracula/zsh.git ~/.oh-my-zsh/themes/dracula
+ln -s ~/.oh-my-zsh/themes/dracula/dracula.zsh-theme ~/.oh-my-zsh/themes/dracula.zsh-theme
+
+# Configure oh-my-zsh theme
+sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="dracula"/' ~/.zshrc
+
+# Install powerline fonts if using agnoster theme
+sudo apt-get install -y fonts-powerline
+
+# Install Go and Bazelisk
+sudo apt-get install -y golang-go
+go install github.com/bazelbuild/bazelisk@latest
+sudo ln -s $(go env GOPATH)/bin/bazelisk /usr/local/bin/bazel
+sudo chmod 755 /usr/local/bin/bazel
+sudo chmod 755 $(go env GOPATH)/bin/bazelisk
+
+# Add Go binaries to PATH
+echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.zshrc
+echo 'export PATH=$PATH:$(go env GOPATH)/bin' >> ~/.bashrc
+
+# Create a second script for remaining setup
+cat > ~/.continue_setup.sh << 'EOF'
+#!/bin/zsh
+# Configure git
+git config --global core.editor "code --wait"
+git config --global pull.rebase false
+
+# Set up Python tools
+pip3 install --user \
+    pre-commit \
+    pylint \
+    yapf
+
+# Add local pip binaries to PATH (add to both bash and zsh)
+echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.bashrc
+echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.zshrc
+export PATH=$PATH:$HOME/.local/bin
+
+# Install clang tools
+sudo apt-get install -y \
+    clang-format \
+    clang-tidy
+
+# Create configuration files
+echo "
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 100
+" > ~/.clang-format
+
+# Set up pre-commit hooks
+cat > .pre-commit-config.yaml << 'EOF'
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+    -   id: check-added-large-files
+EOF
+
+chmod +x ~/.continue_setup.sh
+
+# Switch to zsh and continue setup
+sudo chsh -s $(which zsh) developer
+echo "source ~/.continue_setup.sh" >> ~/.zshrc
+exec zsh -l

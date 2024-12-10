@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+
+enum FactorType {
+  UNKNOWN = 0;
+  PRIOR = 1;
+  ODOMETRY = 2;
+  LOOP_CLOSURE = 3;
+}
+
+message Factor {
+  uint64 id = 1;
+  FactorType type = 2;
+
+  repeated uint64 connected_nodes = 3;
+
+  oneof measurement {
+    Pose relative_pose = 4;
+    Pose absolute_pose = 5;
+  }
+
+  repeated double information_matrix = 6; // 6x6 matrix in row-major order
+
+  // Metadata
+  double timestamp = 7;
+  string description = 8; // Optional description of the factor
+}
