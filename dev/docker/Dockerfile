@@ -36,8 +36,17 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o 
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
     && apt-get update \
     && apt-get install -y \
+        software-properties-common \
+    && add-apt-repository universe \
+    && apt-get update && apt-get install -y \
         ros-humble-ros-base \
+        ros-humble-cv-bridge \
+        ros-humble-message-filters \
+        ros-humble-libstatistics-collector \
         python3-colcon-common-extensions \
+        python3-rosdep \
+    && rosdep init \
+    && rosdep update \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
