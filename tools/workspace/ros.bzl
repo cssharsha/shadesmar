@@ -7,6 +7,11 @@ def ros_repository():
 
 def ros_message_library(name, srcs, deps = None):
     """Rule for generating ROS2 message libraries."""
+    if deps == None:
+        deps = ["@ros_core//:core"]
+    else:
+        deps = deps + ["@ros_core//:core"]
+
     native.genrule(
         name = name + "_gen",
         srcs = srcs,

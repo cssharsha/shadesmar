@@ -7,6 +7,7 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 load("//tools/workspace:eigen.bzl", "eigen_repository")
 load("//tools/workspace:gtsam.bzl", "gtsam_repository")
 load("//tools/workspace:ros.bzl", "ros_repository")
+# load("//tools/workspace:ros2.bzl", "ros2_repositories")
 load("//tools/workspace:opencv.bzl", "opencv_repository")
 load("//tools/workspace:boost.bzl", "boost_repository")
 load("//tools/workspace:tbb.bzl", "tbb_repository")
@@ -65,6 +66,7 @@ http_archive(
 eigen_repository()
 gtsam_repository()
 ros_repository()
+# ros2_repositories()
 opencv_repository()
 boost_repository()
 tbb_repository()
@@ -77,3 +79,15 @@ http_archive(
 )
 load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
 rules_foreign_cc_dependencies()
+
+new_local_repository(
+    name = "ros_humble",
+    path = "/opt/ros/humble",
+    build_file_content = """
+filegroup(
+    name = "share",
+    srcs = glob(["share/**/*"]),
+    visibility = ["//visibility:public"],
+)
+""",
+)
