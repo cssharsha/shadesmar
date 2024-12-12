@@ -1,6 +1,48 @@
+# Use Clang as the default C++ compiler
+build --repo_env=CC=clang
+build --repo_env=CXX=clang++
+build --linkopt="-fuse-ld=lld"
+
+# Use the registered Clang toolchain
+build --incompatible_enable_cc_toolchain_resolution
+# build --extra_toolchains=@llvm_toolchain//:cc-toolchain-x86_64-linux
+
+# Modifying the default Bazel configuration to support ROS2 rules
+# from https://github.com/mvukov/rules_ros2/blob/main/docs/getting_started.md
+# https://github.com/bazelbuild/rules_foreign_cc/issues/1129
+# Mandatory at the moment for Bazel 7.0.0.
+build --noincompatible_sandbox_hermetic_tmp
+
+build --noenable_bzlmod
+
+# Optional: Enable optimizations
+build:opt --copt=-O3
+build:opt --copt=-march=native
+
 # Import CUDA configuration
 import %workspace%/dev/bazel/cuda.bazelrc
 
 # Enable C++17
 build --cxxopt=-std=c++17
 build --host_cxxopt=-std=c++17
+
+# Ensure that you don't accidentally make non-hermetic actions/tests
+# which depend on remote services. Tag an individual target with
+# tags=["requires-network"] to opt-out of the enforcement.
+# In ROS context this is important such that each test target is executed
+# in a separate network environment.
+# This is a mandatory flag.
+build --sandbox_default_allow_network=false
+
+# Don't let local Python site packages leak into the build and cause problems
+common --action_env=PYTHONNOUSERSITE=1
+# Don't let environment variables like $PATH sneak into the build,
+# which can cause massive cache misses when they change.
+common --incompatible_strict_action_env
+# Helps debugging when Bazel runs out of memory
+build --heap_dump_on_oom
+# Speed up all builds by not checking if output files have been modified.
+build --noexperimental_check_output_files
+
+# Always show test output
+test --test_output=all

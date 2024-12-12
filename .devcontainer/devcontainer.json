@@ -1,13 +1,8 @@
 {
     "name": "Shadesmar Development",
-    "build": {
-        "dockerfile": "../dev/docker/Dockerfile",
-        "context": ".."
-    },
-    "runArgs": [
-        "--cap-add=SYS_PTRACE",
-        "--security-opt=seccomp:unconfined"
-    ],
+    "dockerComposeFile": "../dev/docker/docker-compose.yml",
+    "service": "dev",
+    "workspaceFolder": "/workspace",
     "customizations": {
         "vscode": {
             "extensions": [

@@ -1,35 +1,36 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@com_github_mvukov_rules_ros2//ros2:cc_defs.bzl", "ros2_cpp_library")
+load("@com_github_mvukov_rules_ros2//ros2:cc_defs.bzl", "ros2_cpp_test")
 
-cc_library(
+ros2_cpp_library(
     name = "ros_conversions",
     srcs = ["src/conversions.cpp"],
     hdrs = ["include/ros/conversions.hpp"],
     includes = ["include"],
     deps = [
         "//core:core",
-        "@ros_core//:rcl_base",
-        "@ros_core//:core",
-        "@ros_core//:cv_bridge",
-        "@ros_core//:geometry_msgs",
-        "@ros_core//:sensor_msgs",
-        "@ros_core//:nav_msgs",
-        "@ros_core//:message_filters",
+        "@ros2_rclcpp//:rclcpp",                # ROS2 C++ client library
+        "@ros2_common_interfaces//:cpp_geometry_msgs",         # Geometry messages
+        "@ros2_common_interfaces//:cpp_sensor_msgs",           # Sensor messages
+        "@ros2_common_interfaces//:cpp_nav_msgs",             # Navigation messages
+        "@ros2_common_interfaces//:cpp_std_msgs",             # Standard messages
+        "@ros2_message_filters//:message_filters",       # Message filtering
         "@opencv//:core",
         "@opencv//:imgproc",
     ],
     visibility = ["//visibility:public"],
 )
 
-cc_library(
+ros2_cpp_library(
     name = "rosbag_reader",
     srcs = ["src/rosbag_reader.cpp"],
     hdrs = ["include/ros/rosbag_reader.hpp"],
     includes = ["include"],
     deps = [
-        ":ros_conversions",
         "//core:core",
-        "@ros_core//:rosbag",
-        "@ros_core//:message_filters",
+        ":ros_conversions",
+        "@ros2_rosbag2//:rosbag2_cpp",          # ROS2 bag reading
+        "@ros2_message_filters//:message_filters",
     ],
     visibility = ["//visibility:public"],
 )
@@ -44,24 +45,27 @@ cc_test(
     ],
 )
 
-cc_test(
+ros2_cpp_test(
     name = "rosbag_reader_test",
     srcs = ["test/rosbag_reader_test.cpp"],
     deps = [
         ":rosbag_reader",
         "@com_google_googletest//:gtest_main",
-        "@ros_core//:rosbag",
-        "@ros_core//:nav_msgs",
-        "@ros_core//:sensor_msgs",
-        "@ros_core//:geometry_msgs",
+        "@ros2_rosbag2//:rosbag2_cpp",
+        "@ros2_rosbag2//:rosbag2_storage",
     ],
-    # Add data dependency for test bag files if needed
     # data = [
-    #     "test/data/test.bag",
+    #     "@ros2_rosbag2//:rosbag2_cpp",  # The shared library
+    #     "@ros2_rosbag2//:rosbag2_storage",  # The storage library
+    #     "@ros2_rosbag2//:rosbag2_interfaces",
     # ],
+    # env = {
+    #     "AMENT_PREFIX_PATH": "external/ros2_rosbag2",
+    #     "LD_LIBRARY_PATH": "external/ros2_rosbag2/lib",
+    #     "ROSBAG2_STORAGE_DEFAULT_PLUGINS_PATH": "external/ros2_rosbag2/lib",
+    # },
 )
 
-# Convenience test suite that runs all ROS tests
 test_suite(
     name = "ros_tests",
     tests = [

@@ -1,5 +1,6 @@
 #include "ros/conversions.hpp"
-#include <cv_bridge/cv_bridge.h>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace ros {
 namespace conversions {
@@ -19,6 +20,21 @@ core::types::Pose toPose(const geometry_msgs::msg::PoseStamped &pose_msg) {
     return pose;
 }
 
+core::types::Pose toPose(const nav_msgs::msg::Odometry& odometry_msg) {
+    core::types::Pose pose;
+    pose.position = Eigen::Vector3d(
+        odometry_msg.pose.pose.position.x,
+        odometry_msg.pose.pose.position.y,
+        odometry_msg.pose.pose.position.z);
+    pose.orientation = Eigen::Quaterniond(
+        odometry_msg.pose.pose.orientation.w,
+        odometry_msg.pose.pose.orientation.x,
+        odometry_msg.pose.pose.orientation.y,
+        odometry_msg.pose.pose.orientation.z);
+    pose.timestamp = odometry_msg.header.stamp.sec + odometry_msg.header.stamp.nanosec * 1e-9;
+    return pose;
+}
+
 geometry_msgs::msg::PoseStamped toPoseMsg(const core::types::Pose &pose) {
     geometry_msgs::msg::PoseStamped msg;
     msg.pose.position.x = pose.position.x();
@@ -32,20 +48,63 @@ geometry_msgs::msg::PoseStamped toPoseMsg(const core::types::Pose &pose) {
 }
 
 cv::Mat toImage(const sensor_msgs::msg::Image &image_msg) {
-    cv_bridge::CvImageConstPtr cv_ptr;
-    try {
-        cv_ptr = cv_bridge::toCvShare(std::make_shared<sensor_msgs::msg::Image>(image_msg));
-        return cv_ptr->image.clone();
-    } catch (cv_bridge::Exception& e) {
-        throw std::runtime_error("cv_bridge exception: " + std::string(e.what()));
+    // Determine OpenCV type based on ROS2 encoding
+    int cv_type;
+    if (image_msg.encoding == "mono8") {
+        cv_type = CV_8UC1;
+    } else if (image_msg.encoding == "bgr8") {
+        cv_type = CV_8UC3;
+    } else if (image_msg.encoding == "rgb8") {
+        cv_type = CV_8UC3;
+    } else if (image_msg.encoding == "32FC1") {
+        cv_type = CV_32FC1;
+    } else {
+        throw std::runtime_error("Unsupported image encoding: " + image_msg.encoding);
     }
+
+    // Create OpenCV Mat with correct size and type
+    cv::Mat image(image_msg.height, image_msg.width, cv_type);
+
+    // Copy data
+    memcpy(image.data, image_msg.data.data(), image_msg.data.size());
+
+    // Convert RGB to BGR if necessary
+    if (image_msg.encoding == "rgb8") {
+        cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
+    }
+
+    return image;
 }
 
 sensor_msgs::msg::Image toImageMsg(const cv::Mat &image) {
-    cv_bridge::CvImage cv_image;
-    cv_image.encoding = image.channels() == 1 ? "mono8" : "bgr8";
-    cv_image.image = image;
-    return *cv_image.toImageMsg();
+    sensor_msgs::msg::Image msg;
+
+    // Set image metadata
+    msg.height = image.rows;
+    msg.width = image.cols;
+    msg.step = image.cols * image.elemSize();
+
+    // Set encoding based on image type
+    switch (image.type()) {
+        case CV_8UC1:
+            msg.encoding = "mono8";
+            break;
+        case CV_8UC3:
+            msg.encoding = "bgr8";
+            break;
+        case CV_32FC1:
+            msg.encoding = "32FC1";
+            break;
+        default:
+            throw std::runtime_error("Unsupported OpenCV image type");
+    }
+
+    // Copy image data
+    size_t size = msg.step * msg.height;
+    msg.data.resize(size);
+    memcpy(msg.data.data(), image.data, size);
+
+    return msg;
 }
 
 core::proto::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo &camera_info_msg) {

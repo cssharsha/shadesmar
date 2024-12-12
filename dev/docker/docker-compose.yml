@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  dev:
+    build:
+      context: ../..
+      dockerfile: dev/docker/Dockerfile
+    volumes:
+      - ../..:/workspace:cached
+      - ~/.gitconfig:/home/developer/.gitconfig:ro
+      - /mnt/remote-storage:/mnt/remote-storage
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    network_mode: host
+    command: sleep infinity
+    user: developer
