@@ -1,9 +1,9 @@
 #pragma once
 
 #include <fstream>
-#include "core/types/keyframe.hpp"
-#include "core/types/factor.hpp"
 #include "core/proto/map.pb.h"
+#include "core/types/factor.hpp"
+#include "core/types/keyframe.hpp"
 
 namespace core {
 namespace storage {
@@ -11,7 +11,6 @@ namespace storage {
 using KeyFramePtr = types::KeyFrame::Ptr;
 class MapStore {
 public:
-
     MapStore() {
         map_proto_.mutable_metadata()->set_version("1.0");
         map_proto_.mutable_metadata()->set_created_by("Shadesmar");
@@ -38,5 +37,5 @@ private:
     std::map<uint64_t, size_t> factor_index_;    // Maps factor ID to index in proto
 };
 
-} // namespace storage
-} // namespace core
+}  // namespace storage
+}  // namespace core
