@@ -11,8 +11,9 @@ message KeyFrame {
 
   oneof data {
     PointCloud point_cloud = 3;
-    Image image = 4;
+    Image depth_image = 4;
   }
 
   CameraInfo camera_info = 5; // Optional, present if image data exists
+  Image color_image = 6;      // Added color image
 }
