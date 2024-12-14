@@ -18,7 +18,8 @@ core::types::Pose toPose(const nav_msgs::msg::Odometry &odom_msg);
 geometry_msgs::msg::PoseStamped toPoseMsg(const core::types::Pose &pose);
 
 // Image conversions
-cv::Mat toImage(const sensor_msgs::msg::Image &image_msg);
+cv::Mat toOpenCVImage(const sensor_msgs::msg::Image &image_msg);
+core::types::Image toImage(const sensor_msgs::msg::Image &image_msg);
 sensor_msgs::msg::Image toImageMsg(const cv::Mat &image);
 
 // Camera info conversions
@@ -31,7 +32,8 @@ toCameraInfoMsg(const core::proto::CameraInfo &camera_info);
 core::types::PointCloud
 toPointCloud(const sensor_msgs::msg::Image &depth_msg,
              const sensor_msgs::msg::CameraInfo &camera_info_msg);
-sensor_msgs::msg::PointCloud2 toPointCloud2Msg(const core::types::PointCloud &cloud);
+sensor_msgs::msg::PointCloud2
+toPointCloud2Msg(const core::types::PointCloud &cloud);
 
 } // namespace conversions
 } // namespace ros
