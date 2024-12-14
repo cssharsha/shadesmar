@@ -54,16 +54,9 @@ ros2_cpp_test(
         "@ros2_rosbag2//:rosbag2_cpp",
         "@ros2_rosbag2//:rosbag2_storage",
     ],
-    # data = [
-    #     "@ros2_rosbag2//:rosbag2_cpp",  # The shared library
-    #     "@ros2_rosbag2//:rosbag2_storage",  # The storage library
-    #     "@ros2_rosbag2//:rosbag2_interfaces",
-    # ],
-    # env = {
-    #     "AMENT_PREFIX_PATH": "external/ros2_rosbag2",
-    #     "LD_LIBRARY_PATH": "external/ros2_rosbag2/lib",
-    #     "ROSBAG2_STORAGE_DEFAULT_PLUGINS_PATH": "external/ros2_rosbag2/lib",
-    # },
+    data = [
+        "//ros/test/data:test_sequence.db3",
+    ],
 )
 
 test_suite(
