@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  workflow_run:
+    workflows: ["Docker Build"]
+    types:
+      - completed
+  push:
+    branches: [ master ]
+    paths-ignore:
+      - 'dev/docker/Dockerfile'
+  pull_request:
+    branches: [ master ]
+    paths-ignore:
+      - 'dev/docker/Dockerfile'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Download Docker image
+      if: ${{ github.event_name == 'workflow_run' }}
+      uses: actions/download-artifact@v3
+      with:
+        name: dev-env-image
+        path: /tmp
+
+    - name: Load Docker image
+      if: ${{ github.event_name == 'workflow_run' }}
+      run: docker load --input /tmp/dev-env.tar
+
+    - name: Build Docker image
+      if: ${{ github.event_name != 'workflow_run' }}
+      run: docker build -t dev-env -f dev/docker/Dockerfile .
+
+    - name: Run tests in Docker
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace \
+          -v ~/.cache/bazel:/home/developer/.cache/bazel \
+          dev-env:latest \
+          bash -c "
+            # Create cache directories with correct permissions
+            sudo mkdir -p /home/developer/.cache/go-build && \
+            sudo chown -R developer:developer /home/developer/.cache && \
+
+            # Install Go
+            curl -L https://go.dev/dl/go1.21.0.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf - && \
+            export PATH=$PATH:/usr/local/go/bin && \
+            export GOPATH=/home/developer/go && \
+            mkdir -p $GOPATH/bin && \
+
+            # Install bazelisk
+            /usr/local/go/bin/go install github.com/bazelbuild/bazelisk@latest && \
+            # Remove existing symlink if it exists
+            sudo rm -f /usr/local/bin/bazel && \
+            # Wait for bazelisk to be installed and then create the symlink
+            while [ ! -f $GOPATH/bin/bazelisk ]; do sleep 1; done && \
+            sudo ln -s $GOPATH/bin/bazelisk /usr/local/bin/bazel && \
+            sudo chmod 755 /usr/local/bin/bazel && \
+            sudo chmod 755 $GOPATH/bin/bazelisk && \
+
+            # Run the tests
+            bazel build //... && \
+            bazel test //... --test_output=errors
+          "

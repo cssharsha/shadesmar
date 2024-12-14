@@ -1,7 +1,7 @@
-#include <gtest/gtest.h>
 #include "ros/conversions.hpp"
-#include <rclcpp/rclcpp.hpp>
+#include <gtest/gtest.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -25,9 +25,7 @@ protected:
         info_msg.distortion_model = "plumb_bob";
 
         // Set camera matrix (K)
-        info_msg.k = {500.0, 0.0, 320.0,
-                     0.0, 500.0, 240.0,
-                     0.0, 0.0, 1.0};
+        info_msg.k = {500.0, 0.0, 320.0, 0.0, 500.0, 240.0, 0.0, 0.0, 1.0};
 
         // Set distortion coefficients
         info_msg.d = {0.1, 0.2, 0.3, 0.4, 0.5};
@@ -129,8 +127,7 @@ TEST_F(ConversionsTest, PointCloudConversion) {
     // Find and verify the point
     bool found_point = false;
     for (const auto& point : point_cloud.points) {
-        if (std::abs(point.x() - expected_x) < 1e-6 &&
-            std::abs(point.y() - expected_y) < 1e-6 &&
+        if (std::abs(point.x() - expected_x) < 1e-6 && std::abs(point.y() - expected_y) < 1e-6 &&
             std::abs(point.z() - expected_z) < 1e-6) {
             found_point = true;
             break;
