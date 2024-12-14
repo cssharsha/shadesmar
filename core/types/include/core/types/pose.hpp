@@ -9,7 +9,7 @@ namespace types {
 
 struct Pose {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    
+
     Eigen::Vector3d position{0, 0, 0};
     Eigen::Quaterniond orientation{1, 0, 0, 0};
     double timestamp{0};
@@ -17,17 +17,11 @@ struct Pose {
     // Proto conversion
     static Pose fromProto(const proto::Pose& pose_proto) {
         Pose pose;
-        pose.position = Eigen::Vector3d(
-            pose_proto.position().x(),
-            pose_proto.position().y(),
-            pose_proto.position().z()
-        );
-        pose.orientation = Eigen::Quaterniond(
-            pose_proto.orientation().w(),
-            pose_proto.orientation().x(),
-            pose_proto.orientation().y(),
-            pose_proto.orientation().z()
-        );
+        pose.position = Eigen::Vector3d(pose_proto.position().x(), pose_proto.position().y(),
+                                        pose_proto.position().z());
+        pose.orientation =
+            Eigen::Quaterniond(pose_proto.orientation().w(), pose_proto.orientation().x(),
+                               pose_proto.orientation().y(), pose_proto.orientation().z());
         pose.timestamp = pose_proto.timestamp();
         return pose;
     }
@@ -67,5 +61,5 @@ struct Pose {
     }
 };
 
-} // namespace types
-} // namespace core
+}  // namespace types
+}  // namespace core

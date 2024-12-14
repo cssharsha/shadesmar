@@ -2,13 +2,13 @@
 
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/inference/Symbol.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
-#include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
-#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
-#include <core/types/keyframe.hpp>
+#include <gtsam/slam/PriorFactor.h>
 #include <core/types/factor.hpp>
+#include <core/types/keyframe.hpp>
 
 namespace core {
 namespace graph {
@@ -17,7 +17,6 @@ using KeyFramePtr = types::KeyFrame::Ptr;
 
 class FactorGraph {
 public:
-
     FactorGraph() = default;
 
     void addKeyFrame(const KeyFramePtr& keyframe);
@@ -41,5 +40,5 @@ private:
     types::Pose fromPose3(const gtsam::Pose3& pose3) const;
 };
 
-} // namespace graph
-} // namespace core
+}  // namespace graph
+}  // namespace core

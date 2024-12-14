@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ros/conversions.hpp"
 #include <core/graph/factor_graph.hpp>
 #include <core/storage/map_store.hpp>
 #include <deque>
@@ -11,49 +10,48 @@
 #include <rosbag2_cpp/reader.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include "ros/conversions.hpp"
 
 namespace ros {
 
 struct Config {
-  std::string odom_topic;
-  std::string color_topic;
-  std::string camera_info_topic;
-  double keyframe_distance_threshold = 0.1; // 10cm default
+    std::string odom_topic;
+    std::string color_topic;
+    std::string camera_info_topic;
+    double keyframe_distance_threshold = 0.1;  // 10cm default
 };
 
 class RosbagReader {
 public:
-  RosbagReader(const std::string &bagfile, core::graph::FactorGraph &graph,
-               core::storage::MapStore &store, const Config &config);
+    RosbagReader(const std::string& bagfile, core::graph::FactorGraph& graph,
+                 core::storage::MapStore& store, const Config& config);
 
-  bool initialize();
-  bool processBag();
+    bool initialize();
+    bool processBag();
 
 private:
-  void processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg);
-  bool shouldCreateKeyframe(const nav_msgs::msg::Odometry &current_odom);
-  void optimizeAndStore();
+    void processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg);
+    bool shouldCreateKeyframe(const nav_msgs::msg::Odometry& current_odom);
+    void optimizeAndStore();
 
-  // Helper function to find closest message by timestamp
-  template <typename T>
-  std::shared_ptr<T>
-  findClosestMessage(std::deque<std::shared_ptr<T>> &messages,
-                     const rclcpp::Time &target_time, double max_time_diff);
+    // Helper function to find closest message by timestamp
+    template <typename T>
+    std::shared_ptr<T> findClosestMessage(std::deque<std::shared_ptr<T>>& messages,
+                                          const rclcpp::Time& target_time, double max_time_diff);
 
-  std::string bagfile_;
-  Config config_;
-  core::graph::FactorGraph &graph_;
-  core::storage::MapStore &store_;
-  std::unique_ptr<rosbag2_cpp::Reader> reader_;
+    std::string bagfile_;
+    Config config_;
+    core::graph::FactorGraph& graph_;
+    core::storage::MapStore& store_;
+    std::unique_ptr<rosbag2_cpp::Reader> reader_;
 
-  // Message queues
-  std::deque<std::shared_ptr<sensor_msgs::msg::Image>> color_messages_;
-  std::deque<std::shared_ptr<sensor_msgs::msg::CameraInfo>>
-      camera_info_messages_;
+    // Message queues
+    std::deque<std::shared_ptr<sensor_msgs::msg::Image>> color_messages_;
+    std::deque<std::shared_ptr<sensor_msgs::msg::CameraInfo>> camera_info_messages_;
 
-  // Tracking
-  uint64_t current_keyframe_id_{0};
-  core::types::Pose last_keyframe_pose_;
+    // Tracking
+    uint64_t current_keyframe_id_{0};
+    core::types::Pose last_keyframe_pose_;
 };
 
-} // namespace ros
+}  // namespace ros
