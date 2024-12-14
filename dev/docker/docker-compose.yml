@@ -9,6 +9,12 @@ services:
       - ../..:/workspace:cached
       - ~/.gitconfig:/home/developer/.gitconfig:ro
       - /mnt/remote-storage:/mnt/remote-storage
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ~/.Xauthority:/home/developer/.Xauthority
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/home/developer/.Xauthority
     cap_add:
       - SYS_PTRACE
     security_opt:
@@ -16,3 +22,10 @@ services:
     network_mode: host
     command: sleep infinity
     user: developer
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -64,12 +64,14 @@ load("//tools/workspace:gtsam.bzl", "gtsam_repository")
 load("//tools/workspace:opencv.bzl", "opencv_repository")
 load("//tools/workspace:boost.bzl", "boost_repository")
 load("//tools/workspace:tbb.bzl", "tbb_repository")
+load("//tools/workspace:arrow.bzl", "arrow_repository")
 
 eigen_repository()
 gtsam_repository()
 opencv_repository()
 boost_repository()
 tbb_repository()
+arrow_repository()
 
 # Add this near the top of your WORKSPACE file, before the platforms section
 http_archive(
@@ -95,38 +97,6 @@ http_archive(
 )
 register_execution_platforms("@platforms//:all")
 
-# Protocol Buffers
-http_archive(
-    name = "com_google_protobuf",
-    urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.19.4.tar.gz"],
-    strip_prefix = "protobuf-3.19.4",
-)
-load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
-protobuf_deps()
-
-# Google Test
-http_archive(
-    name = "com_google_googletest",
-    urls = ["https://github.com/google/googletest/archive/release-1.11.0.tar.gz"],
-    strip_prefix = "googletest-release-1.11.0",
-)
-
-# CUDA Support
-http_archive(
-    name = "local_cuda",
-    build_file = "//third_party:cuda.BUILD",
-    urls = ["https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run"],
-    sha256 = "...",  # Add appropriate SHA
-)
-
-# JSON for Modern C++
-http_archive(
-    name = "nlohmann_json",
-    build_file = "//third_party:json.BUILD",
-    urls = ["https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz"],
-    sha256 = "...",  # Add appropriate SHA
-)
-
 # Python rules setup
 http_archive(
     name = "rules_python",
@@ -150,6 +120,87 @@ load("@rules_python//python:pip.bzl", "pip_parse")
 
 # Load the interpreter path for later use
 load("@python3_10//:defs.bzl", "interpreter")
+
+http_archive(
+    name = "rules_license",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/rules_license/releases/download/1.0.0/rules_license-1.0.0.tar.gz",
+        "https://github.com/bazelbuild/rules_license/releases/download/1.0.0/rules_license-1.0.0.tar.gz",
+    ],
+    sha256 = "26d4021f6898e23b82ef953078389dd49ac2b5618ac564ade4ef87cced147b38",
+)
+
+http_archive(
+    name = "rules_proto",
+    sha256 = "0e5c64a2599a6e26c6a03d6162242d231ecc0de219534c38cb4402171def21e8",
+    strip_prefix = "rules_proto-7.0.2",
+    url = "https://github.com/bazelbuild/rules_proto/releases/download/7.0.2/rules_proto-7.0.2.tar.gz",
+)
+
+load("@rules_proto//proto:repositories.bzl", "rules_proto_dependencies")
+rules_proto_dependencies()
+
+load("@rules_proto//proto:setup.bzl", "rules_proto_setup")
+rules_proto_setup()
+
+http_archive(
+    name = "com_google_protobuf",
+    urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.12.4.tar.gz"],
+    strip_prefix = "protobuf-3.12.4",
+    sha256 = "512e5a674bf31f8b7928a64d8adf73ee67b8fe88339ad29adaa3b84dbaa570d8",
+)
+
+load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
+protobuf_deps()
+
+# Google Test
+http_archive(
+    name = "com_google_googletest",
+    urls = ["https://github.com/google/googletest/archive/release-1.11.0.tar.gz"],
+    strip_prefix = "googletest-release-1.11.0",
+)
+
+# CUDA Support
+http_archive(
+    name = "local_cuda",
+    build_file = "//third_party:cuda.BUILD",
+    urls = ["https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run"],
+    sha256 = "...",  # Add appropriate SHA
+)
+
+# # JSON for Modern C++
+# http_archive(
+#     name = "nlohmann_json",
+#     build_file = "//third_party:json.BUILD",
+#     urls = ["https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz"],
+#     sha256 = "8c4b26bf4b422252e13f332bc5e388ec0ab5c3443d24399acb675e68278d341f",  # Updated with correct SHA
+# )
+http_archive(
+    name = "nlohmann_json",
+    urls = ["https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz"],
+    strip_prefix = "json-3.11.3",
+)
+
+# # gRPC
+# http_archive(
+#     name = "com_github_grpc_grpc",
+#     urls = ["https://github.com/grpc/grpc/archive/v1.54.0.tar.gz"],
+#     strip_prefix = "grpc-1.54.0",
+# )
+
+# # Load gRPC dependencies
+# load("@com_github_grpc_grpc//bazel:grpc_deps.bzl", "grpc_deps")
+# grpc_deps()
+
+# # Load gRPC extra dependencies
+# load("@com_github_grpc_grpc//bazel:grpc_extra_deps.bzl", "grpc_extra_deps")
+# grpc_extra_deps()
+# Add Rerun SDK
+http_archive(
+    name = "rerun_sdk",
+    urls = ["https://github.com/rerun-io/rerun/releases/download/0.21.0/rerun_cpp_sdk.zip"],
+    build_file = "//third_party:rerun.BUILD",
+)
 
 # ROS2 dependencies
 http_archive(

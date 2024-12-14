@@ -25,11 +25,17 @@ RUN apt-get update && apt-get install -y \
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
+    wget \
+    lsb-release \
+    gnupg2 \
+    && apt-get update \
+    && apt-get install -y \
     libeigen3-dev \
     libopencv-dev \
     libboost-all-dev \
     libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Install GTSAM from source
 RUN git clone https://github.com/borglab/gtsam.git /tmp/gtsam \
@@ -57,6 +63,47 @@ RUN git clone https://github.com/borglab/gtsam.git /tmp/gtsam \
 #     && rosdep init \
 #     && rosdep update \
 #     && rm -rf /var/lib/apt/lists/*
+# Install Apache Arrow
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    lsb-release \
+    wget \
+    && wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb \
+    && apt-get install -y ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb \
+    && apt-get update \
+    && apt-get install -y \
+    libarrow-dev \
+    libarrow-glib-dev \
+    libarrow-dataset-dev \
+    libarrow-dataset-glib-dev \
+    libarrow-acero-dev \
+    libarrow-flight-dev \
+    libarrow-flight-glib-dev \
+    libarrow-flight-sql-dev \
+    libarrow-flight-sql-glib-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+
+# Install X11 and GUI-related dependencies
+RUN apt-get update && apt-get install -y \
+    libxkbcommon-x11-0 \
+    libxkbcommon-dev \
+    libx11-dev \
+    libxcb1-dev \
+    libxcb-render0-dev \
+    libxcb-shape0-dev \
+    libxcb-xfixes0-dev \
+    libxcursor-dev \
+    libxrandr-dev \
+    libxi-dev \
+    libgl1-mesa-dev \
+    libegl1-mesa \
+    libegl1-mesa-dev \
+    libgl1-mesa-dri \
+    libgl1-mesa-glx \
+    libgles2-mesa-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 
 # Create non-root user
 ARG USERNAME=developer
@@ -69,6 +116,12 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME
 
 USER $USERNAME
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
+# Source the cargo environment in the same RUN command
+RUN . $HOME/.cargo/env && \
+    cargo install cargo-binstall && \
+    cargo binstall rerun-cli
+
 WORKDIR /workspace
 
 # Setup ROS2 environment
