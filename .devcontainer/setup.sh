@@ -13,14 +13,30 @@ sudo apt-get install -y \
 # Create and write the script
 sudo tee /usr/local/bin/gen-compile-commands << 'EOF'
 #!/bin/bash
+set -e  # Exit on any error
+
 # Clean any existing compilation database
 rm -f compile_commands.json
 
 # Generate compilation database using bear
-bear -- bazel build //...
+# First try a clean build to avoid potential issues
+bazel clean
+bear -- bazel build //... || {
+    echo "Failed to generate compilation database"
+    exit 1
+}
 
-# Move it to the workspace root
-mv compile_commands.json $(git rev-parse --show-toplevel)/
+# Verify the file exists and is not empty
+if [ ! -s compile_commands.json ]; then
+    echo "Error: compile_commands.json was not generated or is empty"
+    exit 1
+fi
+
+# Only move if not already in workspace root
+WORKSPACE_ROOT=$(git rev-parse --show-toplevel)
+if [ "$PWD" != "$WORKSPACE_ROOT" ]; then
+    mv compile_commands.json "$WORKSPACE_ROOT/"
+fi
 EOF
 
 # Make the script executable
