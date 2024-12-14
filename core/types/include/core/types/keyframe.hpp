@@ -3,6 +3,7 @@
 #include "core/proto/geometry.pb.h"
 #include "core/proto/keyframe.pb.h"
 #include "core/proto/sensor_data.pb.h"
+#include "core/types/image.hpp"
 #include "core/types/pose.hpp"
 
 #include <Eigen/Core>
@@ -63,7 +64,8 @@ public:
 
   uint64_t id;
   Pose pose;
-  std::variant<PointCloud, cv::Mat> data;
+  std::variant<PointCloud, Image> depth_data;
+  std::optional<Image> color_data;
   std::optional<proto::CameraInfo> camera_info;
 
   proto::KeyFrame toProto() const {
@@ -71,16 +73,15 @@ public:
     kf_proto.set_id(id);
     *kf_proto.mutable_pose() = pose.toProto();
 
-    if (std::holds_alternative<PointCloud>(data)) {
-      *kf_proto.mutable_point_cloud() = std::get<PointCloud>(data).toProto();
+    if (std::holds_alternative<PointCloud>(depth_data)) {
+      *kf_proto.mutable_point_cloud() =
+          std::get<PointCloud>(depth_data).toProto();
     } else {
-      const cv::Mat &img = std::get<cv::Mat>(data);
-      auto *image_proto = kf_proto.mutable_image();
-      image_proto->set_data(img.data, img.total() * img.elemSize());
-      image_proto->set_width(img.cols);
-      image_proto->set_height(img.rows);
-      image_proto->set_channels(img.channels());
-      image_proto->set_encoding(img.depth() == CV_8U ? "rgb8" : "bgr8");
+      *kf_proto.mutable_depth_image() = std::get<Image>(depth_data).toProto();
+    }
+
+    if (color_data) {
+      *kf_proto.mutable_color_image() = color_data->toProto();
     }
 
     if (camera_info) {
@@ -96,14 +97,13 @@ public:
     kf->pose = Pose::fromProto(kf_proto.pose());
 
     if (kf_proto.has_point_cloud()) {
-      kf->data = PointCloud::fromProto(kf_proto.point_cloud());
-    } else if (kf_proto.has_image()) {
-      const auto &img_proto = kf_proto.image();
-      cv::Mat img(img_proto.height(), img_proto.width(),
-                  CV_8UC(img_proto.channels()),
-                  const_cast<void *>(
-                      static_cast<const void *>(img_proto.data().data())));
-      kf->data = img.clone();
+      kf->depth_data = PointCloud::fromProto(kf_proto.point_cloud());
+    } else if (kf_proto.has_depth_image()) {
+      kf->depth_data = Image::fromProto(kf_proto.depth_image());
+    }
+
+    if (kf_proto.has_color_image()) {
+      kf->color_data = Image::fromProto(kf_proto.color_image());
     }
 
     if (kf_proto.has_camera_info()) {
@@ -114,14 +114,14 @@ public:
   }
 
   bool hasPointCloud() const {
-    return std::holds_alternative<PointCloud>(data);
+    return std::holds_alternative<PointCloud>(depth_data);
   }
 
   const PointCloud &getPointCloud() const {
     if (!hasPointCloud()) {
       throw std::runtime_error("Point cloud not available");
     }
-    return std::get<PointCloud>(data);
+    return std::get<PointCloud>(depth_data);
   }
 };
 

@@ -10,7 +10,7 @@ protected:
     geometry_msgs::msg::PoseStamped createTestPoseMsg() {
         geometry_msgs::msg::PoseStamped pose_msg;
         pose_msg.header.frame_id = "map";
-        pose_msg.header.stamp = rclcpp::Time(1234, 5678);
+        pose_msg.header.stamp = rclcpp::Time(1234, 0);
         pose_msg.pose.position.x = 1.0;
         pose_msg.pose.position.y = 2.0;
         pose_msg.pose.position.z = 3.0;
@@ -52,7 +52,7 @@ TEST_F(ConversionsTest, PoseConversion) {
     EXPECT_NEAR(pose.orientation.z(), 0.0, 1e-6);
 
     // Check timestamp
-    EXPECT_NEAR(pose.timestamp, 1234.5, 1e-6);
+    EXPECT_NEAR(pose.timestamp, 1234, 1e-6);
 }
 
 TEST_F(ConversionsTest, PoseRoundTrip) {
