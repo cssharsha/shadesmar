@@ -1,0 +1,79 @@
+name: Code Style
+
+on:
+  workflow_run:
+    workflows: ["Docker Build"]
+    types:
+      - completed
+  push:
+    branches: [ master ]
+    paths-ignore:
+      - 'dev/docker/Dockerfile'
+  pull_request:
+    branches: [ master ]
+    paths-ignore:
+      - 'dev/docker/Dockerfile'
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Download Docker image
+      if: ${{ github.event_name == 'workflow_run' }}
+      uses: actions/download-artifact@v3
+      with:
+        name: dev-env-image
+        path: /tmp
+
+    - name: Load Docker image
+      if: ${{ github.event_name == 'workflow_run' }}
+      run: docker load --input /tmp/dev-env.tar
+
+    - name: Build Docker image
+      if: ${{ github.event_name != 'workflow_run' }}
+      run: docker build -t dev-env -f dev/docker/Dockerfile .
+
+    - name: Run clang-tidy
+      run: |
+        docker run --rm -v $(pwd):/workspace dev-env:latest bash -c '
+          # Create cache directories with correct permissions
+          sudo mkdir -p /home/developer/.cache/go-build && \
+          sudo chown -R developer:developer /home/developer/.cache && \
+
+          # Install Go
+          curl -L https://go.dev/dl/go1.21.0.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf - && \
+          export PATH=$PATH:/usr/local/go/bin && \
+
+          # Install bazelisk
+          /usr/local/go/bin/go install github.com/bazelbuild/bazelisk@latest && \
+          # Make sure GOPATH is set and create bin directory if it doesnt exist
+          mkdir -p $(go env GOPATH)/bin && \
+          # Remove existing symlink if it exists
+          sudo rm -f /usr/local/bin/bazel && \
+          # Wait for bazelisk to be installed and then create the symlink
+          while [ ! -f $(go env GOPATH)/bin/bazelisk ]; do sleep 1; done && \
+          sudo ln -s $(go env GOPATH)/bin/bazelisk /usr/local/bin/bazel && \
+          sudo chmod 755 /usr/local/bin/bazel && \
+          sudo chmod 755 $(go env GOPATH)/bin/bazelisk && \
+
+          # Install clang-tidy
+          sudo apt-get update && \
+          sudo apt-get install -y clang-tidy && \
+
+          # Generate compile_commands.json
+          cd /workspace && \
+          bazel run @hedron_compile_commands//:refresh_compile_commands && \
+
+          # Run clang-tidy
+          if [ ! -f compile_commands.json ]; then
+            echo "Error: compile_commands.json not generated"
+            exit 1
+          fi
+          find . \( -name "*.cpp" -o -name "*.hpp" -o -name "*.cc" -o -name "*.h" \) \
+            -not -path "./bazel-*/*" \
+            -not -path "./external/*" \
+            -not -path "./third_party/*" \
+            | xargs clang-tidy -p compile_commands.json
+        '
