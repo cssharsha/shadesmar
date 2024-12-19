@@ -80,6 +80,6 @@ TEST_F(FactorGraphTest, SimpleOptimization) {
     EXPECT_TRUE(graph_->optimize());
 }
 
-} // namespace testing
-} // namespace graph
-} // namespace core
+}  // namespace testing
+}  // namespace graph
+}  // namespace core

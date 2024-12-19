@@ -1,0 +1,14 @@
+*.db3 filter=lfs diff=lfs merge=lfs -text
+
+# Source files should have LF (Unix-style) line endings
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.h text eol=lf
+*.cc text eol=lf
+*.proto text eol=lf
+*.bzl text eol=lf
+*.bazel text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
