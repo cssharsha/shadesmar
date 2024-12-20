@@ -11,7 +11,8 @@ void MapStore::addKeyFrame(const KeyFramePtr& keyframe) {
 
 KeyFramePtr MapStore::getKeyFrame(uint64_t id) const {
     auto it = keyframe_index_.find(id);
-    if (it == keyframe_index_.end()) return nullptr;
+    if (it == keyframe_index_.end())
+        return nullptr;
     return types::KeyFrame::fromProto(map_proto_.keyframes(it->second));
 }
 
@@ -31,7 +32,8 @@ void MapStore::addFactor(const types::Factor& factor) {
 
 types::Factor MapStore::getFactor(uint64_t id) const {
     auto it = factor_index_.find(id);
-    if (it == factor_index_.end()) throw std::runtime_error("Factor not found");
+    if (it == factor_index_.end())
+        throw std::runtime_error("Factor not found");
     return types::Factor::fromProto(map_proto_.factors(it->second));
 }
 
@@ -60,11 +62,9 @@ std::vector<types::Factor> MapStore::getConnectedFactors(uint64_t keyframe_id) c
 bool MapStore::save(const std::string& filename) {
     // Update metadata
     auto* metadata = map_proto_.mutable_metadata();
-    metadata->set_creation_timestamp(
-        std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()
-        ).count()
-    );
+    metadata->set_creation_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
+                                         std::chrono::system_clock::now().time_since_epoch())
+                                         .count());
 
     std::ofstream output(filename, std::ios::binary);
     return map_proto_.SerializeToOstream(&output);
@@ -72,7 +72,8 @@ bool MapStore::save(const std::string& filename) {
 
 bool MapStore::load(const std::string& filename) {
     std::ifstream input(filename, std::ios::binary);
-    if (!map_proto_.ParseFromIstream(&input)) return false;
+    if (!map_proto_.ParseFromIstream(&input))
+        return false;
 
     // Rebuild indices
     keyframe_index_.clear();
@@ -90,7 +91,8 @@ bool MapStore::load(const std::string& filename) {
 }
 
 void MapStore::updateBounds() {
-    if (map_proto_.keyframes_size() == 0) return;
+    if (map_proto_.keyframes_size() == 0)
+        return;
 
     auto* bounds = map_proto_.mutable_metadata()->mutable_bounds();
     bounds->set_min_x(std::numeric_limits<double>::max());
@@ -111,5 +113,5 @@ void MapStore::updateBounds() {
     }
 }
 
-} // namespace storage
-} // namespace core
+}  // namespace storage
+}  // namespace core
