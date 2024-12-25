@@ -60,8 +60,6 @@ sudo apt-get install -y \
     clang-format \
     clang-tidy \
     bear
-    clang-tidy \
-    bear
 
 # Create configuration files
 echo "
