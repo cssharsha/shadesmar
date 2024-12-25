@@ -9,46 +9,44 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Initializing visualizer..." << std::endl;
-    // Initialize visualizer
-    viz::RerunVisualizer visualizer("rosbag_viz");
-    if (!visualizer.initialize()) {
+    // Initialize visualizer for TCP transport
+    auto visualizer = std::make_shared<viz::RerunVisualizer>("rosbag_viz", "localhost", 9999);
+    if (!visualizer->initialize()) {
         std::cerr << "Failed to initialize visualizer" << std::endl;
         return 1;
     }
 
-    // Create factor graph and map store
-    auto graph = std::make_shared<core::graph::FactorGraph>();
-    auto store = std::make_shared<core::storage::MapStore>();
+    bool running = true;
+    std::cout << "Press Enter to exit..." << std::endl;
 
-    // Configure rosbag reader
+    std::thread input_thread([&running]() {
+        std::cin.get();
+        running = false;
+    });
+
+    core::graph::FactorGraph graph;
+    core::storage::MapStore store;
     ros::Config config;
     config.odom_topic = "/base/odom";
+    config.tf_topic = "/base/tf";
+    config.tf_static_topic = "/base/tf_static";
     config.color_topic = "/camera/camera/color/image_raw";
     config.camera_info_topic = "/camera/camera/color/camera_info";
-    config.keyframe_distance_threshold = 0.1;  // 10cm between keyframes
 
-    // Create and initialize rosbag reader
-    ros::RosbagReader reader(argv[1], *graph, *store, config);
+    // Create RosbagReader with shared_ptr to visualizer
+    ros::RosbagReader reader(argv[1], graph, store, config, visualizer);
     if (!reader.initialize()) {
-        std::cerr << "Failed to initialize rosbag reader" << std::endl;
+        std::cerr << "Failed to initialize reader" << std::endl;
         return 1;
     }
+    reader.processBag();
 
-    // Process the bag and build the factor graph
-    std::cout << "Processing rosbag..." << std::endl;
-    if (!reader.processBag()) {
-        std::cerr << "Failed to process rosbag" << std::endl;
-        return 1;
-    }
+    // while (running) {
+    //     visualizer->update();
+    //     std::this_thread::sleep_for(std::chrono::milliseconds(500)); // 2 Hz
+    // }
 
-    // Visualize the factor graph
-    std::cout << "Visualizing factor graph..." << std::endl;
-    visualizer.visualizeFactorGraph(*graph);
-    visualizer.update();
-
-    // Keep the program running to maintain visualization
-    std::cout << "Press Enter to exit..." << std::endl;
-    std::cin.get();
+    input_thread.join();
 
     return 0;
 }
