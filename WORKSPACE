@@ -3,42 +3,6 @@ workspace(name = "shadesmar")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 
-# http_archive(
-#     name = "llvm_toolchain",
-#     sha256 = "b7cd301ef7b0ece28d20d3e778697a5e3b81828393150bed04838c0c52963a01",
-#     strip_prefix = "toolchains_llvm-0.10.3",
-#     url = "https://github.com/grailbio/bazel-toolchain/releases/download/0.10.3/toolchains_llvm-0.10.3.tar.gz",
-# )
-
-# load("@llvm_toolchain//toolchain:deps.bzl", "bazel_toolchain_dependencies")
-# bazel_toolchain_dependencies()
-
-# load("@llvm_toolchain//toolchain:rules.bzl", "llvm_bazel_toolchain")
-# llvm_bazel_toolchain(
-#     name = "llvm_toolchain_local",
-#     llvm_version = "15.0.0",
-#     stdlib = {
-#         "linux-x86_64": "stdc++",
-#     },
-# )
-
-# register_toolchains(
-#     "@llvm_toolchain_local//:cc-toolchain-x86_64-linux",
-# )
-
-# # Add platform configuration for Clang
-# platform(
-#     name = "linux_clang",
-#     constraint_values = [
-#         "@platforms//os:linux",
-#         "@platforms//cpu:x86_64",
-#         "@bazel_tools//tools/cpp:clang",
-#     ],
-# )
-
-# # Register the platform
-# register_execution_platforms(":linux_clang")
-
 # Add rules_cc
 http_archive(
     name = "rules_cc",
@@ -50,7 +14,7 @@ http_archive(
 load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 rules_cc_dependencies()
 
-# Add bazel_features first
+# Add bazel_features
 http_archive(
     name = "bazel_features",
     sha256 = "9fcb3d7cbe908772462aaa52f02b857a225910d30daa3c252f670e3af6d8036d",
@@ -58,7 +22,7 @@ http_archive(
     url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.0.0/bazel_features-v1.0.0.tar.gz",
 )
 
-# Load workspace rules
+# Load workspace thirdparty deps
 load("//tools/workspace:eigen.bzl", "eigen_repository")
 load("//tools/workspace:gtsam.bzl", "gtsam_repository")
 load("//tools/workspace:opencv.bzl", "opencv_repository")
@@ -73,7 +37,6 @@ boost_repository()
 tbb_repository()
 arrow_repository()
 
-# Add this near the top of your WORKSPACE file, before the platforms section
 http_archive(
     name = "bazel_skylib",
     urls = [
@@ -130,6 +93,7 @@ http_archive(
     sha256 = "26d4021f6898e23b82ef953078389dd49ac2b5618ac564ade4ef87cced147b38",
 )
 
+# Protobuf
 http_archive(
     name = "rules_proto",
     sha256 = "0e5c64a2599a6e26c6a03d6162242d231ecc0de219534c38cb4402171def21e8",
@@ -165,36 +129,16 @@ http_archive(
     name = "local_cuda",
     build_file = "//third_party:cuda.BUILD",
     urls = ["https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run"],
-    sha256 = "...",  # Add appropriate SHA
+    # sha256 = "...",
 )
 
-# # JSON for Modern C++
-# http_archive(
-#     name = "nlohmann_json",
-#     build_file = "//third_party:json.BUILD",
-#     urls = ["https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz"],
-#     sha256 = "8c4b26bf4b422252e13f332bc5e388ec0ab5c3443d24399acb675e68278d341f",  # Updated with correct SHA
-# )
+# JSON for Modern C++
 http_archive(
     name = "nlohmann_json",
     urls = ["https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz"],
     strip_prefix = "json-3.11.3",
 )
 
-# # gRPC
-# http_archive(
-#     name = "com_github_grpc_grpc",
-#     urls = ["https://github.com/grpc/grpc/archive/v1.54.0.tar.gz"],
-#     strip_prefix = "grpc-1.54.0",
-# )
-
-# # Load gRPC dependencies
-# load("@com_github_grpc_grpc//bazel:grpc_deps.bzl", "grpc_deps")
-# grpc_deps()
-
-# # Load gRPC extra dependencies
-# load("@com_github_grpc_grpc//bazel:grpc_extra_deps.bzl", "grpc_extra_deps")
-# grpc_extra_deps()
 # Add Rerun SDK
 http_archive(
     name = "rerun_sdk",
@@ -235,12 +179,8 @@ install_rules_ros2_pip_deps()
 # https://github.com/hedronvision/bazel-compile-commands-extractor
 http_archive(
     name = "hedron_compile_commands",
-
-    # Replace the commit hash (0e990032f3c5a866e72615cf67e5ce22186dcb97) in both places (below) with the latest (https://github.com/hedronvision/bazel-compile-commands-extractor/commits/main), rather than using the stale one here.
-    # Even better, set up Renovate and let it do the work for you (see "Suggestion: Updates" in the README).
     url = "https://github.com/hedronvision/bazel-compile-commands-extractor/archive/0e990032f3c5a866e72615cf67e5ce22186dcb97.tar.gz",
     strip_prefix = "bazel-compile-commands-extractor-0e990032f3c5a866e72615cf67e5ce22186dcb97",
-    # When you first run this tool, it'll recommend a sha256 hash to put here with a message like: "DEBUG: Rule 'hedron_compile_commands' indicated that a canonical reproducible form can be obtained by modifying arguments sha256 = ..."
 )
 load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
 hedron_compile_commands_setup()

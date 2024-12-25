@@ -51,3 +51,6 @@ build:compdb --aspects=@hedron_compile_commands//:aspects.bzl%compilation_databa
 build:compdb --output_groups=compilation_database_files
 
 build --noenable_bzlmod
+
+build --features=-header_modules
+build --features=use_header_modules

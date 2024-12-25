@@ -120,6 +120,17 @@ public:
         }
         return std::get<PointCloud>(depth_data);
     }
+
+    bool hasImage() const {
+        return std::holds_alternative<Image>(depth_data);
+    }
+
+    const Image& getImage() const {
+        if (!hasImage()) {
+            throw std::runtime_error("Image not available");
+        }
+        return std::get<Image>(depth_data);
+    }
 };
 
 }  // namespace types

@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -104,6 +104,22 @@ RUN apt-get update && apt-get install -y \
     libgles2-mesa-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Vulkan dependencies
+RUN apt-get update && apt-get install -y \
+    vulkan-tools \
+    libvulkan1 \
+    libvulkan-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add this after installing the Vulkan packages
+RUN mkdir -p /usr/share/vulkan/icd.d/ && \
+    echo '{ \
+        "file_format_version": "1.0.0", \
+        "ICD": { \
+            "library_path": "libGLX_nvidia.so.0", \
+            "api_version": "1.2.0" \
+        } \
+    }' > /usr/share/vulkan/icd.d/nvidia_icd.json
 
 # Create non-root user
 ARG USERNAME=developer

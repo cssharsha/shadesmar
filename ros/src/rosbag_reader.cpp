@@ -4,12 +4,15 @@
 #include <opencv2/core.hpp>
 #include <rclcpp/serialization.hpp>
 #include <rosbag2_cpp/readers/sequential_reader.hpp>
+#include "core/graph/util.hpp"
+#include "viz/rerun_viz.hpp"
 
 namespace ros {
 
 RosbagReader::RosbagReader(const std::string& bagfile, core::graph::FactorGraph& graph,
-                           core::storage::MapStore& store, const Config& config)
-    : bagfile_(bagfile), config_(config), graph_(graph), store_(store) {}
+                           core::storage::MapStore& store, const Config& config,
+                           std::shared_ptr<viz::RerunVisualizer> visualizer)
+    : bagfile_(bagfile), config_(config), graph_(graph), store_(store), visualizer_(visualizer) {}
 
 bool RosbagReader::initialize() {
     if (!std::filesystem::exists(bagfile_)) {
@@ -73,7 +76,72 @@ std::shared_ptr<T> RosbagReader::findClosestMessage(std::deque<std::shared_ptr<T
     return nullptr;
 }
 
+void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
+    if (!visualizer_ || !visualizer_->isConnected()) return;
+
+    for (const auto& transform : msg->transforms) {
+        core::types::Pose pose;
+        pose.position = Eigen::Vector3d(
+            transform.transform.translation.x,
+            transform.transform.translation.y,
+            transform.transform.translation.z
+        );
+        pose.orientation = Eigen::Quaterniond(
+            transform.transform.rotation.w,
+            transform.transform.rotation.x,
+            transform.transform.rotation.y,
+            transform.transform.rotation.z
+        );
+
+        // Create entity path based on frame ids
+        std::string entity_path = transform.header.frame_id + "/" + transform.child_frame_id;
+        static_transforms_.push_back(std::make_pair(std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
+        visualizer_->addPose(pose, entity_path, rclcpp::Time(transform.header.stamp).seconds());
+    }
+}
+
+void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
+    if (!visualizer_ || !visualizer_->isConnected()) return;
+
+    for (const auto& transform : msg->transforms) {
+        core::types::Pose pose;
+        pose.position = Eigen::Vector3d(
+            transform.transform.translation.x,
+            transform.transform.translation.y,
+            transform.transform.translation.z
+        );
+        pose.orientation = Eigen::Quaterniond(
+            transform.transform.rotation.w,
+            transform.transform.rotation.x,
+            transform.transform.rotation.y,
+            transform.transform.rotation.z
+        );
+
+        // Create entity path based on frame ids
+        std::string entity_path = transform.header.frame_id + "/" + transform.child_frame_id;
+        transforms_.push_back(std::make_pair(std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
+        // visualizer_->addPose(pose, entity_path, rclcpp::Time(msg->header.stamp).seconds());
+    }
+}
+
 void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg) {
+    // Visualize odometry message immediately if visualizer is available
+    if (visualizer_ && visualizer_->isConnected()) {
+        std::cout << "Sending odometry message to visualizer" << std::endl;
+        core::types::Pose current_pose = conversions::toPose(*msg);
+        std::string entity_path = msg->child_frame_id;
+        // visualizer_->setTimestamp(rclcpp::Time(msg->header.stamp).seconds());
+        // visualizer_->addPose(current_pose, entity_path, rclcpp::Time(msg->header.stamp).seconds());
+
+        // for (const auto& transform : static_transforms_) {
+        //     visualizer_->addPose(transform.second, transform.first.first + "/" + transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
+        // }
+        // for (const auto& transform : transforms_) {
+        //     visualizer_->addPose(transform.second, transform.first.first + "/" + transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
+        // }
+        // visualizer_->update();
+    }
+
     if (!shouldCreateKeyframe(*msg)) {
         return;
     }
@@ -132,13 +200,38 @@ void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry
     if (current_keyframe_id_ % 10 == 0) {
         optimizeAndStore();
     }
+
+    // Visualize keyframe data when created
+    // if (visualizer_ && visualizer_->isConnected()) {
+    //     if (color_msg) {
+    //         std::string image_path = "images/" + color_msg->header.frame_id;
+    //         visualizer_->addImage(keyframe->color_data->toCvMat(),
+    //                             image_path,
+    //                             rclcpp::Time(color_msg->header.stamp).seconds());
+    //     }
+    //     visualizer_->update();
+    // }
 }
 
 bool RosbagReader::processBag() {
+
     while (reader_->has_next()) {
         auto bag_msg = reader_->read_next();
 
-        if (bag_msg->topic_name == config_.odom_topic) {
+        // Update visualization timestamp based on message timestamp
+        if (bag_msg->topic_name == config_.tf_static_topic) {
+            auto tf_msg = std::make_shared<tf2_msgs::msg::TFMessage>();
+            rclcpp::Serialization<tf2_msgs::msg::TFMessage> serialization;
+            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
+            serialization.deserialize_message(&serialized_msg, tf_msg.get());
+            processStaticTransform(tf_msg);
+        } else if (bag_msg->topic_name == config_.tf_topic) {
+            auto tf_msg = std::make_shared<tf2_msgs::msg::TFMessage>();
+            rclcpp::Serialization<tf2_msgs::msg::TFMessage> serialization;
+            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
+            serialization.deserialize_message(&serialized_msg, tf_msg.get());
+            processTransform(tf_msg);
+        } else if (bag_msg->topic_name == config_.odom_topic) {
             auto odom_msg = std::make_shared<nav_msgs::msg::Odometry>();
             rclcpp::Serialization<nav_msgs::msg::Odometry> serialization;
             rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
@@ -160,6 +253,7 @@ bool RosbagReader::processBag() {
     }
 
     optimizeAndStore();
+    core::graph::util::dumpFactorGraph(graph_, "/mnt/remote-storage/final_graph.vtk");
     return store_.save("/tmp/final_map.pb");
 }
 
