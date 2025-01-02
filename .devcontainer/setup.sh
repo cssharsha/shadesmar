@@ -85,7 +85,26 @@ chmod +x ~/.continue_setup.sh
 # Switch to zsh and continue setup
 sudo chsh -s $(which zsh) developer
 echo "source ~/.continue_setup.sh" >> ~/.zshrc
+echo "source ~/.cargo/env" >> ~/.zshrc
 exec zsh -l
+```
+
+# Fix PATH exports
+echo "export PATH=/usr/local/go/bin:$PATH:$(go env GOPATH)/bin" >> ~/.zshrc
+echo "export PATH=/usr/local/go/bin:$PATH:$(go env GOPATH)/bin" >> ~/.bashrc
+
+# Fix bazelisk setup
+GOPATH="$(go env GOPATH)"
+sudo ln -s "${GOPATH}/bin/bazelisk" /usr/local/bin/bazel
+sudo chmod 755 "${GOPATH}/bin/bazelisk"
+
+# Fix shell change
+sudo chsh -s "$(which zsh)" developer
+```
+
+# Install clangd for IDE integration
+sudo apt-get install -y clangd
+
 ```
 
 # Fix PATH exports
