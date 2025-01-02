@@ -1,6 +1,7 @@
 load("@rules_cc//cc:defs.bzl", "cc_test")
 load("@com_github_mvukov_rules_ros2//ros2:cc_defs.bzl", "ros2_cpp_library")
 load("@com_github_mvukov_rules_ros2//ros2:cc_defs.bzl", "ros2_cpp_test")
+load("@com_github_mvukov_rules_ros2//ros2:cc_defs.bzl", "ros2_cpp_binary")
 
 ros2_cpp_library(
     name = "ros_conversions",
@@ -14,6 +15,8 @@ ros2_cpp_library(
         "@ros2_common_interfaces//:cpp_sensor_msgs",           # Sensor messages
         "@ros2_common_interfaces//:cpp_nav_msgs",             # Navigation messages
         "@ros2_common_interfaces//:cpp_std_msgs",             # Standard messages
+        "@ros2_geometry2//:cpp_tf2_msgs",             # TF messages
+        "@ros2_geometry2//:tf2_ros",
         "@ros2_message_filters//:message_filters",       # Message filtering
         "@opencv//:core",
         "@opencv//:imgproc",
@@ -28,11 +31,36 @@ ros2_cpp_library(
     includes = ["include"],
     deps = [
         "//core:core",
+        "//viz:rerun_viz",
         ":ros_conversions",
         "@ros2_rosbag2//:rosbag2_cpp",          # ROS2 bag reading
         "@ros2_message_filters//:message_filters",
     ],
     visibility = ["//visibility:public"],
+)
+
+ros2_cpp_library(
+    name = "ros_adapter",
+    srcs = ["src/ros_adapter.cpp"],
+    hdrs = ["include/ros/ros_adapter.hpp"],
+    includes = ["include"],
+    deps = [
+        "//core:core",
+        "//viz:rerun_viz",
+        ":ros_conversions",
+        "//utils:stf",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+ros2_cpp_binary(
+    name = "rosbag_reader_main",
+    srcs = ["src/rosbag_reader_main.cpp"],
+    deps = [
+        ":rosbag_reader",
+    ],
+    visibility = ["//visibility:public"],
+    set_up_ament = True,
 )
 
 # Test targets
