@@ -12,7 +12,9 @@ public:
     RerunVisualizer(const std::string& name = "shadesmar", const std::string& host = "localhost",
                     uint16_t port = 9999);
 
-    bool initialize() override { return initialize(false); }
+    bool initialize() override {
+        return initialize(false);
+    }
     bool initialize(bool save_to_file);
     bool isConnected() const override;
     void disconnect() override;
@@ -35,9 +37,8 @@ public:
 
     void addPose(const core::types::Pose& pose, const std::string& entity_path, double timestamp);
     void addImage(const cv::Mat& image, const std::string& entity_path, double timestamp);
-    void addCamera(const rerun::archetypes::Pinhole& camera,
-                  const std::string& entity_path,
-                  double timestamp = 0);
+    void addCamera(const rerun::archetypes::Pinhole& camera, const std::string& entity_path,
+                   double timestamp = 0);
 
 private:
     std::string name_;

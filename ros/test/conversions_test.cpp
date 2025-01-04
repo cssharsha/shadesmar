@@ -72,18 +72,18 @@ TEST_F(ConversionsTest, CameraInfoConversion) {
     auto camera_info_msg = createTestCameraInfo();
     auto camera_info = ros::conversions::toCameraInfo(camera_info_msg);
 
-    EXPECT_EQ(camera_info.width(), camera_info_msg.width);
-    EXPECT_EQ(camera_info.height(), camera_info_msg.height);
-    EXPECT_EQ(camera_info.distortion_model(), camera_info_msg.distortion_model);
+    EXPECT_EQ(camera_info.width, camera_info_msg.width);
+    EXPECT_EQ(camera_info.height, camera_info_msg.height);
+    EXPECT_EQ(camera_info.distortion_model, camera_info_msg.distortion_model);
 
     // Check K matrix
     for (size_t i = 0; i < 9; ++i) {
-        EXPECT_NEAR(camera_info.k(i), camera_info_msg.k[i], 1e-6);
+        EXPECT_NEAR(camera_info.k[i], camera_info_msg.k[i], 1e-6);
     }
 
     // Check distortion coefficients
     for (size_t i = 0; i < 5; ++i) {
-        EXPECT_NEAR(camera_info.d(i), camera_info_msg.d[i], 1e-6);
+        EXPECT_NEAR(camera_info.d[i], camera_info_msg.d[i], 1e-6);
     }
 }
 

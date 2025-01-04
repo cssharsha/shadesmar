@@ -1,5 +1,5 @@
-#include <gtest/gtest.h>
 #include "stf/transform_tree.hpp"
+#include <gtest/gtest.h>
 #include <cmath>
 
 class TransformTreeTest : public ::testing::Test {
@@ -22,8 +22,7 @@ protected:
 
     // Helper function to compare transforms with tolerance
     static void expectTransformsEqual(const Eigen::Isometry3d& expected,
-                                    const Eigen::Isometry3d& actual,
-                                    double tolerance = 1e-6) {
+                                      const Eigen::Isometry3d& actual, double tolerance = 1e-6) {
         // Compare translation
         EXPECT_NEAR(expected.translation().x(), actual.translation().x(), tolerance);
         EXPECT_NEAR(expected.translation().y(), actual.translation().y(), tolerance);
@@ -34,7 +33,7 @@ protected:
         Eigen::Matrix3d actual_rot = actual.rotation();
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
-                EXPECT_NEAR(expected_rot(i,j), actual_rot(i,j), tolerance);
+                EXPECT_NEAR(expected_rot(i, j), actual_rot(i, j), tolerance);
             }
         }
     }
