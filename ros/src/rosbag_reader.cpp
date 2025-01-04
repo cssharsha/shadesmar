@@ -77,49 +77,43 @@ std::shared_ptr<T> RosbagReader::findClosestMessage(std::deque<std::shared_ptr<T
 }
 
 void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
-    if (!visualizer_ || !visualizer_->isConnected()) return;
+    if (!visualizer_ || !visualizer_->isConnected())
+        return;
 
     for (const auto& transform : msg->transforms) {
         core::types::Pose pose;
-        pose.position = Eigen::Vector3d(
-            transform.transform.translation.x,
-            transform.transform.translation.y,
-            transform.transform.translation.z
-        );
-        pose.orientation = Eigen::Quaterniond(
-            transform.transform.rotation.w,
-            transform.transform.rotation.x,
-            transform.transform.rotation.y,
-            transform.transform.rotation.z
-        );
+        pose.position =
+            Eigen::Vector3d(transform.transform.translation.x, transform.transform.translation.y,
+                            transform.transform.translation.z);
+        pose.orientation =
+            Eigen::Quaterniond(transform.transform.rotation.w, transform.transform.rotation.x,
+                               transform.transform.rotation.y, transform.transform.rotation.z);
 
         // Create entity path based on frame ids
         std::string entity_path = transform.header.frame_id + "/" + transform.child_frame_id;
-        static_transforms_.push_back(std::make_pair(std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
+        static_transforms_.push_back(std::make_pair(
+            std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
         visualizer_->addPose(pose, entity_path, rclcpp::Time(transform.header.stamp).seconds());
     }
 }
 
 void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
-    if (!visualizer_ || !visualizer_->isConnected()) return;
+    if (!visualizer_ || !visualizer_->isConnected())
+        return;
 
     for (const auto& transform : msg->transforms) {
         core::types::Pose pose;
-        pose.position = Eigen::Vector3d(
-            transform.transform.translation.x,
-            transform.transform.translation.y,
-            transform.transform.translation.z
-        );
-        pose.orientation = Eigen::Quaterniond(
-            transform.transform.rotation.w,
-            transform.transform.rotation.x,
-            transform.transform.rotation.y,
-            transform.transform.rotation.z
-        );
+        pose.position =
+            Eigen::Vector3d(transform.transform.translation.x, transform.transform.translation.y,
+                            transform.transform.translation.z);
+        pose.orientation =
+            Eigen::Quaterniond(transform.transform.rotation.w, transform.transform.rotation.x,
+                               transform.transform.rotation.y, transform.transform.rotation.z);
 
         // Create entity path based on frame ids
         std::string entity_path = transform.header.frame_id + "/" + transform.child_frame_id;
-        transforms_.push_back(std::make_pair(std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
+        transforms_.push_back(std::make_pair(
+            std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
         // visualizer_->addPose(pose, entity_path, rclcpp::Time(msg->header.stamp).seconds());
     }
 }
@@ -131,13 +125,16 @@ void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry
         core::types::Pose current_pose = conversions::toPose(*msg);
         std::string entity_path = msg->child_frame_id;
         // visualizer_->setTimestamp(rclcpp::Time(msg->header.stamp).seconds());
-        // visualizer_->addPose(current_pose, entity_path, rclcpp::Time(msg->header.stamp).seconds());
+        // visualizer_->addPose(current_pose, entity_path,
+        // rclcpp::Time(msg->header.stamp).seconds());
 
         // for (const auto& transform : static_transforms_) {
-        //     visualizer_->addPose(transform.second, transform.first.first + "/" + transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
+        //     visualizer_->addPose(transform.second, transform.first.first + "/" +
+        //     transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
         // }
         // for (const auto& transform : transforms_) {
-        //     visualizer_->addPose(transform.second, transform.first.first + "/" + transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
+        //     visualizer_->addPose(transform.second, transform.first.first + "/" +
+        //     transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
         // }
         // visualizer_->update();
     }
@@ -214,7 +211,6 @@ void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry
 }
 
 bool RosbagReader::processBag() {
-
     while (reader_->has_next()) {
         auto bag_msg = reader_->read_next();
 

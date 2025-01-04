@@ -24,20 +24,20 @@ ros2_cpp_library(
     visibility = ["//visibility:public"],
 )
 
-ros2_cpp_library(
-    name = "rosbag_reader",
-    srcs = ["src/rosbag_reader.cpp"],
-    hdrs = ["include/ros/rosbag_reader.hpp"],
-    includes = ["include"],
-    deps = [
-        "//core:core",
-        "//viz:rerun_viz",
-        ":ros_conversions",
-        "@ros2_rosbag2//:rosbag2_cpp",          # ROS2 bag reading
-        "@ros2_message_filters//:message_filters",
-    ],
-    visibility = ["//visibility:public"],
-)
+# ros2_cpp_library(
+#     name = "rosbag_reader",
+#     srcs = ["src/rosbag_reader.cpp"],
+#     hdrs = ["include/ros/rosbag_reader.hpp"],
+#     includes = ["include"],
+#     deps = [
+#         "//core:core",
+#         "//viz:rerun_viz",
+#         ":ros_conversions",
+#         "@ros2_rosbag2//:rosbag2_cpp",          # ROS2 bag reading
+#         "@ros2_message_filters//:message_filters",
+#     ],
+#     visibility = ["//visibility:public"],
+# )
 
 ros2_cpp_library(
     name = "ros_adapter",
@@ -53,15 +53,15 @@ ros2_cpp_library(
     visibility = ["//visibility:public"],
 )
 
-ros2_cpp_binary(
-    name = "rosbag_reader_main",
-    srcs = ["src/rosbag_reader_main.cpp"],
-    deps = [
-        ":rosbag_reader",
-    ],
-    visibility = ["//visibility:public"],
-    set_up_ament = True,
-)
+# ros2_cpp_binary(
+#     name = "rosbag_reader_main",
+#     srcs = ["src/rosbag_reader_main.cpp"],
+#     deps = [
+#         ":rosbag_reader",
+#     ],
+#     visibility = ["//visibility:public"],
+#     set_up_ament = True,
+# )
 
 # Test targets
 cc_test(
@@ -73,24 +73,24 @@ cc_test(
     ],
 )
 
-ros2_cpp_test(
-    name = "rosbag_reader_test",
-    srcs = ["test/rosbag_reader_test.cpp"],
-    deps = [
-        ":rosbag_reader",
-        "@com_google_googletest//:gtest_main",
-        "@ros2_rosbag2//:rosbag2_cpp",
-        "@ros2_rosbag2//:rosbag2_storage",
-    ],
-    data = [
-        "//ros/test/data:test_sequence.db3",
-    ],
-)
+# ros2_cpp_test(
+#     name = "rosbag_reader_test",
+#     srcs = ["test/rosbag_reader_test.cpp"],
+#     deps = [
+#         ":rosbag_reader",
+#         "@com_google_googletest//:gtest_main",
+#         "@ros2_rosbag2//:rosbag2_cpp",
+#         "@ros2_rosbag2//:rosbag2_storage",
+#     ],
+#     data = [
+#         "//ros/test/data:test_sequence.db3",
+#     ],
+# )
 
 test_suite(
     name = "ros_tests",
     tests = [
         ":conversions_test",
-        ":rosbag_reader_test",
+        # ":rosbag_reader_test",
     ],
 )

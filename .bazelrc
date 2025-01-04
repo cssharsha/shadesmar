@@ -54,3 +54,6 @@ build --noenable_bzlmod
 
 build --features=-header_modules
 build --features=use_header_modules
+
+# Define the custom flag with a default value of false
+build --define=enable_debug_logs=false

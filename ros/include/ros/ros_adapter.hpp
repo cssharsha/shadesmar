@@ -1,16 +1,17 @@
 #pragma once
 
-#include <rclcpp/rclcpp.hpp>
-#include <nav_msgs/msg/odometry.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/camera_info.hpp>
-#include <tf2_msgs/msg/tf_message.hpp>
-#include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <nav_msgs/msg/odometry.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 #include "core/graph/factor_graph.hpp"
+#include "core/graph/graph_adapter.hpp"
 #include "core/storage/map_store.hpp"
-#include "viz/rerun_viz.hpp"
 #include "stf/transform_tree.hpp"
+#include "viz/rerun_viz.hpp"
 
 namespace ros {
 
@@ -28,10 +29,9 @@ struct Config {
 
 class RosAdapter : public rclcpp::Node {
 public:
-    RosAdapter(const Config& config,
-              core::graph::FactorGraph& graph,
-              core::storage::MapStore& store,
-              std::shared_ptr<viz::RerunVisualizer> visualizer = nullptr);
+    RosAdapter(const Config& config, core::graph::FactorGraph& graph,
+               core::storage::MapStore& store,
+               std::shared_ptr<viz::RerunVisualizer> visualizer = nullptr);
 
     bool initialize();
 
@@ -50,12 +50,6 @@ private:
     bool shouldCreateKeyframe(const nav_msgs::msg::Odometry& current_odom);
     void optimizeAndStore();
 
-
-    template <typename T>
-    std::shared_ptr<T> findClosestMessage(std::deque<std::shared_ptr<T>>& messages,
-                                         const rclcpp::Time& target_time,
-                                         double max_time_diff);
-
     // Subscribers
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
@@ -63,8 +57,8 @@ private:
     rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_sub_;
     rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_static_sub_;
 
-    std::string odom_frame_id_;      // Frame ID where odometry is published
-    std::string camera_frame_id_;    // Frame ID where camera/image is published
+    std::string odom_frame_id_;    // Frame ID where odometry is published
+    std::string camera_frame_id_;  // Frame ID where camera/image is published
     bool frames_initialized_ = false;
 
     // Message queues
@@ -73,8 +67,7 @@ private:
 
     // Configuration and state
     Config config_;
-    core::graph::FactorGraph& graph_;
-    core::storage::MapStore& store_;
+    core::graph::GraphAdapter graph_adapter_;
     std::shared_ptr<viz::RerunVisualizer> visualizer_;
 
     core::types::Pose last_keyframe_pose_;

@@ -24,8 +24,7 @@ inline void dumpFactorGraph(const FactorGraph& graph, const std::string& filenam
     auto keyframes = graph.getAllKeyFrames();
     file << "POINTS " << keyframes.size() << " float\n";
     for (const auto& kf : keyframes) {
-        file << kf->pose.position.x() << " "
-             << kf->pose.position.y() << " "
+        file << kf->pose.position.x() << " " << kf->pose.position.y() << " "
              << kf->pose.position.z() << "\n";
     }
 
@@ -52,8 +51,7 @@ inline void dumpFactorGraph(const FactorGraph& graph, const std::string& filenam
         if (factor.type == proto::FactorType::ODOMETRY ||
             factor.type == proto::FactorType::LOOP_CLOSURE) {
             // Each line starts with number of points (2) followed by the point indices
-            file << "2 "
-                 << id_to_index[factor.connected_nodes[0]] << " "
+            file << "2 " << id_to_index[factor.connected_nodes[0]] << " "
                  << id_to_index[factor.connected_nodes[1]] << "\n";
         }
     }

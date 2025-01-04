@@ -10,8 +10,11 @@ cc_library(
     includes = ["include"],
     deps = [
         "//core/types",
+        "//core/storage",
         "@gtsam",
         "@gtsam//:gtsam_unstable",
+        "//common:logging",
+        "//utils:message_synchronizer",
     ],
     visibility = ["//visibility:public"],
 )

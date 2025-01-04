@@ -23,7 +23,8 @@ core::types::Image toImage(const sensor_msgs::msg::Image& image_msg);
 sensor_msgs::msg::Image toImageMsg(const cv::Mat& image);
 
 // Camera info conversions
-core::proto::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_info_msg);
+core::types::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_info_msg);
+core::proto::CameraInfo toCameraInfoProto(const sensor_msgs::msg::CameraInfo& camera_info_msg);
 sensor_msgs::msg::CameraInfo toCameraInfoMsg(const core::proto::CameraInfo& camera_info);
 
 // Point cloud conversions from depth image

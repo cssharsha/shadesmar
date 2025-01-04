@@ -4,17 +4,16 @@
 
 namespace stf {
 
-void TransformTree::setTransform(const std::string& parent_frame,
-                               const std::string& child_frame,
-                               const Transform& transform) {
+void TransformTree::setTransform(const std::string& parent_frame, const std::string& child_frame,
+                                 const Transform& transform) {
     if (parent_frame == child_frame) {
         throw std::runtime_error("Cannot create transform from frame to itself: " + parent_frame);
     }
 
     // Check for cycles before modifying the graph
     if (wouldCreateCycle(parent_frame, child_frame)) {
-        throw std::runtime_error("Adding transform from " + parent_frame +
-                               " to " + child_frame + " would create a cycle");
+        throw std::runtime_error("Adding transform from " + parent_frame + " to " + child_frame +
+                                 " would create a cycle");
     }
 
     // Create nodes if they don't exist
@@ -32,10 +31,9 @@ void TransformTree::setTransform(const std::string& parent_frame,
 }
 
 bool TransformTree::wouldCreateCycle(const std::string& parent_frame,
-                                   const std::string& child_frame) const {
+                                     const std::string& child_frame) const {
     // If either frame doesn't exist yet, no cycle is possible
-    if (nodes_.find(parent_frame) == nodes_.end() ||
-        nodes_.find(child_frame) == nodes_.end()) {
+    if (nodes_.find(parent_frame) == nodes_.end() || nodes_.find(child_frame) == nodes_.end()) {
         return false;
     }
 
@@ -50,9 +48,8 @@ bool TransformTree::wouldCreateCycle(const std::string& parent_frame,
     return hasPath(child_frame, parent_frame, visited);
 }
 
-bool TransformTree::hasPath(const std::string& current,
-                          const std::string& target,
-                          std::unordered_set<std::string>& visited) const {
+bool TransformTree::hasPath(const std::string& current, const std::string& target,
+                            std::unordered_set<std::string>& visited) const {
     if (current == target) {
         return true;
     }
@@ -82,7 +79,7 @@ bool TransformTree::hasPath(const std::string& current,
 }
 
 TransformTree::TransformResult TransformTree::getTransform(const std::string& parent_frame,
-                                    const std::string& child_frame) const {
+                                                           const std::string& child_frame) const {
     std::string path = parent_frame;
 
     // Handle identity case first
@@ -93,23 +90,23 @@ TransformTree::TransformResult TransformTree::getTransform(const std::string& pa
     // Find path between frames
     std::vector<std::shared_ptr<Edge>> edge_path;
     if (!findPath(parent_frame, child_frame, edge_path)) {
-        throw std::runtime_error("No transform path exists between '" +
-                               parent_frame + "' and '" + child_frame + "'");
+        throw std::runtime_error("No transform path exists between '" + parent_frame + "' and '" +
+                                 child_frame + "'");
     }
 
     // Build the path string
     for (const auto& edge : edge_path) {
-        path += "/" + (edge->parent == path.substr(path.find_last_of('/') + 1)
-            ? edge->child : edge->parent);
+        path += "/" + (edge->parent == path.substr(path.find_last_of('/') + 1) ? edge->child
+                                                                               : edge->parent);
     }
 
     return {computeTransform(edge_path), path};
 }
 
-bool TransformTree::findPath(const std::string& start,
-                           const std::string& end,
-                           std::vector<std::shared_ptr<Edge>>& path) const {
-    if (start == end) return true;
+bool TransformTree::findPath(const std::string& start, const std::string& end,
+                             std::vector<std::shared_ptr<Edge>>& path) const {
+    if (start == end)
+        return true;
 
     std::unordered_set<std::string> visited;
     std::vector<std::shared_ptr<Edge>> current_path;
@@ -117,22 +114,24 @@ bool TransformTree::findPath(const std::string& start,
     return findPathDFS(start, end, visited, current_path, path);
 }
 
-bool TransformTree::findPathDFS(const std::string& current,
-                              const std::string& target,
-                              std::unordered_set<std::string>& visited,
-                              std::vector<std::shared_ptr<Edge>>& current_path,
-                              std::vector<std::shared_ptr<Edge>>& final_path) const {
+bool TransformTree::findPathDFS(const std::string& current, const std::string& target,
+                                std::unordered_set<std::string>& visited,
+                                std::vector<std::shared_ptr<Edge>>& current_path,
+                                std::vector<std::shared_ptr<Edge>>& final_path) const {
     visited.insert(current);
 
     auto it = nodes_.find(current);
-    if (it == nodes_.end()) return false;
+    if (it == nodes_.end())
+        return false;
 
     // Check both children and parents for connections
     for (const auto& [_, edge] : it->second->children) {
-        if (visited.find(edge->child) != visited.end()) continue;
+        if (visited.find(edge->child) != visited.end())
+            continue;
 
         current_path.push_back(edge);
-        if (edge->child == target || findPathDFS(edge->child, target, visited, current_path, final_path)) {
+        if (edge->child == target ||
+            findPathDFS(edge->child, target, visited, current_path, final_path)) {
             final_path = current_path;
             return true;
         }
@@ -140,12 +139,15 @@ bool TransformTree::findPathDFS(const std::string& current,
     }
 
     for (const auto& [_, edge] : it->second->parents) {
-        if (visited.find(edge->parent) != visited.end()) continue;
+        if (visited.find(edge->parent) != visited.end())
+            continue;
 
         // Create a reversed edge for the path
-        auto reversed_edge = std::make_shared<Edge>(edge->child, edge->parent, edge->transform.inverse());
+        auto reversed_edge =
+            std::make_shared<Edge>(edge->child, edge->parent, edge->transform.inverse());
         current_path.push_back(reversed_edge);
-        if (edge->parent == target || findPathDFS(edge->parent, target, visited, current_path, final_path)) {
+        if (edge->parent == target ||
+            findPathDFS(edge->parent, target, visited, current_path, final_path)) {
             final_path = current_path;
             return true;
         }
@@ -155,7 +157,8 @@ bool TransformTree::findPathDFS(const std::string& current,
     return false;
 }
 
-TransformTree::Transform TransformTree::computeTransform(const std::vector<std::shared_ptr<Edge>>& path) const {
+TransformTree::Transform TransformTree::computeTransform(
+    const std::vector<std::shared_ptr<Edge>>& path) const {
     Transform result = Transform::Identity();
     for (const auto& edge : path) {
         result = result * edge->transform;
@@ -189,9 +192,8 @@ void TransformTree::printTree() const {
 }
 
 void TransformTree::printTreeRecursive(const std::string& frame_id,
-                                     std::unordered_set<std::string>& visited,
-                                     const std::string& indent,
-                                     bool is_last) const {
+                                       std::unordered_set<std::string>& visited,
+                                       const std::string& indent, bool is_last) const {
     if (visited.find(frame_id) != visited.end()) {
         std::cout << indent << (is_last ? "└── " : "├── ") << frame_id << " (cycle)" << std::endl;
         return;
@@ -204,7 +206,7 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
 
     // Get all connected frames (both children and parents)
     auto node = nodes_.at(frame_id);
-    std::vector<std::pair<std::string, bool>> connections; // frame_id, is_child
+    std::vector<std::pair<std::string, bool>> connections;  // frame_id, is_child
 
     for (const auto& [child_id, _] : node->children) {
         connections.emplace_back(child_id, true);
@@ -218,14 +220,12 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
     // Print all connected frames
     for (size_t i = 0; i < connections.size(); ++i) {
         const auto& [connected_frame, is_child] = connections[i];
-        if (visited.find(connected_frame) != visited.end()) continue;
+        if (visited.find(connected_frame) != visited.end())
+            continue;
 
         std::string new_indent = indent + (is_last ? "    " : "│   ");
-        printTreeRecursive(connected_frame,
-                          visited,
-                          new_indent,
-                          i == connections.size() - 1);
+        printTreeRecursive(connected_frame, visited, new_indent, i == connections.size() - 1);
     }
 }
 
-} // namespace stf
+}  // namespace stf

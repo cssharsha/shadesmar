@@ -4,8 +4,8 @@
 #include "core/types/keyframe.hpp"
 
 #include <Eigen/Core>
-#include <thread>
 #include <chrono>
+#include <thread>
 
 namespace viz {
 
@@ -16,7 +16,8 @@ bool RerunVisualizer::initialize(bool save_to_file) {
     try {
         if (save_to_file) {
             // Save to a recording file instead of TCP
-            std::string recording_path = "/mnt/remote-storage/" + name_ + ".rrd";  // .rrd is the Rerun recording format
+            std::string recording_path =
+                "/mnt/remote-storage/" + name_ + ".rrd";  // .rrd is the Rerun recording format
             auto result = rec_.save(recording_path);
 
             if (!rec_.is_enabled()) {
@@ -55,7 +56,8 @@ void RerunVisualizer::disconnect() {
     }
 }
 
-void RerunVisualizer::addPose(const core::types::Pose& pose, const std::string& entity_path, double timestamp) {
+void RerunVisualizer::addPose(const core::types::Pose& pose, const std::string& entity_path,
+                              double timestamp) {
     if (!is_connected_)
         return;
 
@@ -80,7 +82,8 @@ void RerunVisualizer::addPointCloud(const core::types::PointCloud& cloud,
     rec_.log("point_clouds", points);
 }
 
-void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_path, double timestamp) {
+void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_path,
+                               double timestamp) {
     if (!is_connected_)
         return;
 
@@ -91,9 +94,8 @@ void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_p
     if (image.channels() == 1) {
         rec_.log(entity_path, rerun::Image());
     } else {
-        rec_.log(entity_path,
-                 rerun::Image::from_rgb24(rerun::Collection<uint8_t>(image),
-                                         rerun::WidthHeight(image.cols, image.rows)));
+        rec_.log(entity_path, rerun::Image::from_rgb24(rerun::Collection<uint8_t>(image),
+                                                       rerun::WidthHeight(image.cols, image.rows)));
     }
 }
 
@@ -108,7 +110,8 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
     auto keyframes = graph.getAllKeyFrames();
     for (const auto& kf : keyframes) {
         // Add timestamp to each pose
-        rec_.set_time_sequence("time", static_cast<int64_t>(current_timestamp_ * 1000));  // Convert to milliseconds
+        rec_.set_time_sequence(
+            "time", static_cast<int64_t>(current_timestamp_ * 1000));  // Convert to milliseconds
         addPose(kf->pose, "keyframe_" + std::to_string(kf->id));
         current_timestamp_ += 0.1;
     }
@@ -184,14 +187,11 @@ void RerunVisualizer::setTimestamp(double timestamp) {
 
 rerun::Transform3D RerunVisualizer::toRerunTransform(const core::types::Pose& pose) {
     return rerun::Transform3D::from_translation_rotation(
-        {static_cast<float>(pose.position.x()),
-         static_cast<float>(pose.position.y()),
+        {static_cast<float>(pose.position.x()), static_cast<float>(pose.position.y()),
          static_cast<float>(pose.position.z())},
         rerun::Rotation3D(rerun::datatypes::Quaternion{
-            static_cast<float>(pose.orientation.x()),
-            static_cast<float>(pose.orientation.y()),
-            static_cast<float>(pose.orientation.z()),
-            static_cast<float>(pose.orientation.w())}));
+            static_cast<float>(pose.orientation.x()), static_cast<float>(pose.orientation.y()),
+            static_cast<float>(pose.orientation.z()), static_cast<float>(pose.orientation.w())}));
 }
 
 rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cloud) {
@@ -236,8 +236,7 @@ void RerunVisualizer::visualizeOdometryTrajectory(const std::vector<Eigen::Vecto
 }
 
 void RerunVisualizer::addCamera(const rerun::archetypes::Pinhole& camera,
-                               const std::string& entity_path,
-                               double timestamp) {
+                                const std::string& entity_path, double timestamp) {
     if (!is_connected_)
         return;
 

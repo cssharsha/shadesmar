@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
     config.tf_static_topic = "/tf_static";
     config.color_topic = "/camera/camera/color/image_raw";
     config.camera_info_topic = "/camera/camera/color/camera_info";
-    config.keyframe_distance_threshold = 0.5;
+    config.keyframe_distance_threshold = 0.05;
     config.odom_frame_id = "odom";
     config.base_link_frame_id = "base_link";
     config.camera_frame_id = "camera_color_optical_frame";
