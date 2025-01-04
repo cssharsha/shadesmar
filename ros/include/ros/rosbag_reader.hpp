@@ -62,7 +62,8 @@ private:
     uint64_t current_keyframe_id_{0};
     core::types::Pose last_keyframe_pose_;
 
-    std::vector<std::pair<std::pair<std::string, std::string>, core::types::Pose>> static_transforms_;
+    std::vector<std::pair<std::pair<std::string, std::string>, core::types::Pose>>
+        static_transforms_;
     std::vector<std::pair<std::pair<std::string, std::string>, core::types::Pose>> transforms_;
 };
 

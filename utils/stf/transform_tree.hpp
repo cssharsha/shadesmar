@@ -1,12 +1,12 @@
 #pragma once
 
 #include <Eigen/Geometry>
-#include <string>
-#include <unordered_map>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
-#include <iostream>
 
 namespace stf {
 
@@ -43,9 +43,8 @@ public:
      * @param transform Transform from parent to child
      * @throws std::runtime_error if adding this transform would create a cycle
      */
-    void setTransform(const std::string& parent_frame,
-                     const std::string& child_frame,
-                     const Transform& transform);
+    void setTransform(const std::string& parent_frame, const std::string& child_frame,
+                      const Transform& transform);
 
     /**
      * Gets transform between any two frames in the tree
@@ -55,7 +54,7 @@ public:
      * @throws std::runtime_error if frames are not connected
      */
     TransformResult getTransform(const std::string& parent_frame,
-                               const std::string& child_frame) const;
+                                 const std::string& child_frame) const;
 
     /**
      * Prints a visual representation of the transform tree
@@ -73,9 +72,8 @@ private:
      * @param path Path found
      * @return true if a path is found, false otherwise
      */
-    bool findPath(const std::string& start,
-                 const std::string& end,
-                 std::vector<std::shared_ptr<Edge>>& path) const;
+    bool findPath(const std::string& start, const std::string& end,
+                  std::vector<std::shared_ptr<Edge>>& path) const;
 
     /**
      * Helper function for finding a path between two frames using DFS
@@ -86,11 +84,10 @@ private:
      * @param final_path Final path found
      * @return true if a path is found, false otherwise
      */
-    bool findPathDFS(const std::string& current,
-                 const std::string& target,
-                 std::unordered_set<std::string>& visited,
-                 std::vector<std::shared_ptr<Edge>>& current_path,
-                 std::vector<std::shared_ptr<Edge>>& final_path) const;
+    bool findPathDFS(const std::string& current, const std::string& target,
+                     std::unordered_set<std::string>& visited,
+                     std::vector<std::shared_ptr<Edge>>& current_path,
+                     std::vector<std::shared_ptr<Edge>>& final_path) const;
 
     Transform computeTransform(const std::vector<std::shared_ptr<Edge>>& path) const;
 
@@ -100,8 +97,7 @@ private:
      * @param child_frame Child frame ID
      * @return true if adding the edge would create a cycle
      */
-    bool wouldCreateCycle(const std::string& parent_frame,
-                         const std::string& child_frame) const;
+    bool wouldCreateCycle(const std::string& parent_frame, const std::string& child_frame) const;
 
     /**
      * Helper function for cycle detection using DFS
@@ -110,9 +106,8 @@ private:
      * @param visited Set of visited frames
      * @return true if a path exists from current to target
      */
-    bool hasPath(const std::string& current,
-                const std::string& target,
-                std::unordered_set<std::string>& visited) const;
+    bool hasPath(const std::string& current, const std::string& target,
+                 std::unordered_set<std::string>& visited) const;
 
     /**
      * Helper function for printTree to recursively print the tree structure
@@ -121,10 +116,8 @@ private:
      * @param indent Current indentation level
      * @param is_last Whether this is the last child in current level
      */
-    void printTreeRecursive(const std::string& frame_id,
-                           std::unordered_set<std::string>& visited,
-                           const std::string& indent,
-                           bool is_last) const;
+    void printTreeRecursive(const std::string& frame_id, std::unordered_set<std::string>& visited,
+                            const std::string& indent, bool is_last) const;
 };
 
-} // namespace stf
+}  // namespace stf
