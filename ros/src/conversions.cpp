@@ -104,7 +104,7 @@ sensor_msgs::msg::Image toImageMsg(const cv::Mat& image) {
     return msg;
 }
 
-core::proto::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_info_msg) {
+core::proto::CameraInfo toCameraInfoProto(const sensor_msgs::msg::CameraInfo& camera_info_msg) {
     core::proto::CameraInfo info;
     info.set_width(camera_info_msg.width);
     info.set_height(camera_info_msg.height);
@@ -119,6 +119,21 @@ core::proto::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_
     for (const auto& d : camera_info_msg.d) {
         info.add_d(d);
     }
+
+    return info;
+}
+
+core::types::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_info_msg) {
+    core::types::CameraInfo info;
+    info.width = camera_info_msg.width;
+    info.height = camera_info_msg.height;
+    info.distortion_model = camera_info_msg.distortion_model;
+
+    // Copy intrinsic matrix K (3x3)
+    info.k = std::vector<double>(camera_info_msg.k.begin(), camera_info_msg.k.end());
+
+    // Copy distortion parameters
+    info.d = std::vector<double>(camera_info_msg.d.begin(), camera_info_msg.d.end());
 
     return info;
 }

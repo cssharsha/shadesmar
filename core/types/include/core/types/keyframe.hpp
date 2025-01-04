@@ -64,7 +64,7 @@ public:
     Pose pose;
     std::variant<PointCloud, Image> depth_data;
     std::optional<Image> color_data;
-    std::optional<proto::CameraInfo> camera_info;
+    std::optional<CameraInfo> camera_info;
 
     proto::KeyFrame toProto() const {
         proto::KeyFrame kf_proto;
@@ -82,7 +82,7 @@ public:
         }
 
         if (camera_info) {
-            *kf_proto.mutable_camera_info() = *camera_info;
+            *kf_proto.mutable_camera_info() = camera_info->toProto();
         }
 
         return kf_proto;
@@ -104,7 +104,7 @@ public:
         }
 
         if (kf_proto.has_camera_info()) {
-            kf->camera_info = kf_proto.camera_info();
+            kf->camera_info = CameraInfo::fromProto(kf_proto.camera_info());
         }
 
         return kf;

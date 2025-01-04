@@ -7,11 +7,43 @@
 #include <Eigen/Geometry>
 
 #include <string>
+#include <vector>
 
 namespace core {
 namespace types {
 
-class Image {
+struct CameraInfo {
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    std::vector<double> k;  // 3x3 camera matrix
+    std::vector<double> d;  // distortion coefficients
+    uint32_t width;
+    uint32_t height;
+    std::string distortion_model;
+
+    proto::CameraInfo toProto() const {
+        proto::CameraInfo proto_info;
+        *proto_info.mutable_k() = {k.begin(), k.end()};
+        *proto_info.mutable_d() = {d.begin(), d.end()};
+        proto_info.set_width(width);
+        proto_info.set_height(height);
+        proto_info.set_distortion_model(distortion_model);
+        return proto_info;
+    }
+
+    static CameraInfo fromProto(const proto::CameraInfo& proto_info) {
+        CameraInfo info;
+        info.k = {proto_info.k().begin(), proto_info.k().end()};
+        info.d = {proto_info.d().begin(), proto_info.d().end()};
+        info.width = proto_info.width();
+        info.height = proto_info.height();
+        info.distortion_model = proto_info.distortion_model();
+        return info;
+    }
+};
+
+struct Image {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
