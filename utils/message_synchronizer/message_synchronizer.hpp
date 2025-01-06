@@ -14,24 +14,12 @@ namespace utils {
 template <typename... Messages>
 class MessageSynchronizer {
 public:
-    using FullCallbackFunction = std::function<void(const core::types::Pose&, const Messages&...)>;
-    using PoseCallbackFunction = std::function<void(const core::types::Pose&)>;
+    using KeyframeCallback =
+        std::function<void(const core::types::Pose&, const std::optional<Messages>&...)>;
 
-    MessageSynchronizer(FullCallbackFunction full_callback, PoseCallbackFunction pose_callback,
-                        double distance_threshold = 0.5, double time_threshold = 1.0)
-        : full_callback_(std::move(full_callback)),
-          pose_callback_(std::move(pose_callback)),
-          distance_threshold_(distance_threshold),
-          time_threshold_(time_threshold) {
-        // LOG(DEBUG) << "MessageSynchronizer created with distance_threshold=" <<
-        // distance_threshold
-        //            << ", time_threshold=" << time_threshold;
-    }
-
-    // Constructor for pose-only callback
-    explicit MessageSynchronizer(PoseCallbackFunction pose_callback,
-                                 double distance_threshold = 0.5, double time_threshold = 1.0)
-        : pose_callback_(std::move(pose_callback)),
+    MessageSynchronizer(KeyframeCallback callback, double distance_threshold = 0.5,
+                        double time_threshold = 1.0)
+        : keyframe_callback_(std::move(callback)),
           distance_threshold_(distance_threshold),
           time_threshold_(time_threshold) {}
 
@@ -64,9 +52,9 @@ public:
                         // LOG(DEBUG) << "Queued pose callback successful";
                         last_callback_pose_ = pose_queue_.front().second;
                         last_callback_timestamp_ = pose_queue_.front().first;
-                    } else if (pose_callback_) {
+                    } else if (keyframe_callback_) {
                         // LOG(DEBUG) << "Falling back to pose-only callback";
-                        pose_callback_(pose_queue_.front().second);
+                        keyframe_callback_(pose_queue_.front().second, std::nullopt, std::nullopt);
                         last_callback_pose_ = pose_queue_.front().second;
                         last_callback_timestamp_ = pose_queue_.front().first;
                     }
@@ -104,6 +92,7 @@ public:
         LOG(INFO) << "Cleaning up messages older than " << timestamp;
 
         int pose_count_before = pose_queue_.size();
+        LOG(INFO) << "Pose queue size before cleanup: " << pose_count_before;
         cleanupDeque(pose_queue_, timestamp);
         LOG(INFO) << "Removed " << (pose_count_before - pose_queue_.size()) << " pose messages";
 
@@ -121,8 +110,7 @@ public:
 private:
     std::deque<std::pair<double, core::types::Pose>> pose_queue_;
     std::tuple<std::deque<std::pair<double, Messages>>...> message_queues_;
-    FullCallbackFunction full_callback_;
-    PoseCallbackFunction pose_callback_;
+    KeyframeCallback keyframe_callback_;
     std::optional<core::types::Pose> last_callback_pose_;
     double distance_threshold_;
     std::optional<double> last_callback_timestamp_;
@@ -170,19 +158,22 @@ private:
 
     // Try to call callback with given pose and timestamp
     bool tryCallback(const core::types::Pose& pose, double timestamp) {
-        // LOG(DEBUG) << "Attempting callback at timestamp " << timestamp;
-
-        if (tryGetMessages(timestamp) && full_callback_) {
-            // LOG(DEBUG) << "All messages available, executing full callback";
-            std::apply(
-                [this, &pose](const auto&... queues) {
-                    full_callback_(pose, queues.back().second...);
-                },
-                message_queues_);
+        if (keyframe_callback_) {
+            if (tryGetMessages(timestamp)) {
+                // If we have synchronized messages, pass them as optionals
+                std::apply(
+                    [this, &pose](const auto&... queues) {
+                        keyframe_callback_(pose, std::optional<Messages>()...);
+                    },
+                    message_queues_);
+            } else {
+                // If we don't have synchronized messages, pass nullopt
+                keyframe_callback_(pose, std::nullopt, std::nullopt);
+            }
             last_callback_timestamp_ = timestamp;
+            cleanup(timestamp);
             return true;
         }
-        // LOG(DEBUG) << "Unable to execute callback, missing synchronized messages";
         return false;
     }
 
