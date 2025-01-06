@@ -15,63 +15,13 @@ struct GraphCallbacks {
 
 class GraphAdapter {
 public:
-    GraphAdapter(FactorGraph& graph, storage::MapStore& store)
-        : graph_(graph),
-          store_(store),
-          synchronizer_(
-              [this](const types::Pose& pose, const types::Image& image,
-                     const types::CameraInfo& camera_info) {
-                  createKeyframe(pose, image, camera_info);
-              },
-              [this](const types::Pose& pose) { createKeyframe(pose); }, 0.05, 1.0) {}
-
-    // Modify input handlers to use synchronizer
-    void handleOdometryInput(const types::Pose& pose, double timestamp) {
-        synchronizer_.addPoseMessage(pose, timestamp);
-    }
-
-    void handleImageInput(const types::Image& image, double timestamp) {
-        synchronizer_.addMessage(image, timestamp);
-    }
-
-    void handleCameraInfo(const types::CameraInfo& camera_info, double timestamp) {
-        synchronizer_.addMessage(camera_info, timestamp);
-    }
-
+    GraphAdapter(FactorGraph& graph, storage::MapStore& store);
+    void handleOdometryInput(const types::Pose& pose, double timestamp);
+    void handleImageInput(const types::Image& image, double timestamp);
+    void handleCameraInfo(const types::CameraInfo& camera_info, double timestamp);
     void handleLoopClosure(uint64_t from_id, uint64_t to_id, const types::Pose& relative_pose);
-
-    void setKeyframeDistanceThreshold(double threshold) {
-        keyframe_distance_threshold_ = threshold;
-        synchronizer_.setDistanceThreshold(threshold);
-    }
-
-    void setCallbacks(const GraphCallbacks& callbacks) {
-        callbacks_ = callbacks;
-    }
-
-    void createKeyframe(const types::Pose& pose) {
-        LOG(INFO) << "Creating keyframe with pose: " << pose.position.transpose();
-        auto keyframe = std::make_shared<types::KeyFrame>();
-        keyframe->id = ++current_keyframe_id_;
-        keyframe->pose = pose;
-
-        addKeyframeToGraph(keyframe);
-    }
-
-    void createKeyframe(const types::Pose& pose, const types::Image& image,
-                        const types::CameraInfo& camera_info) {
-        // LOG(INFO) << "Creating keyframe with pose: " << pose.position.transpose();
-        auto keyframe = std::make_shared<types::KeyFrame>();
-        keyframe->id = ++current_keyframe_id_;
-        keyframe->pose = pose;
-
-        if (!image.data.empty()) {
-            keyframe->color_data = image;
-            keyframe->camera_info = camera_info;
-        }
-
-        addKeyframeToGraph(keyframe);
-    }
+    void setKeyframeDistanceThreshold(double threshold);
+    void setCallbacks(const GraphCallbacks& callbacks);
 
 private:
     FactorGraph& graph_;
@@ -85,23 +35,12 @@ private:
     void addOdometryFactor(uint64_t from_id, uint64_t to_id, const types::Pose& relative_pose);
     GraphCallbacks callbacks_;
 
-    void addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& keyframe) {
-        graph_.addKeyFrame(keyframe);
-        store_.addKeyFrame(keyframe);
-
-        if (current_keyframe_id_ > 1) {
-            addOdometryFactor(current_keyframe_id_ - 1, current_keyframe_id_,
-                              last_keyframe_pose_.inverse() * keyframe->pose);
-        }
-
-        last_keyframe_pose_ = keyframe->pose;
-
-        if (callbacks_.on_graph_updated) {
-            callbacks_.on_graph_updated();
-        }
-    }
-
+    void createKeyframe(const types::Pose& pose,
+                        const std::optional<types::Image>& image = std::nullopt,
+                        const std::optional<types::CameraInfo>& camera_info = std::nullopt);
+    void addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& keyframe);
     void maybeDumpGraph();
+    double calculateDistance(const types::Pose& relative_pose);
 
     double cumulative_distance_;
     double next_dump_distance_;
