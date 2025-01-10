@@ -25,6 +25,9 @@ int main(int argc, char** argv) {
     config.odom_frame_id = "odom";
     config.base_link_frame_id = "base_link";
     config.camera_frame_id = "camera_color_optical_frame";
+    config.depth_topic = "/camera/camera/depth/image_rect_raw";
+    config.depth_camera_info_topic = "/camera/camera/depth/camera_info";
+    config.point_cloud_topic = "/camera/pointcloud";
 
     std::cout << "Creating ROS adapter..." << std::endl;
     auto adapter = std::make_shared<ros::RosAdapter>(config, graph, store, visualizer);

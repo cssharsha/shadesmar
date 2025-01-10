@@ -12,16 +12,43 @@ namespace ros {
 RosbagReader::RosbagReader(const std::string& bagfile, core::graph::FactorGraph& graph,
                            core::storage::MapStore& store, const Config& config,
                            std::shared_ptr<viz::RerunVisualizer> visualizer)
-    : bagfile_(bagfile), config_(config), graph_(graph), store_(store), visualizer_(visualizer) {}
+    : bagfile_(bagfile),
+      config_(config),
+      graph_(graph),
+      store_(store),
+      visualizer_(visualizer),
+      graph_adapter_(graph, store) {
+    graph_adapter_.setKeyframeDistanceThreshold(config.keyframe_distance_threshold);
+
+    // Set up graph update callback
+    core::graph::GraphCallbacks callbacks;
+    callbacks.on_graph_updated = [this, &graph]() {
+        if (visualizer_ && visualizer_->isConnected()) {
+            visualizer_->visualizeFactorGraph(graph);
+        }
+    };
+    graph_adapter_.setCallbacks(callbacks);
+}
 
 bool RosbagReader::initialize() {
     if (!std::filesystem::exists(bagfile_)) {
+        std::cerr << "Bag file does not exist: " << bagfile_ << std::endl;
         return false;
     }
 
     try {
+        // Create storage options
+        rosbag2_storage::StorageOptions storage_options;
+        storage_options.uri = bagfile_;
+        storage_options.storage_id = "sqlite3";  // Specify the storage format
+
+        // Create converter options
+        rosbag2_cpp::ConverterOptions converter_options;
+        converter_options.input_serialization_format = "cdr";
+        converter_options.output_serialization_format = "cdr";
+
         reader_ = std::make_unique<rosbag2_cpp::Reader>();
-        reader_->open(bagfile_);
+        reader_->open(storage_options, converter_options);
 
         // Print bag statistics
         const auto metadata = reader_->get_metadata();
@@ -35,6 +62,14 @@ bool RosbagReader::initialize() {
         }
         std::cout << std::endl;
 
+        pose_file_.open("/mnt/remote-storage/odometry_poses.csv");
+        if (pose_file_.is_open()) {
+            pose_file_ << "timestamp,x,y,z,qw,qx,qy,qz\n";  // CSV header
+        } else {
+            std::cerr << "Failed to open pose output file" << std::endl;
+            return false;
+        }
+
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to open rosbag: " << e.what() << std::endl;
@@ -42,223 +77,314 @@ bool RosbagReader::initialize() {
     }
 }
 
-bool RosbagReader::shouldCreateKeyframe(const nav_msgs::msg::Odometry& current_odom) {
-    if (current_keyframe_id_ == 0)
-        return true;
-
-    // Calculate distance from last keyframe
-    double dx = current_odom.pose.pose.position.x - last_keyframe_pose_.position.x();
-    double dy = current_odom.pose.pose.position.y - last_keyframe_pose_.position.y();
-    double dz = current_odom.pose.pose.position.z - last_keyframe_pose_.position.z();
-
-    double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-    return distance >= config_.keyframe_distance_threshold;
-}
-
-template <typename T>
-std::shared_ptr<T> RosbagReader::findClosestMessage(std::deque<std::shared_ptr<T>>& messages,
-                                                    const rclcpp::Time& target_time,
-                                                    double max_time_diff) {
-    while (!messages.empty()) {
-        auto& msg = messages.front();
-        double time_diff = std::abs((rclcpp::Time(msg->header.stamp) - target_time).seconds());
-
-        if (time_diff <= max_time_diff) {
-            auto result = msg;
-            messages.pop_front();
-            return result;
-        } else if (rclcpp::Time(msg->header.stamp) < target_time) {
-            messages.pop_front();
-        } else {
-            break;
-        }
-    }
-    return nullptr;
-}
-
-void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
-    if (!visualizer_ || !visualizer_->isConnected())
-        return;
-
-    for (const auto& transform : msg->transforms) {
-        core::types::Pose pose;
-        pose.position =
-            Eigen::Vector3d(transform.transform.translation.x, transform.transform.translation.y,
-                            transform.transform.translation.z);
-        pose.orientation =
-            Eigen::Quaterniond(transform.transform.rotation.w, transform.transform.rotation.x,
-                               transform.transform.rotation.y, transform.transform.rotation.z);
-
-        // Create entity path based on frame ids
-        std::string entity_path = transform.header.frame_id + "/" + transform.child_frame_id;
-        static_transforms_.push_back(std::make_pair(
-            std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
-        visualizer_->addPose(pose, entity_path, rclcpp::Time(transform.header.stamp).seconds());
-    }
-}
-
-void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
-    if (!visualizer_ || !visualizer_->isConnected())
-        return;
-
-    for (const auto& transform : msg->transforms) {
-        core::types::Pose pose;
-        pose.position =
-            Eigen::Vector3d(transform.transform.translation.x, transform.transform.translation.y,
-                            transform.transform.translation.z);
-        pose.orientation =
-            Eigen::Quaterniond(transform.transform.rotation.w, transform.transform.rotation.x,
-                               transform.transform.rotation.y, transform.transform.rotation.z);
-
-        // Create entity path based on frame ids
-        std::string entity_path = transform.header.frame_id + "/" + transform.child_frame_id;
-        transforms_.push_back(std::make_pair(
-            std::make_pair(transform.header.frame_id, transform.child_frame_id), pose));
-        // visualizer_->addPose(pose, entity_path, rclcpp::Time(msg->header.stamp).seconds());
-    }
-}
-
-void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg) {
-    // Visualize odometry message immediately if visualizer is available
-    if (visualizer_ && visualizer_->isConnected()) {
-        std::cout << "Sending odometry message to visualizer" << std::endl;
-        core::types::Pose current_pose = conversions::toPose(*msg);
-        std::string entity_path = msg->child_frame_id;
-        // visualizer_->setTimestamp(rclcpp::Time(msg->header.stamp).seconds());
-        // visualizer_->addPose(current_pose, entity_path,
-        // rclcpp::Time(msg->header.stamp).seconds());
-
-        // for (const auto& transform : static_transforms_) {
-        //     visualizer_->addPose(transform.second, transform.first.first + "/" +
-        //     transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
-        // }
-        // for (const auto& transform : transforms_) {
-        //     visualizer_->addPose(transform.second, transform.first.first + "/" +
-        //     transform.first.second, rclcpp::Time(msg->header.stamp).seconds());
-        // }
-        // visualizer_->update();
-    }
-
-    if (!shouldCreateKeyframe(*msg)) {
-        return;
-    }
-
-    // Create a new keyframe
-    auto keyframe = std::make_shared<core::types::KeyFrame>();
-    keyframe->id = ++current_keyframe_id_;
-    keyframe->pose = conversions::toPose(*msg);
-
-    // Find closest color image and camera info
-    auto msg_time = rclcpp::Time(msg->header.stamp);
-    auto color_msg = findClosestMessage(color_messages_, msg_time, 0.1);
-    auto camera_info_msg = findClosestMessage(camera_info_messages_, msg_time, 0.1);
-
-    if (color_msg && camera_info_msg) {
-        keyframe->color_data = conversions::toImage(*color_msg);
-        keyframe->camera_info = conversions::toCameraInfo(*camera_info_msg);
-    }
-
-    // Create odometry factor between consecutive keyframes
-    if (current_keyframe_id_ > 1) {
-        core::types::Factor odom_factor;
-        odom_factor.id = current_keyframe_id_;
-        odom_factor.type = core::proto::FactorType::ODOMETRY;
-        odom_factor.connected_nodes = {current_keyframe_id_ - 1, current_keyframe_id_};
-
-        // Calculate relative pose between consecutive keyframes
-        core::types::Pose relative_pose;
-        relative_pose.position = keyframe->pose.position - last_keyframe_pose_.position;
-        relative_pose.orientation =
-            keyframe->pose.orientation * last_keyframe_pose_.orientation.inverse();
-
-        odom_factor.measurement.emplace<0>(relative_pose);
-        odom_factor.information = Eigen::Matrix<double, 6, 6>::Identity();
-
-        graph_.addFactor(odom_factor);
-        store_.addFactor(odom_factor);
-    } else if (current_keyframe_id_ == 1) {
-        // Add prior factor for first keyframe
-        core::types::Factor prior;
-        prior.id = 0;
-        prior.type = core::proto::FactorType::PRIOR;
-        prior.connected_nodes = {1};
-        prior.measurement.emplace<0>(keyframe->pose);
-        prior.information = Eigen::Matrix<double, 6, 6>::Identity();
-
-        graph_.addFactor(prior);
-        store_.addFactor(prior);
-    }
-
-    // Store keyframe and update tracking
-    graph_.addKeyFrame(keyframe);
-    store_.addKeyFrame(keyframe);
-    last_keyframe_pose_ = keyframe->pose;
-
-    if (current_keyframe_id_ % 10 == 0) {
-        optimizeAndStore();
-    }
-
-    // Visualize keyframe data when created
-    // if (visualizer_ && visualizer_->isConnected()) {
-    //     if (color_msg) {
-    //         std::string image_path = "images/" + color_msg->header.frame_id;
-    //         visualizer_->addImage(keyframe->color_data->toCvMat(),
-    //                             image_path,
-    //                             rclcpp::Time(color_msg->header.stamp).seconds());
-    //     }
-    //     visualizer_->update();
-    // }
-}
-
 bool RosbagReader::processBag() {
     while (reader_->has_next()) {
         auto bag_msg = reader_->read_next();
 
-        // Update visualization timestamp based on message timestamp
         if (bag_msg->topic_name == config_.tf_static_topic) {
-            auto tf_msg = std::make_shared<tf2_msgs::msg::TFMessage>();
-            rclcpp::Serialization<tf2_msgs::msg::TFMessage> serialization;
-            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
-            serialization.deserialize_message(&serialized_msg, tf_msg.get());
-            processStaticTransform(tf_msg);
+            auto msg = std::make_shared<tf2_msgs::msg::TFMessage>();
+            deserializeMessage(*bag_msg, msg);
+            processStaticTransform(msg);
         } else if (bag_msg->topic_name == config_.tf_topic) {
-            auto tf_msg = std::make_shared<tf2_msgs::msg::TFMessage>();
-            rclcpp::Serialization<tf2_msgs::msg::TFMessage> serialization;
-            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
-            serialization.deserialize_message(&serialized_msg, tf_msg.get());
-            processTransform(tf_msg);
+            auto msg = std::make_shared<tf2_msgs::msg::TFMessage>();
+            deserializeMessage(*bag_msg, msg);
+            processTransform(msg);
         } else if (bag_msg->topic_name == config_.odom_topic) {
-            auto odom_msg = std::make_shared<nav_msgs::msg::Odometry>();
-            rclcpp::Serialization<nav_msgs::msg::Odometry> serialization;
-            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
-            serialization.deserialize_message(&serialized_msg, odom_msg.get());
-            processOdometry(odom_msg);
+            auto msg = std::make_shared<nav_msgs::msg::Odometry>();
+            deserializeMessage(*bag_msg, msg);
+            processOdometry(msg);
         } else if (bag_msg->topic_name == config_.color_topic) {
-            auto color_msg = std::make_shared<sensor_msgs::msg::Image>();
-            rclcpp::Serialization<sensor_msgs::msg::Image> serialization;
-            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
-            serialization.deserialize_message(&serialized_msg, color_msg.get());
-            color_messages_.push_back(color_msg);
+            auto msg = std::make_shared<sensor_msgs::msg::Image>();
+            deserializeMessage(*bag_msg, msg);
+            processImage(msg);
         } else if (bag_msg->topic_name == config_.camera_info_topic) {
-            auto info_msg = std::make_shared<sensor_msgs::msg::CameraInfo>();
-            rclcpp::Serialization<sensor_msgs::msg::CameraInfo> serialization;
-            rclcpp::SerializedMessage serialized_msg(*bag_msg->serialized_data);
-            serialization.deserialize_message(&serialized_msg, info_msg.get());
-            camera_info_messages_.push_back(info_msg);
+            auto msg = std::make_shared<sensor_msgs::msg::CameraInfo>();
+            deserializeMessage(*bag_msg, msg);
+            processCameraInfo(msg);
+        } else if (bag_msg->topic_name == config_.point_cloud_topic) {
+            auto msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
+            deserializeMessage(*bag_msg, msg);
+            processPointCloud(msg);
         }
     }
-
-    optimizeAndStore();
-    core::graph::util::dumpFactorGraph(graph_, "/mnt/remote-storage/final_graph.vtk");
-    return store_.save("/tmp/final_map.pb");
+    std::string bagfile_name = std::filesystem::path(bagfile_).stem().string();
+    std::time_t now = std::time(nullptr);
+    char timestamp[20];
+    std::strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", std::localtime(&now));
+    std::string output_path =
+        "/mnt/remote-storage/factor_graph_" + bagfile_name + "_" + timestamp + ".vtk";
+    core::graph::util::dumpFactorGraph(graph_, output_path);
+    if (pose_file_.is_open()) {
+        pose_file_.close();
+    }
+    return true;
 }
 
-void RosbagReader::optimizeAndStore() {
-    if (graph_.optimize()) {
-        auto optimized_keyframes = graph_.getAllKeyFrames();
-        for (const auto& kf : optimized_keyframes) {
-            store_.addKeyFrame(kf);
+template <typename T>
+void RosbagReader::deserializeMessage(const rosbag2_storage::SerializedBagMessage& bag_msg,
+                                      std::shared_ptr<T> msg) {
+    rclcpp::Serialization<T> serialization;
+    rclcpp::SerializedMessage serialized_msg(*bag_msg.serialized_data);
+    serialization.deserialize_message(&serialized_msg, msg.get());
+}
+
+void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
+    for (const auto& transform : msg->transforms) {
+        try {
+            core::types::Pose pose;
+            pose.position = Eigen::Vector3d(transform.transform.translation.x,
+                                            transform.transform.translation.y,
+                                            transform.transform.translation.z);
+            pose.orientation =
+                Eigen::Quaterniond(transform.transform.rotation.w, transform.transform.rotation.x,
+                                   transform.transform.rotation.y, transform.transform.rotation.z);
+
+            Eigen::Isometry3d transform_matrix = Eigen::Isometry3d::Identity();
+            transform_matrix.translate(pose.position);
+            transform_matrix.rotate(pose.orientation);
+
+            tf_tree_.setTransform(transform.header.frame_id, transform.child_frame_id,
+                                  transform_matrix);
+
+            // Visualize transform if available
+            if (visualizer_ && visualizer_->isConnected() && tf_tree_built_) {
+                try {
+                    auto base_to_frame =
+                        tf_tree_.getTransform(config_.base_link_frame_id, transform.child_frame_id);
+                    std::string entity_path = "/odom/" + base_to_frame.path;
+                    visualizer_->addPose(pose, entity_path,
+                                         rclcpp::Time(transform.header.stamp).seconds());
+                } catch (const std::runtime_error& e) {
+                    std::cerr << "Failed to get transform for visualization: " << e.what()
+                              << std::endl;
+                }
+            }
+
+            // Check if we have the required transforms
+            if (!tf_tree_built_) {
+                try {
+                    tf_tree_.getTransform(config_.base_link_frame_id, config_.camera_frame_id);
+                    tf_tree_built_ = true;
+                    tf_tree_.printTree();
+                } catch (const std::runtime_error&) {
+                    // Still missing required transforms
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to process static transform: " << e.what() << std::endl;
         }
+    }
+}
+
+void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg) {
+    for (const auto& transform : msg->transforms) {
+        try {
+            core::types::Pose pose;
+            pose.position = Eigen::Vector3d(transform.transform.translation.x,
+                                            transform.transform.translation.y,
+                                            transform.transform.translation.z);
+            pose.orientation =
+                Eigen::Quaterniond(transform.transform.rotation.w, transform.transform.rotation.x,
+                                   transform.transform.rotation.y, transform.transform.rotation.z);
+
+            Eigen::Isometry3d transform_matrix = Eigen::Isometry3d::Identity();
+            transform_matrix.translate(pose.position);
+            transform_matrix.rotate(pose.orientation);
+
+            tf_tree_.setTransform(transform.header.frame_id, transform.child_frame_id,
+                                  transform_matrix);
+
+            // Visualize transform if available
+            if (visualizer_ && visualizer_->isConnected()) {
+                try {
+                    auto base_to_frame =
+                        tf_tree_.getTransform(config_.base_link_frame_id, transform.child_frame_id);
+                    std::string entity_path = "/odom/" + base_to_frame.path;
+                    visualizer_->addPose(pose, entity_path,
+                                         rclcpp::Time(transform.header.stamp).seconds());
+                } catch (const std::runtime_error& e) {
+                    std::cerr << "Failed to get transform for visualization: " << e.what()
+                              << std::endl;
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to process transform: " << e.what() << std::endl;
+        }
+    }
+}
+
+void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg) {
+    if (!tf_tree_built_) {
+        return;
+    }
+
+    core::types::Pose pose = conversions::toPose(*msg);
+    double timestamp = rclcpp::Time(msg->header.stamp).seconds();
+    LOG(INFO) << std::fixed << "Odometry message details - Position: [" << msg->pose.pose.position.x
+              << ", " << msg->pose.pose.position.y << ", " << msg->pose.pose.position.z
+              << "], Timestamp: " << timestamp;
+
+    odometry_count_++;
+    LOG(INFO) << "Processing odometry message #" << odometry_count_;
+
+    if (visualizer_ && visualizer_->isConnected()) {
+        std::string entity_path = "/odom/" + msg->child_frame_id;
+        visualizer_->addPose(pose, entity_path, timestamp);
+    }
+
+    graph_adapter_.handleOdometryInput(pose, timestamp);
+
+    if (pose_file_.is_open()) {
+        pose_file_ << std::fixed << timestamp << "," << pose.position.x() << ","
+                   << pose.position.y() << "," << pose.position.z() << "," << pose.orientation.w()
+                   << "," << pose.orientation.x() << "," << pose.orientation.y() << ","
+                   << pose.orientation.z() << "\n";
+    }
+}
+
+void RosbagReader::processImage(const std::shared_ptr<sensor_msgs::msg::Image> msg) {
+    if (!tf_tree_built_) {
+        return;
+    }
+
+    core::types::Image image = conversions::toImage(*msg);
+    double timestamp = rclcpp::Time(msg->header.stamp).seconds();
+    graph_adapter_.handleImageInput(image, timestamp);
+
+    // Add visualization
+    if (visualizer_ && visualizer_->isConnected()) {
+        try {
+            auto base_to_camera = tf_tree_.getTransform("base_link", msg->header.frame_id);
+            std::string camera_path = "/odom/" + base_to_camera.path;
+            std::string image_path = camera_path + "/image";
+            cv::Mat cv_image = conversions::toOpenCVImage(*msg);
+            visualizer_->addImage(cv_image, image_path, timestamp);
+        } catch (const std::runtime_error& e) {
+            std::cerr << "Failed to visualize image: " << e.what() << std::endl;
+        }
+    }
+}
+
+void RosbagReader::processCameraInfo(const std::shared_ptr<sensor_msgs::msg::CameraInfo> msg) {
+    if (!tf_tree_built_) {
+        return;
+    }
+
+    core::types::CameraInfo camera_info = conversions::toCameraInfo(*msg);
+    double timestamp = rclcpp::Time(msg->header.stamp).seconds();
+    graph_adapter_.handleCameraInfo(camera_info, timestamp);
+
+    // Add visualization
+    if (visualizer_ && visualizer_->isConnected()) {
+        // Check if principal point is not at (0,0)
+        if (std::abs(msg->k[2]) > 1e-6 || std::abs(msg->k[5]) > 1e-6) {
+            std::cerr << "Non-zero principal point (" << msg->k[2] << ", " << msg->k[5]
+                      << ") detected. Rerun visualization may be inaccurate." << std::endl;
+        }
+
+        // Create pinhole camera using from_focal_length_and_resolution
+        auto camera = rerun::archetypes::Pinhole::from_focal_length_and_resolution(
+            {static_cast<float>(msg->k[0]),
+             static_cast<float>(msg->k[4])},  // focal lengths (fx, fy)
+            {static_cast<float>(msg->width), static_cast<float>(msg->height)}  // resolution
+        );
+
+        try {
+            auto base_to_camera =
+                tf_tree_.getTransform(config_.base_link_frame_id, msg->header.frame_id);
+            std::string camera_path = "/odom/" + base_to_camera.path;
+            visualizer_->addCamera(camera, camera_path, timestamp);
+
+            // Add the transform visualization
+            Eigen::Isometry3d transform = base_to_camera.transform;
+            core::types::Pose camera_pose;
+            camera_pose.position = transform.translation();
+            camera_pose.orientation = Eigen::Quaterniond(transform.rotation());
+            visualizer_->addPose(camera_pose, camera_path, timestamp);
+        } catch (const std::runtime_error& e) {
+            std::cerr << "Failed to get transform from " << config_.base_link_frame_id << " to "
+                      << msg->header.frame_id << ": " << e.what() << std::endl;
+        }
+    }
+}
+
+void RosbagReader::processPointCloud(const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg) {
+    if (!tf_tree_built_) {
+        return;
+    }
+
+    try {
+        core::types::PointCloud cloud;
+        cloud.points.reserve(msg->width * msg->height);
+        cloud.colors.reserve(msg->width * msg->height);
+
+        // Get field offsets
+        int x_offset = -1, y_offset = -1, z_offset = -1;
+        int r_offset = -1, g_offset = -1, b_offset = -1;
+
+        for (const auto& field : msg->fields) {
+            if (field.name == "x")
+                x_offset = field.offset;
+            else if (field.name == "y")
+                y_offset = field.offset;
+            else if (field.name == "z")
+                z_offset = field.offset;
+            else if (field.name == "r")
+                r_offset = field.offset;
+            else if (field.name == "g")
+                g_offset = field.offset;
+            else if (field.name == "b")
+                b_offset = field.offset;
+        }
+
+        if (x_offset == -1 || y_offset == -1 || z_offset == -1) {
+            throw std::runtime_error("Point cloud missing position fields");
+        }
+
+        const uint8_t* data_ptr = msg->data.data();
+        for (size_t i = 0; i < msg->width * msg->height; ++i) {
+            const uint8_t* point_ptr = data_ptr + i * msg->point_step;
+
+            float x = *reinterpret_cast<const float*>(point_ptr + x_offset);
+            float y = *reinterpret_cast<const float*>(point_ptr + y_offset);
+            float z = *reinterpret_cast<const float*>(point_ptr + z_offset);
+
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                continue;
+            }
+
+            cloud.points.emplace_back(x, y, z);
+
+            if (r_offset != -1 && g_offset != -1 && b_offset != -1) {
+                uint8_t r = *(point_ptr + r_offset);
+                uint8_t g = *(point_ptr + g_offset);
+                uint8_t b = *(point_ptr + b_offset);
+                cloud.colors.emplace_back(r / 255.0, g / 255.0, b / 255.0);
+            } else {
+                cloud.colors.emplace_back(1.0, 1.0, 1.0);
+            }
+        }
+
+        double timestamp = rclcpp::Time(msg->header.stamp).seconds();
+        graph_adapter_.handlePointCloudInput(cloud, timestamp);
+
+        if (visualizer_ && visualizer_->isConnected()) {
+            try {
+                auto base_to_camera =
+                    tf_tree_.getTransform(config_.base_link_frame_id, msg->header.frame_id);
+                std::string camera_path = "/odom/" + base_to_camera.path;
+                std::string cloud_path = camera_path + "/point_cloud";
+
+                core::types::Pose camera_pose;
+                camera_pose.position = base_to_camera.transform.translation();
+                camera_pose.orientation = Eigen::Quaterniond(base_to_camera.transform.rotation());
+                visualizer_->addPointCloud(cloud, cloud_path, timestamp, camera_pose);
+            } catch (const std::runtime_error& e) {
+                std::cerr << "Failed to visualize point cloud: " << e.what() << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error processing point cloud: " << e.what() << std::endl;
     }
 }
 

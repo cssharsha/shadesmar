@@ -24,20 +24,21 @@ ros2_cpp_library(
     visibility = ["//visibility:public"],
 )
 
-# ros2_cpp_library(
-#     name = "rosbag_reader",
-#     srcs = ["src/rosbag_reader.cpp"],
-#     hdrs = ["include/ros/rosbag_reader.hpp"],
-#     includes = ["include"],
-#     deps = [
-#         "//core:core",
-#         "//viz:rerun_viz",
-#         ":ros_conversions",
-#         "@ros2_rosbag2//:rosbag2_cpp",          # ROS2 bag reading
-#         "@ros2_message_filters//:message_filters",
-#     ],
-#     visibility = ["//visibility:public"],
-# )
+ros2_cpp_library(
+    name = "rosbag_reader",
+    srcs = ["src/rosbag_reader.cpp"],
+    hdrs = ["include/ros/rosbag_reader.hpp"],
+    includes = ["include"],
+    deps = [
+        "//core:core",
+        "//viz:rerun_viz",
+        ":ros_conversions",
+        "@ros2_rosbag2//:rosbag2_cpp",          # ROS2 bag reading
+        "@ros2_message_filters//:message_filters",
+        "//utils:stf",
+    ],
+    visibility = ["//visibility:public"],
+)
 
 ros2_cpp_library(
     name = "ros_adapter",
