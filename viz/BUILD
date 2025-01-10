@@ -24,17 +24,17 @@ cc_library(
     ],
 )
 
-# ros2_cpp_binary(
-#     name = "visualize_rosbag",
-#     srcs = ["examples/visualize_rosbag.cpp"],
-#     deps = [
-#         ":rerun_viz",
-#         "//ros:rosbag_reader",
-#         "@ros2_rosbag2//:rosbag2_cpp",
-#         "@ros2_rosbag2//:rosbag2_storage",
-#     ],
-#     set_up_ament = True,
-# )
+ros2_cpp_binary(
+    name = "visualize_rosbag",
+    srcs = ["examples/visualize_rosbag.cpp"],
+    deps = [
+        ":rerun_viz",
+        "//ros:rosbag_reader",
+        "@ros2_rosbag2//:rosbag2_cpp",
+        "@ros2_rosbag2//:rosbag2_storage",
+    ],
+    set_up_ament = True,
+)
 
 ros2_cpp_binary(
     name = "visualize_live",

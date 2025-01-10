@@ -22,10 +22,17 @@ public:
     void handleLoopClosure(uint64_t from_id, uint64_t to_id, const types::Pose& relative_pose);
     void setKeyframeDistanceThreshold(double threshold);
     void setCallbacks(const GraphCallbacks& callbacks);
+    void handlePointCloudInput(const types::PointCloud& cloud, double timestamp);
+    void maybeDumpGraph(bool force = false);
+    std::shared_ptr<types::KeyFrame> createKeyframe(
+        const types::Pose& pose, const std::optional<types::Image>& image = std::nullopt,
+        const std::optional<types::CameraInfo>& camera_info = std::nullopt,
+        const std::optional<types::PointCloud>& cloud = std::nullopt);
 
 private:
     FactorGraph& graph_;
     storage::MapStore& store_;
+    // utils::MessageSynchronizer<types::Image, types::CameraInfo, types::PointCloud> synchronizer_;
     utils::MessageSynchronizer<types::Image, types::CameraInfo> synchronizer_;
 
     uint64_t current_keyframe_id_ = 0;
@@ -35,15 +42,14 @@ private:
     void addOdometryFactor(uint64_t from_id, uint64_t to_id, const types::Pose& relative_pose);
     GraphCallbacks callbacks_;
 
-    void createKeyframe(const types::Pose& pose,
-                        const std::optional<types::Image>& image = std::nullopt,
-                        const std::optional<types::CameraInfo>& camera_info = std::nullopt);
     void addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& keyframe);
-    void maybeDumpGraph();
     double calculateDistance(const types::Pose& relative_pose);
 
     double cumulative_distance_;
     double next_dump_distance_;
+    size_t odometry_count_ = 0;
+
+    double total_keyframe_distance_ = 0.0;  // Tracks total distance between keyframes
 };
 
 }  // namespace graph
