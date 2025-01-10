@@ -21,7 +21,7 @@ public:
 
     void addPose(const core::types::Pose& pose, const std::string& label = "") override {}
     void addPointCloud(const core::types::PointCloud& cloud,
-                       const core::types::Pose& pose = core::types::Pose()) override;
+                       const core::types::Pose& pose = core::types::Pose()) override {}
     void addImage(const cv::Mat& image, const std::string& name = "image") override {}
 
     void visualizeFactorGraph(const core::graph::FactorGraph& graph) override;
@@ -37,6 +37,8 @@ public:
 
     void addPose(const core::types::Pose& pose, const std::string& entity_path, double timestamp);
     void addImage(const cv::Mat& image, const std::string& entity_path, double timestamp);
+    void addPointCloud(const core::types::PointCloud& cloud, const std::string& entity_path,
+                       double timestamp, const core::types::Pose& transform);
     void addCamera(const rerun::archetypes::Pinhole& camera, const std::string& entity_path,
                    double timestamp = 0);
 

@@ -73,13 +73,18 @@ void RerunVisualizer::addPose(const core::types::Pose& pose, const std::string& 
 }
 
 void RerunVisualizer::addPointCloud(const core::types::PointCloud& cloud,
-                                    const core::types::Pose& pose) {
+                                    const std::string& entity_path, double timestamp,
+                                    const core::types::Pose& transform) {
     if (!is_connected_)
         return;
 
-    auto points = toRerunPoints(cloud, pose);
+    if (timestamp > 0) {
+        setTimestamp(timestamp);
+    }
 
-    rec_.log("point_clouds", points);
+    auto points = toRerunPoints(cloud, transform);
+
+    rec_.log(entity_path, points);
 }
 
 void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_path,

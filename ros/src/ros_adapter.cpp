@@ -1,5 +1,9 @@
 #include "ros/ros_adapter.hpp"
+#include <message_filters/subscriber.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
 #include <cmath>
+#include <filesystem>
 #include "core/graph/util.hpp"
 #include "ros/conversions.hpp"
 
@@ -78,6 +82,11 @@ bool RosAdapter::initialize() {
         tf_sub_ = this->create_subscription<tf2_msgs::msg::TFMessage>(
             config_.tf_topic, 10, std::bind(&RosAdapter::tfCallback, this, std::placeholders::_1));
 
+        // Add point cloud subscriber
+        point_cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            config_.point_cloud_topic, 10,
+            std::bind(&RosAdapter::pointCloudCallback, this, std::placeholders::_1));
+
         // Add periodic topic discovery
         discovery_timer_ = this->create_wall_timer(std::chrono::seconds(1), [this]() {
             auto topics = getAvailableTopics();
@@ -89,8 +98,8 @@ bool RosAdapter::initialize() {
             // Check if all required topics are discovered
             bool all_found = true;
             std::vector<std::string> required_topics = {
-                config_.odom_topic, config_.tf_topic, config_.tf_static_topic, config_.color_topic,
-                config_.camera_info_topic};
+                config_.odom_topic,  config_.tf_topic,          config_.tf_static_topic,
+                config_.color_topic, config_.camera_info_topic, config_.point_cloud_topic};
 
             for (const auto& required : required_topics) {
                 if (discovered_topics_.find(required) == discovered_topics_.end()) {
@@ -124,6 +133,36 @@ bool RosAdapter::initialize() {
                             config_.odom_topic.c_str());
             }
         });
+
+        // depth_sub_.subscribe(this, config_.depth_topic);
+        // depth_camera_info_sub_.subscribe(this, config_.depth_camera_info_topic);
+        // depth_sync_ =
+        //     std::make_shared<DepthSync>(DepthSync(10), depth_sub_, depth_camera_info_sub_);
+        // depth_sync_->registerCallback(std::bind(&RosAdapter::depthCallback, this,
+        //                                         std::placeholders::_1, std::placeholders::_2));
+
+        // Create directory if it doesn't exist
+        std::filesystem::path dir_path("/mnt/remote-storage");
+        if (!std::filesystem::exists(dir_path)) {
+            if (!std::filesystem::create_directories(dir_path)) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to create directory: %s",
+                             dir_path.c_str());
+                return false;
+            }
+        } else {
+            RCLCPP_INFO(this->get_logger(), "Directory already exists: %s", dir_path.c_str());
+        }
+
+        // Try to open the file
+        pose_file_.open("/mnt/remote-storage/odometry_live.csv");
+        if (pose_file_.is_open()) {
+            pose_file_ << "timestamp,x,y,z,qw,qx,qy,qz\n";  // CSV header
+        } else {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Failed to open pose output file. Check permissions for: %s",
+                         "/mnt/remote-storage/odometry_live.csv");
+            return false;
+        }
 
         return true;
     } catch (const std::exception& e) {
@@ -246,6 +285,15 @@ void RosAdapter::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
             std::string odom_path = result.path;
             visualizer_->addPose(current_pose, odom_path, msg_time);
         }
+
+        if (pose_file_.is_open()) {
+            pose_file_ << std::fixed << msg_time << "," << current_pose.position.x() << ","
+                       << current_pose.position.y() << "," << current_pose.position.z() << ","
+                       << current_pose.orientation.w() << "," << current_pose.orientation.x() << ","
+                       << current_pose.orientation.y() << "," << current_pose.orientation.z()
+                       << "\n";
+            pose_file_.flush();  // Ensure data is written immediately
+        }
     } catch (const std::runtime_error& e) {
         RCLCPP_WARN(this->get_logger(), "Failed to add odometry transform: %s", e.what());
     }
@@ -367,6 +415,186 @@ void RosAdapter::checkFramesInitialized() {
         frames_initialized_ = true;
         RCLCPP_INFO(this->get_logger(), "Frame relationship established: %s -> %s",
                     odom_frame_id_.c_str(), camera_frame_id_.c_str());
+    }
+}
+
+void RosAdapter::depthCallback(const sensor_msgs::msg::Image::ConstSharedPtr depth_msg,
+                               const sensor_msgs::msg::CameraInfo::ConstSharedPtr info_msg) {
+    if (!tf_tree_built_) {
+        RCLCPP_DEBUG(this->get_logger(), "Skipping depth message - waiting for transform tree");
+        return;
+    }
+
+    try {
+        // Generate point cloud from depth image
+        core::types::PointCloud cloud = generatePointCloud(depth_msg, info_msg);
+
+        // Send to graph adapter
+        double msg_time = rclcpp::Time(depth_msg->header.stamp).seconds();
+        graph_adapter_.handlePointCloudInput(cloud, msg_time);
+
+        // Visualize if available
+        if (visualizer_ && visualizer_->isConnected()) {
+            try {
+                auto base_to_camera =
+                    tf_tree_.getTransform("base_link", depth_msg->header.frame_id);
+
+                // // Transform point cloud to base_link frame
+                // core::types::PointCloud transformed_cloud;
+                // transformed_cloud.points.reserve(cloud.points.size());
+                // transformed_cloud.colors = cloud.colors;  // Colors stay the same
+
+                // Eigen::Isometry3d transform = base_to_camera.transform;
+                // for (const auto& point : cloud.points) {
+                //     transformed_cloud.points.push_back(transform * point);
+                // }
+
+                std::string camera_path = "/odom/" + base_to_camera.path;
+                std::string cloud_path = camera_path + "/point_cloud";
+
+                core::types::Pose camera_pose;
+                camera_pose.position = base_to_camera.transform.translation();
+                camera_pose.orientation = Eigen::Quaterniond(base_to_camera.transform.rotation());
+                visualizer_->addPointCloud(cloud, cloud_path, msg_time, camera_pose);
+            } catch (const std::runtime_error& e) {
+                RCLCPP_WARN(this->get_logger(), "Failed to visualize point cloud: %s", e.what());
+            }
+        }
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Error processing depth data: %s", e.what());
+    }
+}
+
+core::types::PointCloud RosAdapter::generatePointCloud(
+    const sensor_msgs::msg::Image::ConstSharedPtr& depth_msg,
+    const sensor_msgs::msg::CameraInfo::ConstSharedPtr& info_msg) {
+    core::types::PointCloud cloud;
+
+    // Get camera parameters
+    double fx = info_msg->k[0];
+    double fy = info_msg->k[4];
+    double cx = info_msg->k[2];
+    double cy = info_msg->k[5];
+
+    // Convert depth image to point cloud
+    float* depth_data = reinterpret_cast<float*>(const_cast<uint8_t*>(&depth_msg->data[0]));
+
+    for (uint32_t v = 0; v < depth_msg->height; v++) {
+        for (uint32_t u = 0; u < depth_msg->width; u++) {
+            float depth = depth_data[v * depth_msg->width + u];
+
+            // Skip invalid measurements
+            if (!std::isfinite(depth) || depth <= 0) {
+                continue;
+            }
+
+            // Back-project to 3D
+            double x = (u - cx) * depth / fx;
+            double y = (v - cy) * depth / fy;
+            double z = depth;
+
+            cloud.points.emplace_back(x, y, z);
+
+            // Add a default color (white)
+            cloud.colors.emplace_back(1.0, 1.0, 1.0);
+        }
+    }
+
+    return cloud;
+}
+
+void RosAdapter::pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    if (!tf_tree_built_) {
+        RCLCPP_DEBUG(this->get_logger(),
+                     "Skipping point cloud message - waiting for transform tree");
+        return;
+    }
+
+    try {
+        core::types::PointCloud cloud;
+        cloud.points.reserve(msg->width * msg->height);
+        cloud.colors.reserve(msg->width * msg->height);
+
+        // Get field offsets
+        int x_offset = -1, y_offset = -1, z_offset = -1;
+        int r_offset = -1, g_offset = -1, b_offset = -1;
+
+        for (const auto& field : msg->fields) {
+            if (field.name == "x")
+                x_offset = field.offset;
+            else if (field.name == "y")
+                y_offset = field.offset;
+            else if (field.name == "z")
+                z_offset = field.offset;
+            else if (field.name == "r")
+                r_offset = field.offset;
+            else if (field.name == "g")
+                g_offset = field.offset;
+            else if (field.name == "b")
+                b_offset = field.offset;
+        }
+
+        // Check if we have position fields
+        if (x_offset == -1 || y_offset == -1 || z_offset == -1) {
+            RCLCPP_ERROR(this->get_logger(), "Point cloud missing position fields");
+            return;
+        }
+
+        // Convert point cloud data
+        const uint8_t* data_ptr = msg->data.data();
+        for (size_t i = 0; i < msg->width * msg->height; ++i) {
+            const uint8_t* point_ptr = data_ptr + i * msg->point_step;
+
+            // Get position
+            float x = *reinterpret_cast<const float*>(point_ptr + x_offset);
+            float y = *reinterpret_cast<const float*>(point_ptr + y_offset);
+            float z = *reinterpret_cast<const float*>(point_ptr + z_offset);
+
+            // Skip invalid points
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                continue;
+            }
+
+            cloud.points.emplace_back(x, y, z);
+
+            // Get color if available
+            if (r_offset != -1 && g_offset != -1 && b_offset != -1) {
+                uint8_t r = *(point_ptr + r_offset);
+                uint8_t g = *(point_ptr + g_offset);
+                uint8_t b = *(point_ptr + b_offset);
+                cloud.colors.emplace_back(r / 255.0, g / 255.0, b / 255.0);
+            } else {
+                cloud.colors.emplace_back(1.0, 1.0, 1.0);  // Default white color
+            }
+        }
+
+        // Send to graph adapter
+        double msg_time = rclcpp::Time(msg->header.stamp).seconds();
+        graph_adapter_.handlePointCloudInput(cloud, msg_time);
+
+        // Visualize if available
+        if (visualizer_ && visualizer_->isConnected()) {
+            try {
+                auto base_to_sensor = tf_tree_.getTransform("base_link", msg->header.frame_id);
+                std::string camera_path = "/odom/" + base_to_sensor.path;
+                std::string cloud_path = camera_path + "/point_cloud";
+
+                core::types::Pose camera_pose;
+                camera_pose.position = base_to_sensor.transform.translation();
+                camera_pose.orientation = Eigen::Quaterniond(base_to_sensor.transform.rotation());
+                visualizer_->addPointCloud(cloud, cloud_path, msg_time, camera_pose);
+            } catch (const std::runtime_error& e) {
+                RCLCPP_WARN(this->get_logger(), "Failed to visualize point cloud: %s", e.what());
+            }
+        }
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Error processing point cloud: %s", e.what());
+    }
+}
+
+RosAdapter::~RosAdapter() {
+    if (pose_file_.is_open()) {
+        pose_file_.close();
     }
 }
 

@@ -131,6 +131,17 @@ public:
         }
         return std::get<Image>(depth_data);
     }
+
+    bool hasColorImage() const {
+        return color_data.has_value();
+    }
+
+    const Image& getColorImage() const {
+        if (!hasColorImage()) {
+            throw std::runtime_error("Color image not available");
+        }
+        return *color_data;
+    }
 };
 
 }  // namespace types
