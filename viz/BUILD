@@ -21,6 +21,7 @@ cc_library(
     deps = [
         ":interface",
         "@rerun_sdk//:rerun",
+        "//common:logging",
     ],
 )
 
