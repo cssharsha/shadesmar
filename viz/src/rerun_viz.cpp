@@ -1,6 +1,8 @@
 #include "viz/rerun_viz.hpp"
 #include "viz/rerun_eigen_adapters.hpp"
 
+#include "logging/logging.hpp"
+
 #include "core/types/keyframe.hpp"
 
 #include <Eigen/Core>
@@ -108,38 +110,34 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
     if (!is_connected_)
         return;
 
-    // Clear previous data (explicitly use the boolean constructor)
-    rec_.log("clear", rerun::Clear(false));  // false means non-recursive clear
-
     // Get all keyframes and visualize them
     auto keyframes = graph.getAllKeyFrames();
+
+    // Plotting the path in the latest keyframe frame
+    auto latest_position = keyframes.back()->pose;
+    // addPose(latest_position, "/world/path");
+
+    std::vector<rerun::datatypes::Vec3D> path_points;
     for (const auto& kf : keyframes) {
-        // Add timestamp to each pose
-        rec_.set_time_sequence(
-            "time", static_cast<int64_t>(current_timestamp_ * 1000));  // Convert to milliseconds
-        addPose(kf->pose, "keyframe_" + std::to_string(kf->id));
-        current_timestamp_ += 0.1;
-    }
+        // auto position = (kf->pose.inverse() * latest_position).position;
+        auto position = kf->pose.position;
+        path_points.emplace_back(rerun::datatypes::Vec3D{static_cast<float>(position.x()),
+                                                         static_cast<float>(position.y()),
+                                                         static_cast<float>(position.z())});
+        // Add camera visualization for keyframes with images
+        if (kf->hasColorImage()) {
+            const auto& image_data = kf->getColorImage();
+            const auto& K = kf->getCameraInfo();
 
-    // Visualize factors as connections
-    auto factors = graph.getFactors();
-    for (const auto& factor : factors) {
-        if (factor.type == core::proto::FactorType::ODOMETRY ||
-            factor.type == core::proto::FactorType::LOOP_CLOSURE) {
-            std::vector<Eigen::Vector3d> line_points;
-            for (const auto& node_id : factor.connected_nodes) {
-                auto kf = graph.getKeyFrame(node_id);
-                if (kf) {
-                    line_points.push_back(kf->pose.position);
-                }
-            }
-
-            if (line_points.size() >= 2) {
-                rec_.set_time_sequence("time", static_cast<int64_t>(current_timestamp_ * 1000));
-                rec_.log("factors", rerun::LineStrips3D({line_points}));
-            }
+            // Add image and camera info
+            const std::string camera_path = "/world/path/camera_" + std::to_string(kf->id);
+            addImage(image_data.toCvMat(), camera_path);
+            addCamera(K, image_data.width, image_data.height, kf->pose, camera_path);
         }
     }
+
+    rec_.log("/world/path", rerun::LineStrips3D({path_points}));
+    LOG(ERROR) << "Path points: " << path_points.size();
 
     // Force an update
     update();

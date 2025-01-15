@@ -142,6 +142,13 @@ public:
         }
         return *color_data;
     }
+
+    const CameraInfo& getCameraInfo() const {
+        if (!camera_info) {
+            throw std::runtime_error("Camera info not available");
+        }
+        return *camera_info;
+    }
 };
 
 }  // namespace types
