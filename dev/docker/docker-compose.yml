@@ -42,7 +42,7 @@ services:
               count: all
               capabilities: [ gpu ]
     entrypoint: >
-      /bin/sh -c "
+      /bin/bash -c "
         mkdir -p /tmp/runtime-${USER} &&
         chmod 700 /tmp/runtime-${USER} &&
         exec sleep infinity

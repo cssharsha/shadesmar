@@ -13,6 +13,7 @@ struct Pose {
     Eigen::Vector3d position{0, 0, 0};
     Eigen::Quaterniond orientation{1, 0, 0, 0};
     double timestamp{0};
+    std::string frame_id;
 
     // Proto conversion
     static Pose fromProto(const proto::Pose& pose_proto) {
@@ -23,6 +24,7 @@ struct Pose {
             Eigen::Quaterniond(pose_proto.orientation().w(), pose_proto.orientation().x(),
                                pose_proto.orientation().y(), pose_proto.orientation().z());
         pose.timestamp = pose_proto.timestamp();
+        pose.frame_id = pose_proto.frame_id();
         return pose;
     }
 
@@ -40,6 +42,7 @@ struct Pose {
         orientation_proto->set_z(orientation.z());
 
         pose_proto.set_timestamp(timestamp);
+        pose_proto.set_frame_id(frame_id);
         return pose_proto;
     }
 
@@ -49,6 +52,7 @@ struct Pose {
         inv.orientation = orientation.conjugate();
         inv.position = -(inv.orientation * position);
         inv.timestamp = timestamp;
+        inv.frame_id = frame_id;
         return inv;
     }
 
@@ -57,6 +61,7 @@ struct Pose {
         result.orientation = orientation * other.orientation;
         result.position = position + orientation * other.position;
         result.timestamp = other.timestamp;
+        result.frame_id = frame_id;
         return result;
     }
 };

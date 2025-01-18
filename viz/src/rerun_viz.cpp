@@ -1,6 +1,8 @@
 #include "viz/rerun_viz.hpp"
 #include "viz/rerun_eigen_adapters.hpp"
 
+#include "logging/logging.hpp"
+
 #include "core/types/keyframe.hpp"
 
 #include <Eigen/Core>
@@ -15,7 +17,6 @@ RerunVisualizer::RerunVisualizer(const std::string& name, const std::string& hos
 bool RerunVisualizer::initialize(bool save_to_file) {
     try {
         if (save_to_file) {
-            // Save to a recording file instead of TCP
             std::string recording_path =
                 "/mnt/remote-storage/" + name_ + ".rrd";  // .rrd is the Rerun recording format
             auto result = rec_.save(recording_path);
@@ -25,13 +26,8 @@ bool RerunVisualizer::initialize(bool save_to_file) {
                 return false;
             }
         } else {
-            // Connect to the Rerun server
             rec_.connect_tcp().exit_on_failure();
         }
-
-        // // Send test data
-        // rec_.set_time_sequence("time", 0);
-        // rec_.log("connection_test", rerun::TextLog("Recording started"));
 
         is_connected_ = true;
         return true;
@@ -61,15 +57,7 @@ void RerunVisualizer::addPose(const core::types::Pose& pose, const std::string& 
     if (!is_connected_)
         return;
 
-    if (timestamp > 0) {
-        setTimestamp(timestamp);
-    }
-
     rec_.log(entity_path, toRerunTransform(pose));
-
-    if (!entity_path.empty()) {
-        rec_.log(entity_path + "/label", rerun::TextLog(entity_path));
-    }
 }
 
 void RerunVisualizer::addPointCloud(const core::types::PointCloud& cloud,
@@ -78,24 +66,21 @@ void RerunVisualizer::addPointCloud(const core::types::PointCloud& cloud,
     if (!is_connected_)
         return;
 
-    if (timestamp > 0) {
-        setTimestamp(timestamp);
-    }
+    rec_.log(entity_path, toRerunPoints(cloud, transform));
+}
 
-    auto points = toRerunPoints(cloud, transform);
+void RerunVisualizer::addCamera(const rerun::archetypes::Pinhole& camera,
+                                const std::string& entity_path, double timestamp) {
+    if (!is_connected_)
+        return;
 
-    rec_.log(entity_path, points);
+    rec_.log(entity_path, camera);
 }
 
 void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_path,
                                double timestamp) {
     if (!is_connected_)
         return;
-
-    if (timestamp > 0) {
-        setTimestamp(timestamp);
-    }
-
     if (image.channels() == 1) {
         rec_.log(entity_path, rerun::Image());
     } else {
@@ -108,86 +93,88 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
     if (!is_connected_)
         return;
 
-    // Clear previous data (explicitly use the boolean constructor)
-    rec_.log("clear", rerun::Clear(false));  // false means non-recursive clear
-
     // Get all keyframes and visualize them
     auto keyframes = graph.getAllKeyFrames();
+
+    // Plotting the path in the latest keyframe frame
+    auto latest_position = keyframes.back()->pose;
+    // addPose(latest_position, "/world/path");
+
+    rec_.set_time_sequence("max_keyframe_id", keyframes.back()->pose.timestamp);
+
+    std::vector<rerun::datatypes::Vec3D> path_points;
+    uint32_t numCameras = 0;
+    uint32_t numClouds = 0;
+
+    LOG(INFO) << "Current number of keyframes: " << keyframes.size();
+
     for (const auto& kf : keyframes) {
-        // Add timestamp to each pose
-        rec_.set_time_sequence(
-            "time", static_cast<int64_t>(current_timestamp_ * 1000));  // Convert to milliseconds
-        addPose(kf->pose, "keyframe_" + std::to_string(kf->id));
-        current_timestamp_ += 0.1;
-    }
+        auto position = kf->pose.position;
+        path_points.emplace_back(rerun::datatypes::Vec3D{static_cast<float>(position.x()),
+                                                         static_cast<float>(position.y()),
+                                                         static_cast<float>(position.z())});
 
-    // Visualize factors as connections
-    auto factors = graph.getFactors();
-    for (const auto& factor : factors) {
-        if (factor.type == core::proto::FactorType::ODOMETRY ||
-            factor.type == core::proto::FactorType::LOOP_CLOSURE) {
-            std::vector<Eigen::Vector3d> line_points;
-            for (const auto& node_id : factor.connected_nodes) {
-                auto kf = graph.getKeyFrame(node_id);
-                if (kf) {
-                    line_points.push_back(kf->pose.position);
-                }
+        auto getStaticTransform = [&](const std::string& source, const std::string& target,
+                                     stf::TransformTree::TransformResult& transform) {
+            try {
+                transform = transform_tree_->getTransform(source, target);
+            } catch (const std::exception& e) {
+                LOG(ERROR) << "Failed to get static transform: " << e.what();
+                return false;
             }
+            return true;
+        };
 
-            if (line_points.size() >= 2) {
-                rec_.set_time_sequence("time", static_cast<int64_t>(current_timestamp_ * 1000));
-                rec_.log("factors", rerun::LineStrips3D({line_points}));
+        if (kf->hasColorImage() && kf->hasCameraInfo()) {
+            const auto& image_data = kf->getColorImage();
+            const auto& K = kf->getCameraInfo();
+            stf::TransformTree::TransformResult transformResult;
+            if (getStaticTransform("base_link", K.frame_id, transformResult)) {
+
+                auto camera = rerun::archetypes::Pinhole::from_focal_length_and_resolution(
+                    {static_cast<float>(K.k[0]), static_cast<float>(K.k[4])},
+                    {static_cast<float>(K.width), static_cast<float>(K.height)});
+
+                Eigen::Isometry3d transform = transformResult.transform;
+                core::types::Pose camera_pose;
+                camera_pose.position = transform.translation();
+                camera_pose.orientation = Eigen::Quaterniond(transform.rotation());
+
+                camera_pose = kf->pose * camera_pose;
+
+                const std::string camera_path = "/world/odom/camera_" + std::to_string(kf->id);
+                addPose(camera_pose, camera_path, current_timestamp_);
+                addCamera(camera, camera_path, current_timestamp_);
+                addImage(image_data.toCvMat(), camera_path, current_timestamp_);
+
+                // Log the tf b/w base_link and camera frame
+                auto position = kf->pose.position.cast<float>() ;
+                auto camera_position = camera_pose.position.cast<float>();
+                std::vector<rerun::datatypes::Vec3D> tf_points{
+                    {position.x(), position.y(), position.z()},
+                    {camera_position.x(), camera_position.y(), camera_position.z()}};
+                rec_.log(camera_path + "/tf",
+                    rerun::LineStrips3D({tf_points})
+                        .with_colors({rerun::components::Color(0, 255, 0)}));  // Green color for visibility
+
+                numCameras++;
             }
+        }
+
+        if (kf->hasPointCloud()) {
+            const auto& cloud = kf->getPointCloud();
+            const std::string cloud_path = "/world/odom/cloud_" + std::to_string(kf->id);
+            addPointCloud(cloud, cloud_path, current_timestamp_, kf->pose);
+            numClouds++;
         }
     }
 
-    // Force an update
-    update();
-}
+    LOG(INFO) << "Num cameras: " << numCameras << " Num clouds: " << numClouds << " Num path points: "
+              << path_points.size();
 
-void RerunVisualizer::visualizeKeyFrame(const core::types::KeyFrame::ConstPtr& keyframe) {
-    if (!is_connected_)
-        return;
-
-    // Visualize pose
-    addPose(keyframe->pose, "keyframe_" + std::to_string(keyframe->id));
-
-    // Visualize data (either point cloud or image)
-    if (keyframe->hasPointCloud()) {
-        addPointCloud(keyframe->getPointCloud(), keyframe->pose);
-    } else if (keyframe->color_data) {
-        addImage(keyframe->color_data.value().toCvMat(),
-                 "keyframe_" + std::to_string(keyframe->id));
-    }
-
-    // Flush after publishing
-    update();
-}
-
-void RerunVisualizer::clear() {
-    if (!is_connected_)
-        return;
-}
-
-void RerunVisualizer::update() {
-    if (!is_connected_)
-        return;
-
-    try {
-        // Send a marker to ensure data is processed
-        rec_.set_time_sequence("time", static_cast<int64_t>(current_timestamp_ * 1000));
-        rec_.log("update", rerun::TextLog("update"));
-
-        // Small delay to ensure processing
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to update: " << e.what() << std::endl;
-        is_connected_ = false;
-    }
-}
-
-void RerunVisualizer::setTimestamp(double timestamp) {
-    current_timestamp_ = timestamp;
+    rec_.log("/world/odom/trajectory",
+        rerun::Points3D({path_points})
+            .with_colors({rerun::components::Color(255, 0, 0)}));
 }
 
 rerun::Transform3D RerunVisualizer::toRerunTransform(const core::types::Pose& pose) {
@@ -230,26 +217,6 @@ rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cl
     }
 
     return rerun::Points3D(points).with_colors(colors);
-}
-
-void RerunVisualizer::visualizeOdometryTrajectory(const std::vector<Eigen::Vector3d>& positions) {
-    if (!is_connected_)
-        return;
-
-    rec_.log("odometry_trajectory", rerun::LineStrips3D({positions}));
-    update();
-}
-
-void RerunVisualizer::addCamera(const rerun::archetypes::Pinhole& camera,
-                                const std::string& entity_path, double timestamp) {
-    if (!is_connected_)
-        return;
-
-    if (timestamp > 0) {
-        setTimestamp(timestamp);
-    }
-
-    rec_.log(entity_path, camera);
 }
 
 }  // namespace viz

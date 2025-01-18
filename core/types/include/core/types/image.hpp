@@ -21,6 +21,7 @@ public:
     uint32_t width;
     uint32_t height;
     std::string distortion_model;
+    std::string frame_id;
 
     proto::CameraInfo toProto() const {
         proto::CameraInfo proto_info;
@@ -29,6 +30,7 @@ public:
         proto_info.set_width(width);
         proto_info.set_height(height);
         proto_info.set_distortion_model(distortion_model);
+        proto_info.set_frame_id(frame_id);
         return proto_info;
     }
 
@@ -39,6 +41,7 @@ public:
         info.width = proto_info.width();
         info.height = proto_info.height();
         info.distortion_model = proto_info.distortion_model();
+        info.frame_id = proto_info.frame_id();
         return info;
     }
 };
@@ -52,6 +55,7 @@ public:
     uint32_t height;
     uint32_t channels;
     std::string encoding;
+    std::string frame_id;
 
     proto::Image toProto() const {
         proto::Image image_proto;
@@ -60,6 +64,7 @@ public:
         image_proto.set_height(height);
         image_proto.set_channels(channels);
         image_proto.set_encoding(encoding);
+        image_proto.set_frame_id(frame_id);
         return image_proto;
     }
 
@@ -69,7 +74,7 @@ public:
         image.height = image_proto.height();
         image.channels = image_proto.channels();
         image.encoding = image_proto.encoding();
-
+        image.frame_id = image_proto.frame_id();
         int cv_type;
         if (image.encoding == "32FC1") {
             cv_type = CV_32FC1;
@@ -91,13 +96,15 @@ public:
         return image;
     }
 
-    static Image fromCvMat(const cv::Mat& mat, const std::string& encoding = "rgb8") {
+    static Image fromCvMat(const cv::Mat& mat, const std::string& encoding = "rgb8",
+                           const std::string& frame_id = "") {
         Image image;
         image.data = mat.clone();
         image.width = mat.cols;
         image.height = mat.rows;
         image.channels = mat.channels();
         image.encoding = encoding;
+        image.frame_id = frame_id;
         return image;
     }
 
