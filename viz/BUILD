@@ -22,6 +22,7 @@ cc_library(
         ":interface",
         "@rerun_sdk//:rerun",
         "//common:logging",
+        "//utils:stf",
     ],
 )
 

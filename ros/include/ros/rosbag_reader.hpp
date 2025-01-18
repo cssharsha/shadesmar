@@ -65,7 +65,7 @@ private:
     std::shared_ptr<viz::RerunVisualizer> visualizer_;
 
     // Transform tree handling
-    stf::TransformTree tf_tree_;
+    std::shared_ptr<stf::TransformTree> tf_tree_;
     bool tf_tree_built_{false};
 
     // Graph adapter for handling synchronized messages

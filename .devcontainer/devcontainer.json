@@ -20,5 +20,5 @@
         }
     },
     "remoteUser": "developer",
-    "postCreateCommand": "./.devcontainer/setup.sh"
+    "postCreateCommand": "bash ./.devcontainer/setup.sh"
 }

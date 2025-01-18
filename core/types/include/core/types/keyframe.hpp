@@ -21,6 +21,7 @@ struct PointCloud {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> points;
     std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> colors;
+    std::string frame_id;
 
     proto::PointCloud toProto() const {
         proto::PointCloud cloud_proto;
@@ -36,6 +37,7 @@ struct PointCloud {
             c->set_y(color.y());
             c->set_z(color.z());
         }
+        cloud_proto.set_frame_id(frame_id);
         return cloud_proto;
     }
 
@@ -50,6 +52,7 @@ struct PointCloud {
         for (const auto& color : cloud_proto.colors()) {
             cloud.colors.emplace_back(color.x(), color.y(), color.z());
         }
+        cloud.frame_id = cloud_proto.frame_id();
         return cloud;
     }
 };
@@ -141,6 +144,10 @@ public:
             throw std::runtime_error("Color image not available");
         }
         return *color_data;
+    }
+
+    bool hasCameraInfo() const {
+        return camera_info.has_value();
     }
 
     const CameraInfo& getCameraInfo() const {

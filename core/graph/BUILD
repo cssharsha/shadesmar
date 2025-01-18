@@ -15,6 +15,7 @@ cc_library(
         "@gtsam//:gtsam_unstable",
         "//common:logging",
         "//utils:message_synchronizer",
+        "//utils:stf",
     ],
     visibility = ["//visibility:public"],
 )

@@ -40,11 +40,14 @@ RUN apt-get update && apt-get install -y \
 # Install GTSAM from source
 RUN git clone https://github.com/borglab/gtsam.git /tmp/gtsam \
     && cd /tmp/gtsam \
-    && mkdir build && cd build \
-    && cmake .. -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_WITH_TBB=ON \
+    && git checkout 4.2.0 \
+    && mkdir build \
+    && cd build \
+    && cmake .. -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_WITH_TBB=ON -DCMAKE_CXX_FLAGS="-Wno-error=return-type" \
     && make -j$(nproc) \
     && make install \
-    && cd / && rm -rf /tmp/gtsam
+    && cd / \
+    && rm -rf /tmp/gtsam
 
 # # Install ROS2 Humble
 # RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
