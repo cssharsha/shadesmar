@@ -52,6 +52,7 @@ std::shared_ptr<types::KeyFrame> GraphAdapter::createKeyframe(
     auto keyframe = std::make_shared<types::KeyFrame>();
     keyframe->id = ++current_keyframe_id_;
     keyframe->pose = pose;
+
     if (cloud) {
         keyframe->depth_data = *cloud;
     }

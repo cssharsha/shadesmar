@@ -18,7 +18,10 @@ RosbagReader::RosbagReader(const std::string& bagfile, core::graph::FactorGraph&
       store_(store),
       visualizer_(visualizer),
       graph_adapter_(graph, store) {
+    tf_tree_ = std::make_shared<stf::TransformTree>();
     graph_adapter_.setKeyframeDistanceThreshold(config.keyframe_distance_threshold);
+    graph_adapter_.setTransformTree(tf_tree_);
+    visualizer_->setTransformTree(tf_tree_);
 
     // Set up graph update callback
     core::graph::GraphCallbacks callbacks;
@@ -117,6 +120,7 @@ bool RosbagReader::processBag() {
     if (pose_file_.is_open()) {
         pose_file_.close();
     }
+
     return true;
 }
 
@@ -143,29 +147,15 @@ void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::T
             transform_matrix.translate(pose.position);
             transform_matrix.rotate(pose.orientation);
 
-            tf_tree_.setTransform(transform.header.frame_id, transform.child_frame_id,
+            tf_tree_->setTransform(transform.header.frame_id, transform.child_frame_id,
                                   transform_matrix);
-
-            // Visualize transform if available
-            if (visualizer_ && visualizer_->isConnected() && tf_tree_built_) {
-                try {
-                    auto base_to_frame =
-                        tf_tree_.getTransform(config_.base_link_frame_id, transform.child_frame_id);
-                    std::string entity_path = "/odom/" + base_to_frame.path;
-                    visualizer_->addPose(pose, entity_path,
-                                         rclcpp::Time(transform.header.stamp).seconds());
-                } catch (const std::runtime_error& e) {
-                    std::cerr << "Failed to get transform for visualization: " << e.what()
-                              << std::endl;
-                }
-            }
 
             // Check if we have the required transforms
             if (!tf_tree_built_) {
                 try {
-                    tf_tree_.getTransform(config_.base_link_frame_id, config_.camera_frame_id);
+                    tf_tree_->getTransform(config_.base_link_frame_id, config_.camera_frame_id);
                     tf_tree_built_ = true;
-                    tf_tree_.printTree();
+                    tf_tree_->printTree();
                 } catch (const std::runtime_error&) {
                     // Still missing required transforms
                 }
@@ -191,22 +181,9 @@ void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessa
             transform_matrix.translate(pose.position);
             transform_matrix.rotate(pose.orientation);
 
-            tf_tree_.setTransform(transform.header.frame_id, transform.child_frame_id,
+            tf_tree_->setTransform(transform.header.frame_id, transform.child_frame_id,
                                   transform_matrix);
 
-            // Visualize transform if available
-            if (visualizer_ && visualizer_->isConnected()) {
-                try {
-                    auto base_to_frame =
-                        tf_tree_.getTransform(config_.base_link_frame_id, transform.child_frame_id);
-                    std::string entity_path = "/odom/" + base_to_frame.path;
-                    visualizer_->addPose(pose, entity_path,
-                                         rclcpp::Time(transform.header.stamp).seconds());
-                } catch (const std::runtime_error& e) {
-                    std::cerr << "Failed to get transform for visualization: " << e.what()
-                              << std::endl;
-                }
-            }
         } catch (const std::exception& e) {
             std::cerr << "Failed to process transform: " << e.what() << std::endl;
         }
@@ -227,11 +204,6 @@ void RosbagReader::processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry
     odometry_count_++;
     LOG(INFO) << "Processing odometry message #" << odometry_count_;
 
-    if (visualizer_ && visualizer_->isConnected()) {
-        std::string entity_path = "/odom/" + msg->child_frame_id;
-        visualizer_->addPose(pose, entity_path, timestamp);
-    }
-
     graph_adapter_.handleOdometryInput(pose, timestamp);
 
     if (pose_file_.is_open()) {
@@ -250,19 +222,6 @@ void RosbagReader::processImage(const std::shared_ptr<sensor_msgs::msg::Image> m
     core::types::Image image = conversions::toImage(*msg);
     double timestamp = rclcpp::Time(msg->header.stamp).seconds();
     graph_adapter_.handleImageInput(image, timestamp);
-
-    // Add visualization
-    if (visualizer_ && visualizer_->isConnected()) {
-        try {
-            auto base_to_camera = tf_tree_.getTransform("base_link", msg->header.frame_id);
-            std::string camera_path = "/odom/" + base_to_camera.path;
-            std::string image_path = camera_path + "/image";
-            cv::Mat cv_image = conversions::toOpenCVImage(*msg);
-            visualizer_->addImage(cv_image, image_path, timestamp);
-        } catch (const std::runtime_error& e) {
-            std::cerr << "Failed to visualize image: " << e.what() << std::endl;
-        }
-    }
 }
 
 void RosbagReader::processCameraInfo(const std::shared_ptr<sensor_msgs::msg::CameraInfo> msg) {
@@ -273,39 +232,6 @@ void RosbagReader::processCameraInfo(const std::shared_ptr<sensor_msgs::msg::Cam
     core::types::CameraInfo camera_info = conversions::toCameraInfo(*msg);
     double timestamp = rclcpp::Time(msg->header.stamp).seconds();
     graph_adapter_.handleCameraInfo(camera_info, timestamp);
-
-    // Add visualization
-    if (visualizer_ && visualizer_->isConnected()) {
-        // Check if principal point is not at (0,0)
-        if (std::abs(msg->k[2]) > 1e-6 || std::abs(msg->k[5]) > 1e-6) {
-            std::cerr << "Non-zero principal point (" << msg->k[2] << ", " << msg->k[5]
-                      << ") detected. Rerun visualization may be inaccurate." << std::endl;
-        }
-
-        // Create pinhole camera using from_focal_length_and_resolution
-        auto camera = rerun::archetypes::Pinhole::from_focal_length_and_resolution(
-            {static_cast<float>(msg->k[0]),
-             static_cast<float>(msg->k[4])},  // focal lengths (fx, fy)
-            {static_cast<float>(msg->width), static_cast<float>(msg->height)}  // resolution
-        );
-
-        try {
-            auto base_to_camera =
-                tf_tree_.getTransform(config_.base_link_frame_id, msg->header.frame_id);
-            std::string camera_path = "/odom/" + base_to_camera.path;
-            visualizer_->addCamera(camera, camera_path, timestamp);
-
-            // Add the transform visualization
-            Eigen::Isometry3d transform = base_to_camera.transform;
-            core::types::Pose camera_pose;
-            camera_pose.position = transform.translation();
-            camera_pose.orientation = Eigen::Quaterniond(transform.rotation());
-            visualizer_->addPose(camera_pose, camera_path, timestamp);
-        } catch (const std::runtime_error& e) {
-            std::cerr << "Failed to get transform from " << config_.base_link_frame_id << " to "
-                      << msg->header.frame_id << ": " << e.what() << std::endl;
-        }
-    }
 }
 
 void RosbagReader::processPointCloud(const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg) {
@@ -368,21 +294,6 @@ void RosbagReader::processPointCloud(const std::shared_ptr<sensor_msgs::msg::Poi
         double timestamp = rclcpp::Time(msg->header.stamp).seconds();
         graph_adapter_.handlePointCloudInput(cloud, timestamp);
 
-        if (visualizer_ && visualizer_->isConnected()) {
-            try {
-                auto base_to_camera =
-                    tf_tree_.getTransform(config_.base_link_frame_id, msg->header.frame_id);
-                std::string camera_path = "/odom/" + base_to_camera.path;
-                std::string cloud_path = camera_path + "/point_cloud";
-
-                core::types::Pose camera_pose;
-                camera_pose.position = base_to_camera.transform.translation();
-                camera_pose.orientation = Eigen::Quaterniond(base_to_camera.transform.rotation());
-                visualizer_->addPointCloud(cloud, cloud_path, timestamp, camera_pose);
-            } catch (const std::runtime_error& e) {
-                std::cerr << "Failed to visualize point cloud: " << e.what() << std::endl;
-            }
-        }
     } catch (const std::exception& e) {
         std::cerr << "Error processing point cloud: " << e.what() << std::endl;
     }

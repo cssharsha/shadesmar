@@ -19,4 +19,5 @@ message Pose {
     Vector3 position = 1;
     Quaternion orientation = 2;
     double timestamp = 3;
+    string frame_id = 4;
 }

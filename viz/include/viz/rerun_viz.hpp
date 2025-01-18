@@ -2,6 +2,7 @@
 
 #include <rerun.hpp>
 #include <rerun/archetypes/pinhole.hpp>
+#include <stf/transform_tree.hpp>
 
 #include "viz/interface.hpp"
 
@@ -25,15 +26,11 @@ public:
     void addImage(const cv::Mat& image, const std::string& name = "image") override {}
 
     void visualizeFactorGraph(const core::graph::FactorGraph& graph) override;
-    void visualizeKeyFrame(const core::types::KeyFrame::ConstPtr& keyframe) override;
-    void visualizeOdometryTrajectory(const std::vector<Eigen::Vector3d>& positions);
 
-    void clear() override;
-    void update() override;
-    void setTimestamp(double timestamp) override;
-
-    // Add new method to get time range
-    std::pair<double, double> getTimeRange(const core::graph::FactorGraph& graph);
+    void visualizeKeyFrame(const core::types::KeyFrame::ConstPtr& keyframe) override {}
+    void clear() override {}
+    void update() override {}
+    void setTimestamp(double timestamp) override {}
 
     void addPose(const core::types::Pose& pose, const std::string& entity_path, double timestamp);
     void addImage(const cv::Mat& image, const std::string& entity_path, double timestamp);
@@ -42,6 +39,10 @@ public:
     void addCamera(const rerun::archetypes::Pinhole& camera, const std::string& entity_path,
                    double timestamp = 0);
 
+    void setTransformTree(std::shared_ptr<stf::TransformTree> transform_tree) {
+        transform_tree_ = transform_tree;
+    }
+
 private:
     std::string name_;
     std::string host_;
@@ -49,6 +50,7 @@ private:
     rerun::RecordingStream rec_;
     bool is_connected_ = false;
     double current_timestamp_ = 0;
+    std::shared_ptr<stf::TransformTree> transform_tree_;
 
     // Helper functions
     rerun::Transform3D toRerunTransform(const core::types::Pose& pose);

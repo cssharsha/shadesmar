@@ -12,6 +12,7 @@ core::types::Pose toPose(const geometry_msgs::msg::PoseStamped& pose_msg) {
     pose.orientation = Eigen::Quaterniond(pose_msg.pose.orientation.w, pose_msg.pose.orientation.x,
                                           pose_msg.pose.orientation.y, pose_msg.pose.orientation.z);
     pose.timestamp = pose_msg.header.stamp.sec + pose_msg.header.stamp.nanosec * 1e-9;
+    pose.frame_id = pose_msg.header.frame_id;
     return pose;
 }
 
@@ -24,6 +25,7 @@ core::types::Pose toPose(const nav_msgs::msg::Odometry& odometry_msg) {
         odometry_msg.pose.pose.orientation.w, odometry_msg.pose.pose.orientation.x,
         odometry_msg.pose.pose.orientation.y, odometry_msg.pose.pose.orientation.z);
     pose.timestamp = odometry_msg.header.stamp.sec + odometry_msg.header.stamp.nanosec * 1e-9;
+    pose.frame_id = odometry_msg.header.frame_id;
     return pose;
 }
 
@@ -36,6 +38,7 @@ geometry_msgs::msg::PoseStamped toPoseMsg(const core::types::Pose& pose) {
     msg.pose.orientation.x = pose.orientation.x();
     msg.pose.orientation.y = pose.orientation.y();
     msg.pose.orientation.z = pose.orientation.z();
+    msg.header.frame_id = pose.frame_id;
     return msg;
 }
 
@@ -70,7 +73,9 @@ cv::Mat toOpenCVImage(const sensor_msgs::msg::Image& image_msg) {
 
 core::types::Image toImage(const sensor_msgs::msg::Image& image_msg) {
     cv::Mat cv_image = toOpenCVImage(image_msg);
-    return core::types::Image::fromCvMat(cv_image, image_msg.encoding);
+    auto image = core::types::Image::fromCvMat(cv_image, image_msg.encoding);
+    image.frame_id = image_msg.header.frame_id;
+    return image;
 }
 
 sensor_msgs::msg::Image toImageMsg(const cv::Mat& image) {
@@ -80,6 +85,7 @@ sensor_msgs::msg::Image toImageMsg(const cv::Mat& image) {
     msg.height = image.rows;
     msg.width = image.cols;
     msg.step = image.cols * image.elemSize();
+    msg.header.frame_id = "default_camera";
 
     // Set encoding based on image type
     switch (image.type()) {
@@ -109,6 +115,7 @@ core::proto::CameraInfo toCameraInfoProto(const sensor_msgs::msg::CameraInfo& ca
     info.set_width(camera_info_msg.width);
     info.set_height(camera_info_msg.height);
     info.set_distortion_model(camera_info_msg.distortion_model);
+    info.set_frame_id(camera_info_msg.header.frame_id);
 
     // Set intrinsic matrix K (3x3)
     for (size_t i = 0; i < 9; ++i) {
@@ -128,6 +135,7 @@ core::types::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_
     info.width = camera_info_msg.width;
     info.height = camera_info_msg.height;
     info.distortion_model = camera_info_msg.distortion_model;
+    info.frame_id = camera_info_msg.header.frame_id;
 
     // Copy intrinsic matrix K (3x3)
     info.k = std::vector<double>(camera_info_msg.k.begin(), camera_info_msg.k.end());
@@ -142,6 +150,7 @@ core::types::PointCloud toPointCloud(const sensor_msgs::msg::Image& depth_msg,
                                      const sensor_msgs::msg::CameraInfo& camera_info_msg) {
     cv::Mat depth = toImage(depth_msg).toCvMat();
     core::types::PointCloud cloud;
+    cloud.frame_id = depth_msg.header.frame_id;
 
     // Get camera intrinsics from K matrix
     float fx = camera_info_msg.k[0];
