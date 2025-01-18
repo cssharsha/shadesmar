@@ -7,6 +7,7 @@ import "core/proto/geometry.proto";
 message PointCloud {
   repeated Vector3 points = 1;
   repeated Vector3 colors = 2; // RGB values normalized to [0,1]
+  string frame_id = 3;
 }
 
 message Image {
@@ -15,6 +16,7 @@ message Image {
   uint32 height = 3;
   uint32 channels = 4;
   string encoding = 5; // e.g., "rgb8", "bgr8"
+  string frame_id = 6;
 }
 
 message CameraInfo {
@@ -23,4 +25,5 @@ message CameraInfo {
   uint32 width = 3;
   uint32 height = 4;
   string distortion_model = 5;
+  string frame_id = 6;
 }
