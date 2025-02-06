@@ -124,6 +124,17 @@ RUN mkdir -p /usr/share/vulkan/icd.d/ && \
         } \
     }' > /usr/share/vulkan/icd.d/nvidia_icd.json
 
+# Install zsh and other required packages earlier in the Dockerfile
+RUN apt-get update && apt-get install -y \
+    zsh \
+    git-lfs \
+    htop \
+    tmux \
+    vim \
+    curl \
+    fonts-powerline \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user
 ARG USERNAME=developer
 ARG USER_UID=1000
@@ -132,7 +143,8 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
     && apt-get update \
     && apt-get install -y sudo \
-    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME
+    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
+    && chsh -s $(which zsh) $USERNAME
 
 USER $USERNAME
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
@@ -145,3 +157,11 @@ WORKDIR /workspace
 
 # Setup ROS2 environment
 # RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+
+# Copy setup script into the container
+COPY --chmod=755 dev/docker/setup.sh /tmp/setup.sh
+
+# Run setup script for the developer user
+RUN /tmp/setup.sh
+
+ENTRYPOINT ["/bin/zsh"]

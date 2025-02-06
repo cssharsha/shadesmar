@@ -6,9 +6,9 @@
 #include <optional>
 #include <tuple>
 #include <utility>
-#include "core/types/pose.hpp"
-
+#include "core/types/keyframe.hpp"
 #include "logging/logging.hpp"
+#include "message_synchronizer/message_queue.hpp"
 
 namespace utils {
 
@@ -49,16 +49,20 @@ public:
     void cleanup(double timestamp) {
         LOG(INFO) << std::fixed << "Cleaning up messages older than " << timestamp;
 
-        int pose_count_before = pose_queue_.size();
+        int pose_count_before = pose_queue_.queue().size();
         LOG(INFO) << "Pose queue size before cleanup: " << pose_count_before;
         cleanupDeque(pose_queue_, timestamp);
-        LOG(INFO) << "Removed " << (pose_count_before - pose_queue_.size()) << " pose messages";
+        LOG(INFO) << "Removed " << (pose_count_before - pose_queue_.queue().size())
+                  << " pose messages";
 
         if constexpr (sizeof...(Messages) > 0) {
             LOG(INFO) << "Cleaning up message queues, number of queues: " << sizeof...(Messages);
             try {
-                (cleanupDeque(std::get<std::deque<std::pair<double, Messages>>>(message_queues_),
+                (cleanupDeque(std::get<MessageQueue<std::pair<double, Messages>>>(message_queues_),
                               timestamp),
+                 ...);
+                (std::get<MessageQueue<std::pair<double, Messages>>>(message_queues_)
+                     .tryGetMessages(timestamp, false),
                  ...);
                 LOG(INFO) << "Message queues cleanup completed successfully";
             } catch (const std::exception& e) {
@@ -79,8 +83,8 @@ public:
     }
 
 private:
-    std::deque<std::pair<double, core::types::Pose>> pose_queue_;
-    std::tuple<std::deque<std::pair<double, Messages>>...> message_queues_;
+    MessageQueue<std::pair<double, core::types::Pose>> pose_queue_;
+    std::tuple<MessageQueue<std::pair<double, Messages>>...> message_queues_;
     KeyframeCallback keyframe_callback_;
     double distance_threshold_;
     double time_threshold_;
@@ -89,15 +93,15 @@ private:
 
     // Helper to add message to deque in sorted order
     template <typename T>
-    void addToDeque(std::deque<std::pair<double, T>>& queue, const T& msg, double timestamp) {
+    void addToDeque(MessageQueue<std::pair<double, T>>& queue, const T& msg, double timestamp) {
         // LOG(DEBUG) << "Adding message to queue at timestamp " << timestamp;
-
-        auto it = queue.begin();
-        while (it != queue.end() && it->first < timestamp) {
+        auto& deque = queue.queue();
+        auto it = deque.begin();
+        while (it != deque.end() && it->first < timestamp) {
             ++it;
         }
-        queue.insert(it, std::make_pair(timestamp, msg));
-        // LOG(DEBUG) << "Queue size after insertion: " << queue.size();
+        deque.insert(it, std::make_pair(timestamp, msg));
+        // LOG(DEBUG) << "Queue size after insertion: " << deque.size();
     }
 
     // Helper to add message to correct deque based on type
@@ -105,7 +109,7 @@ private:
     void addToDequeByType(const T& msg, double timestamp) {
         if constexpr (std::is_same_v<T, First>) {
             // LOG(DEBUG) << "Message type match found, adding to appropriate queue";
-            addToDeque(std::get<std::deque<std::pair<double, First>>>(message_queues_), msg,
+            addToDeque(std::get<MessageQueue<std::pair<double, First>>>(message_queues_), msg,
                        timestamp);
         } else if constexpr (sizeof...(Rest) > 0) {
             // LOG(DEBUG) << "Message type mismatch, trying next type";
@@ -115,25 +119,26 @@ private:
 
     // Helper to cleanup deque
     template <typename T>
-    void cleanupDeque(std::deque<std::pair<double, T>>& queue, double timestamp) {
+    void cleanupDeque(MessageQueue<std::pair<double, T>>& queue, double timestamp) {
         LOG(INFO) << std::fixed << "Cleaning up deque of type " << typeid(T).name();
 
-        if (queue.empty()) {
+        auto& deque = queue.queue();
+        if (deque.empty()) {
             LOG(INFO) << "Queue is empty, nothing to clean";
             return;
         }
 
-        LOG(INFO) << std::fixed << " - Queue size before: " << queue.size()
-                  << "\n - Front timestamp: " << queue.front().first
-                  << "\n - Back timestamp: " << queue.back().first
+        LOG(INFO) << std::fixed << " - Queue size before: " << deque.size()
+                  << "\n - Front timestamp: " << deque.front().first
+                  << "\n - Back timestamp: " << deque.back().first
                   << "\n - Cleanup timestamp: " << timestamp;
 
-        size_t initial_size = queue.size();
-        while (!queue.empty() && queue.front().first < timestamp + 1e-6) {
-            LOG(INFO) << std::fixed << "Popping message at timestamp " << queue.front().first;
-            queue.pop_front();
+        size_t initial_size = deque.size();
+        while (!deque.empty() && deque.front().first < timestamp + 1e-6) {
+            LOG(INFO) << std::fixed << "Popping message at timestamp " << deque.front().first;
+            deque.pop_front();
         }
-        LOG(INFO) << "Cleaned up " << (initial_size - queue.size()) << " messages";
+        LOG(INFO) << "Cleaned up " << (initial_size - deque.size()) << " messages";
     }
 
     // Check if all queues have messages at the given timestamp and return matching messages
@@ -143,45 +148,45 @@ private:
                   << " (require_all=" << require_all << ")";
 
         std::tuple<bool, std::optional<Messages>...> result;
-        std::get<0>(result) = false;  // success flag
+        std::get<0>(result) = false;  // Initialize success flag to false
 
+        // Get results from each queue
+        auto queue_results =
+            std::make_tuple((std::get<MessageQueue<std::pair<double, Messages>>>(message_queues_)
+                                 .tryGetMessages(timestamp, false))...);
+
+        // Check if we have all messages or any message based on require_all
         bool has_any_message = false;
-        auto check_and_get_messages = [&](const auto&... queues) {
-            bool all_present = true;
-            (
-                (void)[&] {
-                    using QueueType = std::decay_t<decltype(queues)>;
-                    using MessageType = typename QueueType::value_type::second_type;
+        bool all_present = true;
 
-                    LOG(INFO) << "Checking queue of type " << typeid(MessageType).name()
-                              << " (size=" << queues.size() << ")";
-
-                    if (!queues.empty()) {
-                        // Print timestamp range of messages in queue
-                        LOG(INFO) << "  Queue timestamp range: [" << std::fixed
-                                  << queues.front().first << ", " << queues.back().first << "]";
-                        double diff = std::abs(queues.back().first - timestamp);
-                        LOG(INFO) << "  Latest message timestamp diff: " << diff;
-                        if (diff < 0.5) {
-                            has_any_message = true;
-                            std::get<std::optional<MessageType>>(result) = queues.back().second;
-                            LOG(INFO) << "  Found matching message";
-                        } else {
-                            all_present = false;
-                            LOG(INFO) << "  No matching message (timestamp diff too large)";
-                        }
-                    } else {
-                        all_present = false;
-                        LOG(INFO) << "  Queue is empty";
-                    }
-                }(),
-                ...);
-
-            std::get<0>(result) = require_all ? all_present : has_any_message;
+        // Helper function to process a single queue result
+        auto process_single_result = [&](auto& result_tuple, auto& output_opt) {
+            if (std::get<0>(result_tuple)) {
+                has_any_message = true;
+                if (std::get<1>(result_tuple)) {
+                    output_opt = std::get<1>(result_tuple);
+                }
+            } else {
+                all_present = false;
+            }
         };
 
-        std::apply(check_and_get_messages, message_queues_);
-        LOG(INFO) << "Message check result: " << (std::get<0>(result) ? "success" : "failure");
+        // Process each queue result and store in the result tuple
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+            ((process_single_result(
+                 std::get<I>(queue_results),
+                 std::get<std::optional<std::tuple_element_t<I, std::tuple<Messages...>>>>(
+                     result))),
+             ...);
+        }(std::make_index_sequence<sizeof...(Messages)>{});
+
+        // Set the success flag based on require_all
+        std::get<0>(result) = require_all ? all_present : has_any_message;
+
+        LOG(INFO) << "Message check result: " << (std::get<0>(result) ? "success" : "failure")
+                  << " (require_all=" << require_all << ", has_any=" << has_any_message
+                  << ", all_present=" << all_present << ")";
+
         return result;
     }
 
@@ -210,25 +215,26 @@ private:
 
     // Try to call callback with queued messages
     void tryCallback() {
-        if (pose_queue_.empty()) {
+        if (pose_queue_.queue().empty()) {
             LOG(INFO) << "No poses in queue, skipping callback";
             return;
         }
 
-        if (std::abs(pose_queue_.back().first - pose_queue_.front().first) < time_threshold_) {
+        const auto& pose_deque = pose_queue_.queue();
+        if (std::abs(pose_deque.back().first - pose_deque.front().first) < time_threshold_) {
             LOG(INFO) << std::fixed
                       << "Time threshold not met, waiting for multiple messages to queue: "
-                      << std::abs(pose_queue_.back().first - pose_queue_.front().first)
-                      << "Pose queue size: " << pose_queue_.size();
+                      << std::abs(pose_deque.back().first - pose_deque.front().first)
+                      << "Pose queue size: " << pose_deque.size();
             return;
         }
 
         LOG(INFO) << std::fixed
-                  << "Trying callback with poses in queue (size=" << pose_queue_.size()
-                  << ", first=" << pose_queue_.front().first
-                  << ", last=" << pose_queue_.back().first << ")";
+                  << "Trying callback with poses in queue (size=" << pose_queue_.queue().size()
+                  << ", first=" << pose_deque.front().first << ", last=" << pose_deque.back().first
+                  << ")";
 
-        for (const auto& [pose_time, pose] : pose_queue_) {
+        for (const auto& [pose_time, pose] : pose_deque) {
             if (last_keyframe_) {
                 auto distance = (last_keyframe_->pose.position - pose.position).norm();
                 auto lastKeyframeHasMessages = last_keyframe_->hasColorImage() ||
@@ -251,6 +257,7 @@ private:
                 break;
             }
         }
+        LOG(INFO) << "finished pose queue";
     }
 };
 

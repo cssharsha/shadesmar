@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   dev:
     build:
@@ -7,11 +5,10 @@ services:
       dockerfile: dev/docker/Dockerfile
     volumes:
       - ../..:/workspace:cached
-      - ~/.gitconfig:/home/developer/.gitconfig:ro
-      - /mnt/remote-storage:/mnt/remote-storage
+      - ${HOME}/.gitconfig:/home/developer/.gitconfig:ro,z,optional=true
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - ~/.Xauthority:/home/developer/.Xauthority
-      # - /run/user/$(id -u):/tmp/runtime-developer
+      - ${HOME}/.Xauthority:/home/developer/.Xauthority:ro,z,optional=true
+      - /mnt/remote-storage:/mnt/remote-storage:optional=true
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
@@ -27,12 +24,12 @@ services:
       - RERUN_PREFER_OPENGL=1  # Try to prefer OpenGL over Vulkan
       - __GLX_VENDOR_LIBRARY_NAME=mesa  # Force Mesa software rendering
       - MESA_GL_VERSION_OVERRIDE=3.3
+      - SHELL=/bin/zsh
     cap_add:
       - SYS_PTRACE
     security_opt:
       - seccomp:unconfined
     network_mode: host
-    command: sleep infinity
     user: developer
     deploy:
       resources:
@@ -40,10 +37,10 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [ gpu ]
+              capabilities: [gpu]
     entrypoint: >
       /bin/bash -c "
         mkdir -p /tmp/runtime-${USER} &&
         chmod 700 /tmp/runtime-${USER} &&
-        exec sleep infinity
+        /bin/zsh -c 'while true; do sleep 1; done'
       "

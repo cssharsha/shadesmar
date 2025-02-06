@@ -14,7 +14,10 @@ cc_library(
 
 cc_library(
     name = "message_synchronizer",
-    hdrs = ["message_synchronizer/message_synchronizer.hpp"],
+    hdrs = [
+      "message_synchronizer/message_synchronizer.hpp",
+      "message_synchronizer/message_queue.hpp",
+    ],
     includes = ["."],
     deps = [
         "//core/types",
