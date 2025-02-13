@@ -7,8 +7,9 @@
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
-#include <core/types/factor.hpp>
-#include <core/types/keyframe.hpp>
+
+#include "core/types/factor.hpp"
+#include "core/types/keyframe.hpp"
 
 namespace core {
 namespace graph {

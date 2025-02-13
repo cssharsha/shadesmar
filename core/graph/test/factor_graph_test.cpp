@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
-#include <core/graph/factor_graph.hpp>
-#include <core/graph/util.hpp>
+
+#include "core/graph/factor_graph.hpp"
+#include "core/graph/util.hpp"
 
 namespace core {
 namespace graph {

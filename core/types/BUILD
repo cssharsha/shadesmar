@@ -2,9 +2,9 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 cc_library(
     name = "types",
-    hdrs = glob(["include/core/types/*.hpp"]),
+    hdrs = glob(["*.hpp"]),
     includes = [
-        "include",
+        ".",
         "$(GENDIR)",
     ],
     deps = [

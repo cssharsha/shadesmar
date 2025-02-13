@@ -66,7 +66,8 @@ public:
     uint64_t id;
     Pose pose;
     std::variant<PointCloud, Image> depth_data;
-    std::optional<Image> color_data;
+    std::vector<Image> color_data;
+    uint32_t color_image_count;
     std::optional<CameraInfo> camera_info;
 
     proto::KeyFrame toProto() const {
@@ -80,9 +81,10 @@ public:
             *kf_proto.mutable_depth_image() = std::get<Image>(depth_data).toProto();
         }
 
-        if (color_data) {
-            *kf_proto.mutable_color_image() = color_data->toProto();
+        for (const auto& color_image : color_data) {
+            *kf_proto.add_color_images() = color_image.toProto();
         }
+        kf_proto.set_color_image_count(color_image_count);
 
         if (camera_info) {
             *kf_proto.mutable_camera_info() = camera_info->toProto();
@@ -102,9 +104,11 @@ public:
             kf->depth_data = Image::fromProto(kf_proto.depth_image());
         }
 
-        if (kf_proto.has_color_image()) {
-            kf->color_data = Image::fromProto(kf_proto.color_image());
+        kf->color_data.reserve(kf_proto.color_images_size());
+        for (const auto& color_image : kf_proto.color_images()) {
+            kf->color_data.push_back(Image::fromProto(color_image));
         }
+        kf->color_image_count = kf_proto.color_image_count();
 
         if (kf_proto.has_camera_info()) {
             kf->camera_info = CameraInfo::fromProto(kf_proto.camera_info());
@@ -135,15 +139,26 @@ public:
         return std::get<Image>(depth_data);
     }
 
-    bool hasColorImage() const {
-        return color_data.has_value();
+    bool hasColorImages() const {
+        return !color_data.empty();
     }
 
-    const Image& getColorImage() const {
-        if (!hasColorImage()) {
-            throw std::runtime_error("Color image not available");
+    size_t getColorImageCount() const {
+        return color_image_count;
+    }
+
+    const std::vector<Image>& getColorImages() const {
+        return color_data;
+    }
+
+    const Image& getColorImage(size_t index = 0) const {
+        if (!hasColorImages()) {
+            throw std::runtime_error("No color images available");
         }
-        return *color_data;
+        if (index >= color_data.size()) {
+            throw std::runtime_error("Color image index out of range");
+        }
+        return color_data[index];
     }
 
     bool hasCameraInfo() const {

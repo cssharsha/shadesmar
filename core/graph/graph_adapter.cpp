@@ -58,7 +58,9 @@ std::shared_ptr<types::KeyFrame> GraphAdapter::createKeyframe(
     }
 
     if (image) {
-        keyframe->color_data = *image;
+        keyframe->color_data.clear();
+        keyframe->color_data.push_back(*image);
+        keyframe->color_image_count = 1;
     }
 
     if (camera_info) {

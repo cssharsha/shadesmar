@@ -148,7 +148,7 @@ void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::T
             transform_matrix.rotate(pose.orientation);
 
             tf_tree_->setTransform(transform.header.frame_id, transform.child_frame_id,
-                                  transform_matrix);
+                                   transform_matrix);
 
             // Check if we have the required transforms
             if (!tf_tree_built_) {
@@ -182,7 +182,7 @@ void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessa
             transform_matrix.rotate(pose.orientation);
 
             tf_tree_->setTransform(transform.header.frame_id, transform.child_frame_id,
-                                  transform_matrix);
+                                   transform_matrix);
 
         } catch (const std::exception& e) {
             std::cerr << "Failed to process transform: " << e.what() << std::endl;

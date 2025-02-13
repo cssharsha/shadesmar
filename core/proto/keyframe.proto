@@ -15,5 +15,6 @@ message KeyFrame {
   }
 
   CameraInfo camera_info = 5; // Optional, present if image data exists
-  Image color_image = 6;      // Added color image
+  repeated Image color_images = 6;  // Array of color images
+  uint32 color_image_count = 7;  // Number of color images
 }

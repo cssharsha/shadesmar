@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
-#include <core/types/image.hpp>
-#include <core/types/keyframe.hpp>
-#include <core/types/pose.hpp>
+
 #include <opencv2/core.hpp>
+
+#include "core/types/image.hpp"
+#include "core/types/keyframe.hpp"
+#include "core/types/pose.hpp"
 
 namespace core {
 namespace types {
@@ -135,7 +137,8 @@ TEST(TypesTest, KeyFrameWithImageData) {
     // Create test color image
     cv::Mat color_mat(480, 640, CV_8UC3, cv::Scalar(100, 150, 200));
     Image color_image = Image::fromCvMat(color_mat, "bgr8");
-    kf->color_data = color_image;
+    kf->color_data.push_back(color_image);
+    kf->color_image_count = 1;
 
     // Convert to proto and back
     auto proto = kf->toProto();
@@ -144,7 +147,8 @@ TEST(TypesTest, KeyFrameWithImageData) {
     // Check basic properties
     EXPECT_EQ(kf->id, converted_kf->id);
     EXPECT_TRUE(std::holds_alternative<Image>(converted_kf->depth_data));
-    EXPECT_TRUE(converted_kf->color_data.has_value());
+    EXPECT_TRUE(converted_kf->hasColorImages());
+    EXPECT_EQ(converted_kf->getColorImageCount(), 1);
 
     // Check depth image
     const auto& conv_depth_img = std::get<Image>(converted_kf->depth_data);
@@ -152,16 +156,15 @@ TEST(TypesTest, KeyFrameWithImageData) {
     EXPECT_EQ(conv_depth_img.width, orig_depth_img.width);
     EXPECT_EQ(conv_depth_img.height, orig_depth_img.height);
     EXPECT_EQ(conv_depth_img.encoding, orig_depth_img.encoding);
-
     // Check color image
-    EXPECT_EQ(converted_kf->color_data->width, kf->color_data->width);
-    EXPECT_EQ(converted_kf->color_data->height, kf->color_data->height);
-    EXPECT_EQ(converted_kf->color_data->encoding, kf->color_data->encoding);
-
+    EXPECT_EQ(converted_kf->getColorImage(0).width, kf->getColorImage(0).width);
+    EXPECT_EQ(converted_kf->getColorImage(0).height, kf->getColorImage(0).height);
+    EXPECT_EQ(converted_kf->getColorImage(0).encoding, kf->getColorImage(0).encoding);
+    // Verify image data - compare each channel separately for color image
     // Verify image data - compare each channel separately for color image
     std::vector<cv::Mat> orig_color_channels, conv_color_channels;
-    cv::split(kf->color_data->data, orig_color_channels);
-    cv::split(converted_kf->color_data->data, conv_color_channels);
+    cv::split(kf->getColorImage(0).data, orig_color_channels);
+    cv::split(converted_kf->getColorImage(0).data, conv_color_channels);
 
     // Add size checks before comparison
     for (int i = 0; i < 3; ++i) {

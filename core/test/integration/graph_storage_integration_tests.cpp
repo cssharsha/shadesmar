@@ -1,7 +1,8 @@
 // core/test/integration/graph_storage_integration_test.cpp
 #include <gtest/gtest.h>
-#include <core/graph/factor_graph.hpp>
-#include <core/storage/map_store.hpp>
+
+#include "core/graph/factor_graph.hpp"
+#include "core/storage/map_store.hpp"
 
 class GraphStorageIntegrationTest : public ::testing::Test {
 protected:

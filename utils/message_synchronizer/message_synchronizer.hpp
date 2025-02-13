@@ -237,7 +237,7 @@ private:
         for (const auto& [pose_time, pose] : pose_deque) {
             if (last_keyframe_) {
                 auto distance = (last_keyframe_->pose.position - pose.position).norm();
-                auto lastKeyframeHasMessages = last_keyframe_->hasColorImage() ||
+                auto lastKeyframeHasMessages = last_keyframe_->hasColorImages() ||
                                                last_keyframe_->hasImage() ||
                                                last_keyframe_->hasPointCloud();
                 if (!lastKeyframeHasMessages || distance > distance_threshold_) {

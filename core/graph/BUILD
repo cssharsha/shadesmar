@@ -2,12 +2,13 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 cc_library(
     name = "graph",
-    srcs = glob(["src/*.cpp"]),
-    hdrs = glob([
-        "include/core/graph/*.hpp",
-        "include/core/graph/util.hpp",
+    srcs = glob([
+        "*.cpp",
     ]),
-    includes = ["include"],
+    hdrs = glob([
+        "*.hpp",
+    ]),
+    includes = ["."],
     deps = [
         "//core/types",
         "//core/storage",

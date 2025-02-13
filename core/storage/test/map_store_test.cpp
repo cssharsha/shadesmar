@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
-#include <core/storage/map_store.hpp>
 #include <filesystem>
+
+#include "core/storage/map_store.hpp"
 
 namespace core {
 namespace storage {
