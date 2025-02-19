@@ -1,7 +1,5 @@
 #pragma once
 
-#include <core/graph/factor_graph.hpp>
-#include <core/storage/map_store.hpp>
 #include <fstream>
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
@@ -14,7 +12,9 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
+#include "core/graph/factor_graph.hpp"
 #include "core/graph/graph_adapter.hpp"
+#include "core/storage/map_store.hpp"
 #include "ros/conversions.hpp"
 #include "stf/transform_tree.hpp"
 #include "viz/rerun_viz.hpp"

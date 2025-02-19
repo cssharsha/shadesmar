@@ -70,6 +70,11 @@ public:
     uint32_t color_image_count;
     std::optional<CameraInfo> camera_info;
 
+    std::vector<std::vector<cv::Point2f>> keypoints;
+    std::vector<cv::Mat> descriptors;
+    std::vector<std::vector<size_t>> track_ids;
+
+    // TODO: Add the proto defs for the descriptors later
     proto::KeyFrame toProto() const {
         proto::KeyFrame kf_proto;
         kf_proto.set_id(id);
@@ -170,6 +175,74 @@ public:
             throw std::runtime_error("Camera info not available");
         }
         return *camera_info;
+    }
+
+    // Keypoints methods
+    bool hasKeypoints(size_t camera_idx = 0) const {
+        return camera_idx < keypoints.size() && !keypoints[camera_idx].empty();
+    }
+
+    const std::vector<cv::Point2f>& getKeypoints(size_t camera_idx = 0) const {
+        if (!hasKeypoints(camera_idx)) {
+            throw std::runtime_error("No keypoints available for camera " +
+                                     std::to_string(camera_idx));
+        }
+        return keypoints[camera_idx];
+    }
+
+    void setKeypoints(const std::vector<cv::Point2f>& kpts, size_t camera_idx = 0) {
+        if (camera_idx >= keypoints.size()) {
+            keypoints.resize(camera_idx + 1);
+        }
+        keypoints[camera_idx] = kpts;
+    }
+
+    // Descriptors methods
+    bool hasDescriptors(size_t camera_idx = 0) const {
+        return camera_idx < descriptors.size() && !descriptors[camera_idx].empty();
+    }
+
+    const cv::Mat& getDescriptors(size_t camera_idx = 0) const {
+        if (!hasDescriptors(camera_idx)) {
+            throw std::runtime_error("No descriptors available for camera " +
+                                     std::to_string(camera_idx));
+        }
+        return descriptors[camera_idx];
+    }
+
+    void setDescriptors(const cv::Mat& desc, size_t camera_idx = 0) {
+        if (camera_idx >= descriptors.size()) {
+            descriptors.resize(camera_idx + 1);
+        }
+        descriptors[camera_idx] = desc;
+    }
+
+    // Track IDs methods
+    bool hasTrackIds(size_t camera_idx = 0) const {
+        return camera_idx < track_ids.size() && !track_ids[camera_idx].empty();
+    }
+
+    const std::vector<size_t>& getTrackIds(size_t camera_idx = 0) const {
+        if (!hasTrackIds(camera_idx)) {
+            throw std::runtime_error("No track IDs available for camera " +
+                                     std::to_string(camera_idx));
+        }
+        return track_ids[camera_idx];
+    }
+
+    void setTrackIds(const std::vector<size_t>& ids, size_t camera_idx = 0) {
+        if (camera_idx >= track_ids.size()) {
+            track_ids.resize(camera_idx + 1);
+        }
+        track_ids[camera_idx] = ids;
+    }
+
+    // Feature count method
+    size_t getFeatureCount(size_t camera_idx = 0) const {
+        if (!hasKeypoints(camera_idx)) {
+            return 0;
+        }
+        return keypoints[camera_idx].size();
     }
 };
 

@@ -27,6 +27,9 @@ public:
     KeyFramePtr getKeyFrame(uint64_t id) const;
     std::vector<KeyFramePtr> getAllKeyFrames() const;
     std::vector<types::Factor> getFactors() const;
+    const std::map<uint64_t, KeyFramePtr>& getKeyframes() const {
+        return keyframes_;
+    }
 
 private:
     std::map<uint64_t, KeyFramePtr> keyframes_;

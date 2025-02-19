@@ -115,7 +115,7 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
                                                          static_cast<float>(position.z())});
 
         auto getStaticTransform = [&](const std::string& source, const std::string& target,
-                                     stf::TransformTree::TransformResult& transform) {
+                                      stf::TransformTree::TransformResult& transform) {
             try {
                 transform = transform_tree_->getTransform(source, target);
             } catch (const std::exception& e) {
@@ -125,12 +125,11 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
             return true;
         };
 
-        if (kf->hasColorImage() && kf->hasCameraInfo()) {
+        if (kf->hasColorImages() && kf->hasCameraInfo()) {
             const auto& image_data = kf->getColorImage();
             const auto& K = kf->getCameraInfo();
             stf::TransformTree::TransformResult transformResult;
             if (getStaticTransform("base_link", K.frame_id, transformResult)) {
-
                 auto camera = rerun::archetypes::Pinhole::from_focal_length_and_resolution(
                     {static_cast<float>(K.k[0]), static_cast<float>(K.k[4])},
                     {static_cast<float>(K.width), static_cast<float>(K.height)});
@@ -148,14 +147,14 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
                 addImage(image_data.toCvMat(), camera_path, current_timestamp_);
 
                 // Log the tf b/w base_link and camera frame
-                auto position = kf->pose.position.cast<float>() ;
+                auto position = kf->pose.position.cast<float>();
                 auto camera_position = camera_pose.position.cast<float>();
                 std::vector<rerun::datatypes::Vec3D> tf_points{
                     {position.x(), position.y(), position.z()},
                     {camera_position.x(), camera_position.y(), camera_position.z()}};
-                rec_.log(camera_path + "/tf",
-                    rerun::LineStrips3D({tf_points})
-                        .with_colors({rerun::components::Color(0, 255, 0)}));  // Green color for visibility
+                rec_.log(camera_path + "/tf", rerun::LineStrips3D({tf_points})
+                                                  .with_colors({rerun::components::Color(
+                                                      0, 255, 0)}));  // Green color for visibility
 
                 numCameras++;
             }
@@ -169,12 +168,11 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
         }
     }
 
-    LOG(INFO) << "Num cameras: " << numCameras << " Num clouds: " << numClouds << " Num path points: "
-              << path_points.size();
+    LOG(INFO) << "Num cameras: " << numCameras << " Num clouds: " << numClouds
+              << " Num path points: " << path_points.size();
 
     rec_.log("/world/odom/trajectory",
-        rerun::Points3D({path_points})
-            .with_colors({rerun::components::Color(255, 0, 0)}));
+             rerun::Points3D({path_points}).with_colors({rerun::components::Color(255, 0, 0)}));
 }
 
 rerun::Transform3D RerunVisualizer::toRerunTransform(const core::types::Pose& pose) {
