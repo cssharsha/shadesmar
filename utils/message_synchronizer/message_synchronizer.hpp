@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <optional>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include "core/types/pose.hpp"
 
@@ -136,76 +137,56 @@ private:
         LOG(INFO) << "Cleaned up " << (initial_size - queue.size()) << " messages";
     }
 
-    // Check if all queues have messages at the given timestamp and return matching messages
-    std::tuple<bool, std::optional<Messages>...> tryGetMessages(double timestamp,
-                                                                bool require_all = true) const {
-        LOG(INFO) << "Checking messages at timestamp " << std::fixed << timestamp
-                  << " (require_all=" << require_all << ")";
+    template <typename T, typename First, typename... Rest>
+    std::optional<std::pair<double, T>> getMessage(double timestamp) {
+        if constexpr (std::is_same_v<T, First>) {
+            std::optional<std::pair<double, T>> found_msg = std::nullopt;
+            auto queue = std::get<std::deque<std::pair<double, First>>>(message_queues_);
+            while (!queue.empty()) {
+                auto front = queue.front();
+                auto diff = std::abs(queue.front().first - timestamp);
 
-        std::tuple<bool, std::optional<Messages>...> result;
-        std::get<0>(result) = false;  // success flag
-
-        bool has_any_message = false;
-        auto check_and_get_messages = [&](const auto&... queues) {
-            bool all_present = true;
-            (
-                (void)[&] {
-                    using QueueType = std::decay_t<decltype(queues)>;
-                    using MessageType = typename QueueType::value_type::second_type;
-
-                    LOG(INFO) << "Checking queue of type " << typeid(MessageType).name()
-                              << " (size=" << queues.size() << ")";
-
-                    if (!queues.empty()) {
-                        // Print timestamp range of messages in queue
-                        LOG(INFO) << "  Queue timestamp range: [" << std::fixed
-                                  << queues.front().first << ", " << queues.back().first << "]";
-                        double diff = std::abs(queues.back().first - timestamp);
-                        LOG(INFO) << "  Latest message timestamp diff: " << diff;
-                        if (diff < 0.5) {
-                            has_any_message = true;
-                            std::get<std::optional<MessageType>>(result) = queues.back().second;
-                            LOG(INFO) << "  Found matching message";
-                        } else {
-                            all_present = false;
-                            LOG(INFO) << "  No matching message (timestamp diff too large)";
-                        }
-                    } else {
-                        all_present = false;
-                        LOG(INFO) << "  Queue is empty";
-                    }
-                }(),
-                ...);
-
-            std::get<0>(result) = require_all ? all_present : has_any_message;
-        };
-
-        std::apply(check_and_get_messages, message_queues_);
-        LOG(INFO) << "Message check result: " << (std::get<0>(result) ? "success" : "failure");
-        return result;
+                if (diff < 0.5) {
+                    found_msg = std::move(front);
+                    queue.pop_front();
+                    break;
+                } else if (queue.front().first < timestamp) {
+                    queue.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if (found_msg.has_value()) {
+                LOG(INFO) << "Found a message!!";
+            }
+            return found_msg;
+        } else if constexpr (sizeof...(Rest) > 0) {
+            return getMessage<T, Rest...>(timestamp);
+        } else {
+            return std::nullopt;
+        }
     }
 
     // Try to call callback with given pose and timestamp
     bool tryCallback(const core::types::Pose& pose, double timestamp, bool require_all = false) {
         // Get the messages tuple
-        auto messages_tuple = tryGetMessages(timestamp, require_all);
-        bool success = std::get<0>(messages_tuple);
+        auto img_msg = getMessage<core::types::Image, Messages...>(timestamp);
+        auto cam_info_msg = getMessage<core::types::CameraInfo, Messages...>(timestamp);
 
-        if (success) {
-            LOG(INFO) << std::fixed << "Synchronized messages found, passing to callback at "
-                      << timestamp;
-            // Apply the callback with the rest of the tuple (skipping the success flag)
-            std::apply(
-                [&](const auto&... msgs) { last_keyframe_ = keyframe_callback_(pose, msgs...); },
-                std::tuple_cat(std::make_tuple(),
-                               std::tuple<std::optional<Messages>&...>(
-                                   std::get<std::optional<Messages>>(messages_tuple)...)));
+        LOG(INFO) << std::fixed << "Synchronized messages found, passing to callback at "
+                  << timestamp << "image: " << img_msg.has_value()
+                  << "cam info: " << cam_info_msg.has_value();
 
-            LOG(INFO) << "Cleaning up messages older than " << timestamp;
-            cleanup(timestamp);
-            return true;
-        }
-        return false;
+        std::optional<core::types::Image> msg1 =
+            (img_msg.has_value()) ? std::make_optional(img_msg.value().second) : std::nullopt;
+        std::optional<core::types::CameraInfo> msg2 =
+            (cam_info_msg.has_value()) ? std::make_optional(cam_info_msg.value().second)
+                                       : std::nullopt;
+
+        // Apply the callback with the rest of the tuple (skipping the success flag)
+        keyframe_callback_(pose, msg1, msg2);
+        cleanup(timestamp);
+        return img_msg.has_value() || cam_info_msg.has_value();
     }
 
     // Try to call callback with queued messages

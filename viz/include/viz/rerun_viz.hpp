@@ -8,6 +8,8 @@
 
 namespace viz {
 
+static constexpr uint32_t NUM_CAMERAS_TO_VIZ = 2;
+
 class RerunVisualizer : public VisualizerInterface {
 public:
     RerunVisualizer(const std::string& name = "shadesmar", const std::string& host = "localhost",
@@ -51,6 +53,8 @@ private:
     bool is_connected_ = false;
     double current_timestamp_ = 0;
     std::shared_ptr<stf::TransformTree> transform_tree_;
+
+    std::vector<std::string> camera_entity_paths_;
 
     // Helper functions
     rerun::Transform3D toRerunTransform(const core::types::Pose& pose);

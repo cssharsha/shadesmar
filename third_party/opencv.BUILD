@@ -40,3 +40,17 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [":core"],
 )
+
+cc_library(
+    name = "imgcodecs",
+    srcs = glob([
+        "lib/x86_64-linux-gnu/libopencv_imgcodecs.so*",
+    ]),
+    hdrs = glob([
+        "include/opencv4/opencv2/**/*.hpp",
+        "include/opencv4/opencv2/**/*.h",
+    ]),
+    includes = ["include/opencv4"],
+    visibility = ["//visibility:public"],
+    deps = [":core"],
+)

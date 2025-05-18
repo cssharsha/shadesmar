@@ -18,6 +18,7 @@ public:
 
     std::vector<double> k;  // 3x3 camera matrix
     std::vector<double> d;  // distortion coefficients
+    std::vector<double> p;  // projection matrix
     uint32_t width;
     uint32_t height;
     std::string distortion_model;

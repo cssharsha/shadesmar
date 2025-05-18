@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test", "cc_binary")
 load("@com_github_mvukov_rules_ros2//ros2:cc_defs.bzl", "ros2_cpp_library", "ros2_cpp_binary", "ros2_cpp_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -24,6 +24,12 @@ cc_library(
         "//common:logging",
         "//utils:stf",
     ],
+)
+
+cc_binary(
+    name = "rerun_viz_test",
+    srcs = ["src/test_rerun.cpp"],
+    deps = ["@rerun_sdk//:rerun"],
 )
 
 ros2_cpp_binary(
