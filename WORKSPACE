@@ -117,6 +117,8 @@ http_archive(
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
 protobuf_deps()
 
+
+
 # Google Test
 http_archive(
     name = "com_google_googletest",
@@ -142,7 +144,7 @@ http_archive(
 # Add Rerun SDK
 http_archive(
     name = "rerun_sdk",
-    urls = ["https://github.com/rerun-io/rerun/releases/download/0.21.0/rerun_cpp_sdk.zip"],
+    urls = ["https://github.com/rerun-io/rerun/releases/download/0.17.0/rerun_cpp_sdk.zip"],
     build_file = "//third_party:rerun.BUILD",
 )
 
@@ -174,6 +176,15 @@ load(
 )
 
 install_rules_ros2_pip_deps()
+
+# KITTI Development Kit (Hypothetical - replace with actual URL/SHA if available)
+# http_archive(
+#     name = "kitti_devkit",
+#     urls = ["https://example.com/kitti_devkit.zip"], # Replace with actual URL
+#     sha256 = "YOUR_SHA256_HASH_HERE",                 # Replace with actual SHA256
+#     strip_prefix = "kitti_devkit-master",            # Replace with actual strip_prefix if any
+#     build_file = "//third_party:kitti_devkit.BUILD", # We'll create this BUILD file next
+# )
 
 # Hedron's Compile Commands Extractor for Bazel
 # https://github.com/hedronvision/bazel-compile-commands-extractor

@@ -65,7 +65,10 @@ bool RosbagReader::initialize() {
         }
         std::cout << std::endl;
 
-        pose_file_.open("/mnt/remote-storage/odometry_poses.csv");
+        std::filesystem::path bagfile_path(bagfile_);
+        std::filesystem::path output_dir = bagfile_path.parent_path();
+        std::filesystem::path pose_file_path = output_dir / "odometry_poses.csv";
+        pose_file_.open(pose_file_path);
         if (pose_file_.is_open()) {
             pose_file_ << "timestamp,x,y,z,qw,qx,qy,qz\n";  // CSV header
         } else {
@@ -114,9 +117,11 @@ bool RosbagReader::processBag() {
     std::time_t now = std::time(nullptr);
     char timestamp[20];
     std::strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", std::localtime(&now));
-    std::string output_path =
-        "/mnt/remote-storage/factor_graph_" + bagfile_name + "_" + timestamp + ".vtk";
-    core::graph::util::dumpFactorGraph(graph_, output_path);
+    std::filesystem::path bagfile_path(bagfile_);
+    std::filesystem::path output_dir = bagfile_path.parent_path();
+    std::string output_filename = "factor_graph_" + bagfile_name + "_" + timestamp + ".vtk";
+    std::filesystem::path output_path = output_dir / output_filename;
+    core::graph::util::dumpFactorGraph(graph_, output_path.string());
     if (pose_file_.is_open()) {
         pose_file_.close();
     }
@@ -148,7 +153,7 @@ void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::T
             transform_matrix.rotate(pose.orientation);
 
             tf_tree_->setTransform(transform.header.frame_id, transform.child_frame_id,
-                                  transform_matrix);
+                                   transform_matrix);
 
             // Check if we have the required transforms
             if (!tf_tree_built_) {
@@ -182,7 +187,7 @@ void RosbagReader::processTransform(const std::shared_ptr<tf2_msgs::msg::TFMessa
             transform_matrix.rotate(pose.orientation);
 
             tf_tree_->setTransform(transform.header.frame_id, transform.child_frame_id,
-                                  transform_matrix);
+                                   transform_matrix);
 
         } catch (const std::exception& e) {
             std::cerr << "Failed to process transform: " << e.what() << std::endl;

@@ -112,7 +112,7 @@ void GraphAdapter::maybeDumpGraph(bool force) {
         LOG(INFO) << "Dumping factor graph at distance " << cumulative_distance_ << "m";
 
         // Create filename with distance
-        std::string filename = "/mnt/remote-storage/factor_graph_" +
+        std::string filename = "/data/robot/factor_graph_" +
                                std::to_string(static_cast<int>(cumulative_distance_)) + "m.vtk";
 
         util::dumpFactorGraph(graph_, filename);
