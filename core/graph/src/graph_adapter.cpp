@@ -143,12 +143,13 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
 
         addOdometryFactor(current_keyframe_id_ - 1, current_keyframe_id_, relative_pose);
 
-        // if (keyframe_ids_with_images_.size() > 1) {
-        //     LOG(INFO) << "Performing tracking from ODB";
-        //     orb_tracker_(graph_.getKeyFrame(keyframe_ids_with_images_.back()),
-        //                  graph_.getKeyFrame(keyframe_ids_with_images_.back() - 1),
-        //                  map_keypoints_);
-        // }
+        if (keyframe_ids_with_images_.size() > 1 &&
+            last_keyframe_for_orb_ != keyframe_ids_with_images_.back()) {
+            LOG(INFO) << "Performing tracking from ODB";
+            orb_tracker_(graph_.getKeyFrame(keyframe_ids_with_images_.back()),
+                         graph_.getKeyFrame(keyframe_ids_with_images_.back() - 1), map_keypoints_);
+            last_keyframe_for_orb_ = keyframe_ids_with_images_.back();
+        }
     }
 
     last_keyframe_pose_ = keyframe->pose;

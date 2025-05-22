@@ -36,7 +36,7 @@ public:
 
     void setTransformTree(std::shared_ptr<stf::TransformTree> transform_tree) {
         transform_tree_ = transform_tree;
-        // orb_tracker_.setTransformTree(transform_tree);
+        orb_tracker_.setTransformTree(transform_tree);
     }
 
     auto& getMapPoints() const {
@@ -53,6 +53,7 @@ private:
 
     uint64_t current_keyframe_id_ = 0;
     std::vector<uint64_t> keyframe_ids_with_images_;
+    uint64_t last_keyframe_for_orb_ = 0;
     types::Pose last_keyframe_pose_;
     double keyframe_distance_threshold_ = 0.05;
 

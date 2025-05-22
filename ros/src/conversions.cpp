@@ -65,14 +65,14 @@ cv::Mat toOpenCVImage(const sensor_msgs::msg::Image& image_msg) {
     // Copy data
     memcpy(image.data, image_msg.data.data(), image_msg.data.size());
 
-    cv::Mat cp_image = image.clone();
+    // cv::Mat cp_image = image.clone();
 
     // Convert RGB to BGR if necessary
     // if (image_msg.encoding == "rgb8") {
     //     cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
     // }
 
-    return cp_image;
+    return image;
 }
 
 core::types::Image toImage(const sensor_msgs::msg::Image& image_msg) {

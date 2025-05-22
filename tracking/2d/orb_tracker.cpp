@@ -274,11 +274,15 @@ std::optional<core::types::Pose> OrbTracker::matchAndTriangulate(
         auto prev_pose = prev_frame.pose;
         auto cur_pose = cur_frame.pose;
 
-        auto prev_camera_tf =
-            tf_tree_->getTransform("base_link", prev_frame.color_data.value().frame_id).transform;
-        auto cur_camera_tf =
-            tf_tree_->getTransform("base_link", cur_frame.color_data.value().frame_id).transform;
+        // auto prev_camera_tf =
+        //     tf_tree_->getTransform("base_link",
+        //     prev_frame.color_data.value().frame_id).transform;
+        // auto cur_camera_tf =
+        //     tf_tree_->getTransform("base_link", cur_frame.color_data.value().frame_id).transform;
+
+        auto prev_camera_tf = Eigen::Isometry3d::Identity();
         auto point_in_prev_frame = prev_camera_tf * point_in_prev_camera_frame;
+        auto cur_camera_tf = Eigen::Isometry3d::Identity();
 
         Eigen::Vector3d point_in_world_frame = prev_pose * point_in_prev_frame;
 
