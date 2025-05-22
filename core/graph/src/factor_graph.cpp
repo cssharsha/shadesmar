@@ -71,9 +71,14 @@ types::Pose FactorGraph::fromPose3(const gtsam::Pose3& pose3) const {
     return pose;
 }
 
-KeyFramePtr FactorGraph::getKeyFrame(uint64_t id) const {
+KeyFramePtr FactorGraph::getKeyFramePtr(uint64_t id) const {
     auto it = keyframes_.find(id);
     return it != keyframes_.end() ? it->second : nullptr;
+}
+
+types::KeyFrame& FactorGraph::getKeyFrame(uint64_t id) const {
+    auto it = keyframes_.find(id);
+    return *(it->second);
 }
 
 std::vector<KeyFramePtr> FactorGraph::getAllKeyFrames() const {

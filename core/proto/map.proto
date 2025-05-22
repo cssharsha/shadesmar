@@ -3,6 +3,7 @@ syntax = "proto3";
 package core.proto;
 
 import "core/proto/keyframe.proto";
+import "core/proto/keypoint.proto";
 import "core/proto/factor.proto";
 
 message MapMetadata {
@@ -26,4 +27,5 @@ message Map {
   MapMetadata metadata = 1;
   repeated KeyFrame keyframes = 2;
   repeated Factor factors = 3;
+  repeated Keypoint keypoints = 4;
 }

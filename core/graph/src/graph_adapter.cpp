@@ -65,6 +65,10 @@ std::shared_ptr<types::KeyFrame> GraphAdapter::createKeyframe(
         keyframe->camera_info = *camera_info;
     }
 
+    if (image && camera_info) {
+        keyframe_ids_with_images_.push_back(keyframe->id);
+    }
+
     addKeyframeToGraph(keyframe);
 
     return keyframe;
@@ -138,6 +142,13 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                   << "m";
 
         addOdometryFactor(current_keyframe_id_ - 1, current_keyframe_id_, relative_pose);
+
+        // if (keyframe_ids_with_images_.size() > 1) {
+        //     LOG(INFO) << "Performing tracking from ODB";
+        //     orb_tracker_(graph_.getKeyFrame(keyframe_ids_with_images_.back()),
+        //                  graph_.getKeyFrame(keyframe_ids_with_images_.back() - 1),
+        //                  map_keypoints_);
+        // }
     }
 
     last_keyframe_pose_ = keyframe->pose;
