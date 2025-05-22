@@ -45,6 +45,19 @@ public:
         info.frame_id = proto_info.frame_id();
         return info;
     }
+
+    Eigen::Matrix3d getKInEigen() const {
+        if (k.size() != 9) {
+            throw std::runtime_error(
+                "Input vector must contain exactly 9 elements for a 3x3 matrix.");
+        }
+
+        Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>> map_from_vector(k.data());
+
+        Eigen::Matrix3d eigen_matrix = map_from_vector;
+
+        return eigen_matrix;
+    }
 };
 
 struct Image {

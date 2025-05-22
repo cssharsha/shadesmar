@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package stf.proto;
+
+import "core/proto/geometry.proto"; // For core.proto.Pose to represent Isometry3d
+
+message TransformEdge {
+    string parent_frame_id = 1;
+    string child_frame_id = 2;
+    core.proto.Pose transform = 3; // parent_T_child
+}
+
+message TransformTreeSnapshot {
+    repeated TransformEdge edges = 1;
+}

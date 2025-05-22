@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package tracking.proto;
+
+import "core/proto/keyframe.proto";
+import "utils/stf/proto/transform_tree.proto";
+import "core/proto/geometry.proto"; // For Vector3
+
+// For storing 2D points if not running the full feature tracker
+message Point2D {
+    float x = 1;
+    float y = 2;
+}
+
+message MatchedPoints {
+    repeated Point2D points1 = 1; // Points in keyframe 1
+    repeated Point2D points2 = 2; // Points in keyframe 2
+}
+
+message TrackingTestCase {
+    core.proto.KeyFrame keyframe1 = 1;
+    core.proto.KeyFrame keyframe2 = 2;
+    stf.proto.TransformTreeSnapshot transform_tree = 3;
+    optional MatchedPoints matches = 4;
+    repeated core.proto.Vector3 ground_truth_points_world = 5;
+}

@@ -1,0 +1,225 @@
+let SessionLoad = 1
+let s:so_save = &g:so | let s:siso_save = &g:siso | setg so=0 siso=0 | setl so=-1 siso=-1
+let v:this_session=expand("<sfile>:p")
+silent only
+silent tabonly
+cd ~/Matrix/shadesmar
+if expand('%') == '' && !&modified && line('$') <= 1 && getline(1) == ''
+  let s:wipebuf = bufnr('%')
+endif
+let s:shortmess_save = &shortmess
+if &shortmess =~ 'A'
+  set shortmess=aoOA
+else
+  set shortmess=aoO
+endif
+badd +329 core/graph/src/graph_adapter.cpp
+badd +401 core/graph/src/factor_graph.cpp
+badd +0 core/graph/src/keyframe_manager.cpp
+badd +14 core/storage/src/map_store.cpp
+badd +385 tracking/2d/orb_tracker.cpp
+badd +248 tracking/2d/reconstruction.cpp
+badd +26 tracking/2d/reconstruction.hpp
+argglobal
+%argdel
+edit core/graph/src/graph_adapter.cpp
+let s:save_splitbelow = &splitbelow
+let s:save_splitright = &splitright
+set splitbelow splitright
+wincmd _ | wincmd |
+vsplit
+wincmd _ | wincmd |
+vsplit
+wincmd _ | wincmd |
+vsplit
+wincmd _ | wincmd |
+vsplit
+4wincmd h
+wincmd w
+wincmd _ | wincmd |
+split
+1wincmd k
+wincmd w
+wincmd w
+wincmd _ | wincmd |
+split
+1wincmd k
+wincmd w
+wincmd w
+wincmd w
+let &splitbelow = s:save_splitbelow
+let &splitright = s:save_splitright
+wincmd t
+let s:save_winminheight = &winminheight
+let s:save_winminwidth = &winminwidth
+set winminheight=0
+set winheight=1
+set winminwidth=0
+set winwidth=1
+wincmd =
+argglobal
+enew
+file NvimTree_1
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal nofoldenable
+wincmd w
+argglobal
+balt tracking/2d/orb_tracker.cpp
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal foldenable
+silent! normal! zE
+let &fdl = &fdl
+let s:l = 329 - ((20 * winheight(0) + 14) / 29)
+if s:l < 1 | let s:l = 1 | endif
+keepjumps exe s:l
+normal! zt
+keepjumps 329
+normal! 034|
+wincmd w
+argglobal
+if bufexists(fnamemodify("tracking/2d/orb_tracker.cpp", ":p")) | buffer tracking/2d/orb_tracker.cpp | else | edit tracking/2d/orb_tracker.cpp | endif
+if &buftype ==# 'terminal'
+  silent file tracking/2d/orb_tracker.cpp
+endif
+balt core/graph/src/graph_adapter.cpp
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal foldenable
+silent! normal! zE
+let &fdl = &fdl
+let s:l = 420 - ((6 * winheight(0) + 15) / 30)
+if s:l < 1 | let s:l = 1 | endif
+keepjumps exe s:l
+normal! zt
+keepjumps 420
+normal! 0
+wincmd w
+argglobal
+if bufexists(fnamemodify("core/graph/src/keyframe_manager.cpp", ":p")) | buffer core/graph/src/keyframe_manager.cpp | else | edit core/graph/src/keyframe_manager.cpp | endif
+if &buftype ==# 'terminal'
+  silent file core/graph/src/keyframe_manager.cpp
+endif
+balt tracking/2d/reconstruction.cpp
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal foldenable
+silent! normal! zE
+let &fdl = &fdl
+let s:l = 105 - ((22 * winheight(0) + 14) / 29)
+if s:l < 1 | let s:l = 1 | endif
+keepjumps exe s:l
+normal! zt
+keepjumps 105
+normal! 031|
+wincmd w
+argglobal
+if bufexists(fnamemodify("tracking/2d/reconstruction.cpp", ":p")) | buffer tracking/2d/reconstruction.cpp | else | edit tracking/2d/reconstruction.cpp | endif
+if &buftype ==# 'terminal'
+  silent file tracking/2d/reconstruction.cpp
+endif
+balt tracking/2d/reconstruction.hpp
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal foldenable
+silent! normal! zE
+let &fdl = &fdl
+let s:l = 248 - ((8 * winheight(0) + 15) / 30)
+if s:l < 1 | let s:l = 1 | endif
+keepjumps exe s:l
+normal! zt
+keepjumps 248
+normal! 059|
+wincmd w
+argglobal
+if bufexists(fnamemodify("core/graph/src/factor_graph.cpp", ":p")) | buffer core/graph/src/factor_graph.cpp | else | edit core/graph/src/factor_graph.cpp | endif
+if &buftype ==# 'terminal'
+  silent file core/graph/src/factor_graph.cpp
+endif
+balt core/storage/src/map_store.cpp
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal foldenable
+silent! normal! zE
+let &fdl = &fdl
+let s:l = 401 - ((44 * winheight(0) + 30) / 60)
+if s:l < 1 | let s:l = 1 | endif
+keepjumps exe s:l
+normal! zt
+keepjumps 401
+normal! 05|
+wincmd w
+argglobal
+if bufexists(fnamemodify("core/storage/src/map_store.cpp", ":p")) | buffer core/storage/src/map_store.cpp | else | edit core/storage/src/map_store.cpp | endif
+if &buftype ==# 'terminal'
+  silent file core/storage/src/map_store.cpp
+endif
+balt core/graph/src/factor_graph.cpp
+setlocal foldmethod=manual
+setlocal foldexpr=0
+setlocal foldmarker={{{,}}}
+setlocal foldignore=#
+setlocal foldlevel=0
+setlocal foldminlines=1
+setlocal foldnestmax=20
+setlocal foldenable
+silent! normal! zE
+let &fdl = &fdl
+let s:l = 252 - ((43 * winheight(0) + 30) / 60)
+if s:l < 1 | let s:l = 1 | endif
+keepjumps exe s:l
+normal! zt
+keepjumps 252
+normal! 023|
+wincmd w
+6wincmd w
+wincmd =
+tabnext 1
+if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0 && getbufvar(s:wipebuf, '&buftype') isnot# 'terminal'
+  silent exe 'bwipe ' . s:wipebuf
+endif
+unlet! s:wipebuf
+set winheight=1 winwidth=20
+let &shortmess = s:shortmess_save
+let &winminheight = s:save_winminheight
+let &winminwidth = s:save_winminwidth
+let s:sx = expand("<sfile>:p:r")."x.vim"
+if filereadable(s:sx)
+  exe "source " . fnameescape(s:sx)
+endif
+let &g:so = s:so_save | let &g:siso = s:siso_save
+set hlsearch
+doautoall SessionLoadPost
+unlet SessionLoad
+" vim: set ft=vim :

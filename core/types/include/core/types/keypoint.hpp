@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <utility>
+#include <vector>
+#include <Eigen/Core>
+#include <opencv2/opencv.hpp>
 #include "core/proto/geometry.pb.h"
 #include "core/proto/keypoint.pb.h"
 
@@ -12,6 +15,7 @@ using location = std::pair<uint32_t, std::string>;
 struct Location {
     uint64_t keyframe_id;
     std::string frame_id;
+    float x, y;
 };
 
 struct Keypoint {
@@ -31,6 +35,8 @@ struct Keypoint {
 
         for (const auto& location : keypoint_proto.locations()) {
             Location loc{location.keyframe_id(), location.frame_id()};
+            loc.x = location.x();
+            loc.y = location.y();
             point.locations.emplace_back(std::move(loc));
         }
         return point;
@@ -38,6 +44,7 @@ struct Keypoint {
 
     proto::Keypoint toProto() const {
         proto::Keypoint keypoint_proto;
+        keypoint_proto.set_id(keypoint_id);
         auto* point_proto = keypoint_proto.mutable_position();
         point_proto->set_x(position.x());
         point_proto->set_y(position.y());
@@ -47,7 +54,10 @@ struct Keypoint {
             auto* l = keypoint_proto.add_locations();
             l->set_keyframe_id(location.keyframe_id);
             l->set_frame_id(location.frame_id);
+            l->set_x(location.x);
+            l->set_y(location.y);
         }
+        return keypoint_proto;
     }
 
     uint32_t id() const {

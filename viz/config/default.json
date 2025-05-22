@@ -1,0 +1,34 @@
+{
+    "dataset_name": "default",
+    "description": "Default rosbag configuration with actual robot topics",
+    "topics": {
+        "odom_topic": "/base/odom",
+        "tf_topic": "/tf",
+        "tf_static_topic": "/tf_static",
+        "color_topic": "/camera/camera/color/image_raw",
+        "camera_info_topic": "/camera/camera/color/camera_info",
+        "point_cloud_topic": "",
+        "imu_topic": "/imu/data",
+        "depth_topic": "/camera/camera/depth/image_rect_raw",
+        "depth_camera_info_topic": "/camera/camera/depth/camera_info"
+    },
+    "frame_ids": {
+        "base_link_frame_id": "base_link",
+        "camera_frame_id": "camera_color_optical_frame",
+        "reference_frame_id": "odom"
+    },
+    "keyframe_thresholds": {
+        "distance_threshold": 0.1,
+        "rotation_threshold": 5.0,
+        "max_linear_velocity": 2.0,
+        "max_angular_velocity": 1.0,
+        "max_acceleration": 5.0
+    },
+    "processing_options": {
+        "enable_depth_processing": true,
+        "enable_point_cloud_processing": false,
+        "use_tf_for_poses": false,
+        "enable_visual_odometry": true,
+        "enable_imu_integration": false
+    }
+}

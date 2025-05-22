@@ -1,0 +1,41 @@
+{
+    "dataset_name": "tum",
+    "description": "TUM RGB-D dataset configuration",
+    "topics": {
+        "odom_topic": "",
+        "tf_topic": "/tf",
+        "tf_static_topic": "/tf_static",
+        "color_topic": "/camera/rgb/image_color",
+        "camera_info_topic": "/camera/rgb/camera_info",
+        "point_cloud_topic": "",
+        "imu_topic": "/imu",
+        "depth_topic": "/camera/depth/image",
+        "depth_camera_info_topic": "/camera/depth/camera_info"
+    },
+    "frame_ids": {
+        "base_link_frame_id": "world",
+        "camera_frame_id": "/camera_rgb_optical_frame"
+    },
+    "keyframe_thresholds": {
+        "distance_threshold": 0.02,
+        "rotation_threshold": 5.0,
+        "enable_visual_odometry": true,
+        "enable_imu_integration": true,
+        "use_imu_motion": true,
+        "max_linear_velocity": 1.5,
+        "max_angular_velocity": 0.8,
+        "max_acceleration": 8.0,
+        "imu_integration_window": 1.0,
+        "velocity_threshold_scale": 0.3
+    },
+    "processing": {
+        "enable_depth_processing": true,
+        "enable_point_cloud_processing": false,
+        "use_tf_for_poses": true
+    },
+    "optimization": {
+        "enable_background_optimization": true,
+        "keyframe_interval": 3,
+        "description": "Background optimization every N keyframes (reduced for testing)"
+    }
+}

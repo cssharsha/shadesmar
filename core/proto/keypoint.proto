@@ -7,6 +7,8 @@ import "core/proto/geometry.proto";
 message Location {
   uint64 keyframe_id = 1;
   string frame_id = 2;
+  float x = 3;
+  float y = 4;
 }
 
 message Keypoint {

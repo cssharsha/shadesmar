@@ -51,9 +51,23 @@ cc_proto_library(
 )
 
 proto_library(
+    name = "imu_proto",
+    srcs = ["imu.proto"],
+    deps = [":geometry_proto"],
+)
+
+cc_proto_library(
+    name = "imu_cc_proto",
+    deps = [":imu_proto"],
+)
+
+proto_library(
     name = "factor_proto",
     srcs = ["factor.proto"],
-    deps = [":geometry_proto"],
+    deps = [
+        ":geometry_proto",
+        ":imu_proto",
+    ],
 )
 
 cc_proto_library(
@@ -61,6 +75,15 @@ cc_proto_library(
     deps = [":factor_proto"],
 )
 
+proto_library(
+    name = "map_storage_index_proto",
+    srcs = ["map_storage_index.proto"],
+    deps = [":geometry_proto"],
+)
+cc_proto_library(
+    name = "map_storage_index_cc_proto",
+    deps = [":map_storage_index_proto"]
+)
 proto_library(
     name = "map_proto",
     srcs = ["map.proto"],
