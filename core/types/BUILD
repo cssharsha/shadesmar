@@ -11,6 +11,7 @@ cc_library(
         "//core/proto:geometry_cc_proto",
         "//core/proto:sensor_data_cc_proto",
         "//core/proto:keyframe_cc_proto",
+        "//core/proto:keypoint_cc_proto",
         "//core/proto:factor_cc_proto",
         "@eigen",
         "@opencv//:core",

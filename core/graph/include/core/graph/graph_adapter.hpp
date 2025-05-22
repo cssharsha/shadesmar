@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstdint>
+#include <map>
+#include <vector>
+#include "2d/orb_tracker.hpp"
 #include "core/graph/factor_graph.hpp"
 #include "core/storage/map_store.hpp"
 #include "core/types/keyframe.hpp"
@@ -32,6 +36,11 @@ public:
 
     void setTransformTree(std::shared_ptr<stf::TransformTree> transform_tree) {
         transform_tree_ = transform_tree;
+        // orb_tracker_.setTransformTree(transform_tree);
+    }
+
+    auto& getMapPoints() const {
+        return map_keypoints_;
     }
 
 private:
@@ -40,7 +49,10 @@ private:
     // utils::MessageSynchronizer<types::Image, types::CameraInfo, types::PointCloud> synchronizer_;
     utils::MessageSynchronizer<types::Image, types::CameraInfo> synchronizer_;
 
+    tracking::image::OrbTracker orb_tracker_;
+
     uint64_t current_keyframe_id_ = 0;
+    std::vector<uint64_t> keyframe_ids_with_images_;
     types::Pose last_keyframe_pose_;
     double keyframe_distance_threshold_ = 0.05;
 
@@ -56,6 +68,8 @@ private:
 
     double total_keyframe_distance_ = 0.0;  // Tracks total distance between keyframes
     std::shared_ptr<stf::TransformTree> transform_tree_;
+
+    std::map<uint32_t, core::types::Keypoint> map_keypoints_;
 };
 
 }  // namespace graph

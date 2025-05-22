@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <rerun.hpp>
 #include <rerun/archetypes/pinhole.hpp>
 #include <stf/transform_tree.hpp>
@@ -27,7 +28,9 @@ public:
                        const core::types::Pose& pose = core::types::Pose()) override {}
     void addImage(const cv::Mat& image, const std::string& name = "image") override {}
 
-    void visualizeFactorGraph(const core::graph::FactorGraph& graph) override;
+    void visualizeFactorGraph(
+        const core::graph::FactorGraph& graph,
+        const std::map<uint32_t, core::types::Keypoint>& map_keypoints) override;
 
     void visualizeKeyFrame(const core::types::KeyFrame::ConstPtr& keyframe) override {}
     void clear() override {}

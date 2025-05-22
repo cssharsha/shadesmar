@@ -23,7 +23,8 @@ public:
     void addFactor(const types::Factor& factor);
     bool optimize();
 
-    KeyFramePtr getKeyFrame(uint64_t id) const;
+    KeyFramePtr getKeyFramePtr(uint64_t id) const;
+    types::KeyFrame& getKeyFrame(uint64_t id) const;
     std::vector<KeyFramePtr> getAllKeyFrames() const;
     std::vector<types::Factor> getFactors() const;
 

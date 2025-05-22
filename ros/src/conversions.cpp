@@ -1,4 +1,5 @@
 #include "ros/conversions.hpp"
+#include <iostream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -45,6 +46,7 @@ geometry_msgs::msg::PoseStamped toPoseMsg(const core::types::Pose& pose) {
 cv::Mat toOpenCVImage(const sensor_msgs::msg::Image& image_msg) {
     // Determine OpenCV type based on ROS2 encoding
     int cv_type;
+    std::cout << "Current encoding: " << image_msg.encoding << std::endl;
     if (image_msg.encoding == "mono8") {
         cv_type = CV_8UC1;
     } else if (image_msg.encoding == "bgr8") {
@@ -63,12 +65,14 @@ cv::Mat toOpenCVImage(const sensor_msgs::msg::Image& image_msg) {
     // Copy data
     memcpy(image.data, image_msg.data.data(), image_msg.data.size());
 
-    // Convert RGB to BGR if necessary
-    if (image_msg.encoding == "rgb8") {
-        cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
-    }
+    cv::Mat cp_image = image.clone();
 
-    return image;
+    // Convert RGB to BGR if necessary
+    // if (image_msg.encoding == "rgb8") {
+    //     cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
+    // }
+
+    return cp_image;
 }
 
 core::types::Image toImage(const sensor_msgs::msg::Image& image_msg) {

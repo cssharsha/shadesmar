@@ -130,7 +130,9 @@ void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_p
     }
 }
 
-void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph) {
+void RerunVisualizer::visualizeFactorGraph(
+    const core::graph::FactorGraph& graph,
+    const std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
     if (!is_connected_)
         return;
 
@@ -217,6 +219,16 @@ void RerunVisualizer::visualizeFactorGraph(const core::graph::FactorGraph& graph
             numClouds++;
         }
     }
+
+    // std::vector<rerun::datatypes::Vec3D> map_points;
+    // for (const auto& map_point : map_keypoints) {
+    //     auto position = map_point.second.position;
+    //     map_points.emplace_back(rerun::datatypes::Vec3D{static_cast<float>(position.x()),
+    //                                                     static_cast<float>(position.y()),
+    //                                                     static_cast<float>(position.z())});
+    // }
+    // rec_.log("/world/map_points",
+    //          rerun::Points3D({map_points}).with_colors({rerun::components::Color(255, 0, 255)}));
 
     LOG(INFO) << "Num cameras: " << numCameras << " Num clouds: " << numClouds
               << " Num path points: " << path_points.size();

@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+
+message Location {
+  uint64 keyframe_id = 1;
+  string frame_id = 2;
+}
+
+message Keypoint {
+  uint32 id = 1;
+  Vector3 position = 2;
+  repeated Location locations = 3;
+}

@@ -27,7 +27,8 @@ RosbagReader::RosbagReader(const std::string& bagfile, core::graph::FactorGraph&
     core::graph::GraphCallbacks callbacks;
     callbacks.on_graph_updated = [this, &graph]() {
         if (visualizer_ && visualizer_->isConnected()) {
-            visualizer_->visualizeFactorGraph(graph);
+            auto& map_points = graph_adapter_.getMapPoints();
+            visualizer_->visualizeFactorGraph(graph, map_points);
         }
     };
     graph_adapter_.setCallbacks(callbacks);
