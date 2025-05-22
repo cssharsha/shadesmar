@@ -8,9 +8,23 @@ cc_library(
     hdrs = ["include/viz/interface.hpp"],
     includes = ["include"],
     deps = [
-        "//core:core",
-        "@foxglove_bridge//:foxglove_bridge_component",
+        "//core/types",
+        "//core/graph:graph",
+        "@opencv//:core",
     ],
+)
+
+cc_library(
+    name = "config_loader",
+    srcs = ["src/config_loader.cpp"],
+    hdrs = ["include/viz/config_loader.hpp"],
+    includes = ["include"],
+    deps = [
+        "//ros:rosbag_reader",
+        "//core/graph:graph",
+        "@nlohmann_json//:json",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -20,10 +34,14 @@ cc_library(
     includes = ["include"],
     deps = [
         ":interface",
+        "//core/types",
+        "//core/graph:graph",
+        "//utils:stf",
         "@rerun_sdk//:rerun",
         "//common:logging",
-        "//utils:stf",
+        "@opencv//:core",
     ],
+    visibility = ["//visibility:public"],
 )
 
 cc_binary(
@@ -37,6 +55,8 @@ ros2_cpp_binary(
     srcs = ["examples/visualize_rosbag.cpp"],
     deps = [
         ":rerun_viz",
+        ":config_loader",
+        # ":config_files",
         "//ros:rosbag_reader",
         "@ros2_rosbag2//:rosbag2_cpp",
         "@ros2_rosbag2//:rosbag2_storage",
@@ -52,4 +72,11 @@ ros2_cpp_binary(
         "//ros:ros_adapter",
     ],
     set_up_ament = True,
+)
+
+# Configuration files
+filegroup(
+    name = "config_files",
+    srcs = glob(["config/*.json"]),
+    visibility = ["//visibility:public"],
 )

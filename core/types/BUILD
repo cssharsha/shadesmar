@@ -13,6 +13,7 @@ cc_library(
         "//core/proto:keyframe_cc_proto",
         "//core/proto:keypoint_cc_proto",
         "//core/proto:factor_cc_proto",
+        "//core/proto:imu_cc_proto",
         "@eigen",
         "@opencv//:core",
     ],

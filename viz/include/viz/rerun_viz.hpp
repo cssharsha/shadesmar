@@ -4,8 +4,13 @@
 #include <rerun.hpp>
 #include <rerun/archetypes/pinhole.hpp>
 #include <stf/transform_tree.hpp>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "viz/interface.hpp"
+#include "core/storage/map_store.hpp"
+#include "core/types/pose.hpp"
 
 namespace viz {
 
@@ -48,6 +53,25 @@ public:
         transform_tree_ = transform_tree;
     }
 
+    void setFrameIds(const std::string& reference_frame_id, const std::string& camera_frame_id) {
+        reference_frame_id_ = reference_frame_id;
+        camera_frame_id_ = camera_frame_id;
+    }
+
+    void setFrameIds(const std::string& reference_frame_id, const std::string& base_link_frame_id, const std::string& camera_frame_id) {
+        reference_frame_id_ = reference_frame_id;
+        base_link_frame_id_ = base_link_frame_id;
+        camera_frame_id_ = camera_frame_id;
+    }
+
+    // New method to visualize from storage with last N keyframes for trajectory
+    void visualizeFromStorage(
+        const core::storage::MapStore& map_store,
+        const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+        uint64_t current_keyframe_id,
+        uint64_t previous_keyframe_id,
+        size_t trajectory_keyframe_count = 5);
+
 private:
     std::string name_;
     std::string host_;
@@ -58,6 +82,11 @@ private:
     std::shared_ptr<stf::TransformTree> transform_tree_;
 
     std::vector<std::string> camera_entity_paths_;
+
+    // Configurable frame IDs
+    std::string reference_frame_id_ = "odom";  // Default to standard odometry frame
+    std::string base_link_frame_id_ = "base_link";  // Default robot body frame
+    std::string camera_frame_id_ = "camera_color_optical_frame";
 
     // Helper functions
     rerun::Transform3D toRerunTransform(const core::types::Pose& pose);

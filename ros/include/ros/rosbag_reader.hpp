@@ -12,6 +12,7 @@
 #include <rosbag2_storage/storage_options.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 #include "core/graph/graph_adapter.hpp"
@@ -28,9 +29,15 @@ struct Config {
     std::string color_topic;
     std::string camera_info_topic;
     std::string point_cloud_topic;
+    std::string imu_topic;                            // IMU topic
     std::string base_link_frame_id;
     std::string camera_frame_id;
-    double keyframe_distance_threshold = 0.1;  // 10cm default
+    std::string reference_frame_id = "base_link";     // Configurable reference frame
+    double keyframe_distance_threshold = 0.1;         // 10cm default
+    double keyframe_rotation_threshold = 5.0;         // 5 degrees default
+    bool enable_visual_odometry = true;               // Enable essential matrix checking
+    bool enable_imu_integration = true;               // Enable IMU integration
+    bool use_tf_for_poses = false;                    // Use TF transforms for poses
 };
 
 class RosbagReader {
@@ -42,6 +49,10 @@ public:
     bool initialize();
     bool processBag();
 
+    // Configuration methods
+    void setKeyframeThresholds(const core::graph::KeyframeThresholds& thresholds);
+    void setOptimizationConfig(bool enable_background_optimization, size_t keyframe_interval);
+
 private:
     // Message processing methods
     void processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg);
@@ -50,6 +61,7 @@ private:
     void processImage(const std::shared_ptr<sensor_msgs::msg::Image> msg);
     void processCameraInfo(const std::shared_ptr<sensor_msgs::msg::CameraInfo> msg);
     void processPointCloud(const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg);
+    void processImu(const std::shared_ptr<sensor_msgs::msg::Imu> msg);
 
     // Message deserialization helper
     template <typename T>

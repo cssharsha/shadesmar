@@ -4,11 +4,19 @@ package(default_visibility = ["//visibility:public"])
 
 cc_library(
     name = "stf",
-    srcs = ["stf/transform_tree.cpp"],
-    hdrs = ["stf/transform_tree.hpp"],
+    srcs = [
+        "stf/transform_tree.cpp",
+        "stf/transform_utils.cpp",
+    ],
+    hdrs = [
+        "stf/transform_tree.hpp",
+        "stf/transform_utils.hpp",
+    ],
     includes = ["."],
     deps = [
         "@eigen//:eigen",
+        "//core/types",
+        "//common:logging",
     ],
 )
 
@@ -18,6 +26,7 @@ cc_library(
     includes = ["."],
     deps = [
         "//core/types",
+        "//common:logging",
     ],
 )
 

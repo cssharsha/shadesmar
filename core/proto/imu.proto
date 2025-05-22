@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+
+message ImuData {
+  // Linear acceleration (m/s^2)
+  Vector3 linear_acceleration = 1;
+  repeated double linear_acceleration_covariance = 2; // 3x3 matrix in row-major order
+
+  // Angular velocity (rad/s)
+  Vector3 angular_velocity = 3;
+  repeated double angular_velocity_covariance = 4; // 3x3 matrix in row-major order
+
+  // Orientation (if available from IMU)
+  Quaternion orientation = 5;
+  repeated double orientation_covariance = 6; // 3x3 matrix in row-major order
+
+  // Metadata
+  double timestamp = 7;
+  string frame_id = 8;
+  uint64 sequence = 9;
+}

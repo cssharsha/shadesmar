@@ -1,9 +1,14 @@
 #pragma once
 
 #include <fstream>
-#include "core/proto/map.pb.h"
+#include <memory>
 #include "core/types/factor.hpp"
 #include "core/types/keyframe.hpp"
+#include "core/types/keypoint.hpp"
+
+#include "core/proto/map_storage_index.pb.h"
+
+#include <Eigen/Core>
 
 namespace core {
 namespace storage {
@@ -11,30 +16,68 @@ namespace storage {
 using KeyFramePtr = types::KeyFrame::Ptr;
 class MapStore {
 public:
-    MapStore() {
-        map_proto_.mutable_metadata()->set_version("1.0");
-        map_proto_.mutable_metadata()->set_created_by("Shadesmar");
-    }
+    MapStore(const std::string& map_base_filepth);
+    ~MapStore();
 
-    void addKeyFrame(const KeyFramePtr& keyframe);
+    bool initializeFilePaths(const std::string& map_base_filepath);
+
+    bool addKeyFrame(const KeyFramePtr& keyframe);
+    bool addFactor(const types::Factor& factor);
+    bool addKeyPoint(const types::Keypoint& keypoint);
+
     KeyFramePtr getKeyFrame(uint64_t id) const;
+    std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
+    std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
+
     std::vector<KeyFramePtr> getAllKeyFrames() const;
-
-    void addFactor(const types::Factor& factor);
-    types::Factor getFactor(uint64_t id) const;
     std::vector<types::Factor> getAllFactors() const;
+    std::vector<types::Keypoint> getAllKeyPoints() const;
 
-    std::vector<types::Factor> getConnectedFactors(uint64_t keyframe_id) const;
+    std::vector<KeyFramePtr> getKeyFramesByTimestamp(double timestamp) const;
+    std::vector<KeyFramePtr> getKeyFramesByTimestampRange(double start_timestamp,
+                                                          double end_timestamp) const;
+    std::vector<KeyFramePtr> findKeyFramesNearPosition(const Eigen::Vector3d& target_position,
+                                                       double radius, int max_results = -1) const;
 
-    bool save(const std::string& filename);
-    bool load(const std::string& filename);
+    bool saveChanges();
+    bool loadMap();
 
-    void updateBounds();
+    const proto::MapDiskMetadata& getMetadata() const {
+        return metadata_;
+    }
+    void clearDataAndIndices();
 
 private:
-    proto::Map map_proto_;
-    std::map<uint64_t, size_t> keyframe_index_;  // Maps keyframe ID to index in proto
-    std::map<uint64_t, size_t> factor_index_;    // Maps factor ID to index in proto
+    std::mutex file_operations_mutex_;  // Protect all file operations from concurrent access
+
+    std::string base_filepath_;
+    std::string data_filepath_;
+    std::string index_filepath_;
+    std::string metadata_filepath_;
+
+    proto::MapDiskMetadata metadata_;
+    std::map<uint64_t, proto::FileLocation> keyframe_locations_;
+    std::map<uint64_t, proto::FileLocation> factor_locations_;
+    std::map<uint32_t, proto::FileLocation> keypoint_locations_;
+
+    std::map<double, std::vector<uint64_t>> timestamp_to_keyframe_ids_;
+    std::vector<proto::KeyFrameIndexEntry> keyframe_spatial_index_entries_;
+
+    bool openDataFileForAppend(std::fstream& file_stream);
+    bool openDataFileForRead(std::fstream& file_stream) const;
+
+    template <typename ProtoType>
+    bool writeProtoMessage(std::fstream& stream, const ProtoType& message,
+                           proto::FileLocation& out_location);
+
+    template <typename ProtoType, typename CppType>
+    std::optional<CppType> readProtoMessage(
+        const proto::FileLocation& location,
+        std::function<CppType(const ProtoType&)> fromProtoConverter) const;
+
+    void updateMetadataBounds(const types::Pose& pose);
+    void rebuildTransientIndices();
+    void updateBounds();
 };
 
 }  // namespace storage
