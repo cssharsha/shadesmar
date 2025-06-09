@@ -162,12 +162,9 @@ std::optional<core::types::Pose> OrbTracker::operator()(
         return std::nullopt;
     }
 
-    LOG(INFO) << "dev: Calling match and triangulate";
+    LOG(INFO) << "ORB: Calling feature matching only (triangulation deferred to graph_adapter.cpp)";
 
-    // Assuming the images are from the same camera. Need to mofiy such that
-    // it can be from different cameras.
-    // cv::Mat K(3, 3, CV_64F, cam_infos_[current_kf.color_data.value().frame_id].k);
-    // cv::Mat K(3, 3, CV_64F, current_kf.camera_info.value().k.data());
+    // NEW ARCHITECTURE: Only match features, defer triangulation to graph_adapter.cpp
     auto cam_info = cam_infos_.find(cur_frame);
     if (cam_info == cam_infos_.end()) {
         LOG(ERROR) << "Unable to find camera info";
@@ -175,10 +172,11 @@ std::optional<core::types::Pose> OrbTracker::operator()(
     }
     cv::Mat K(cam_info->second.k);
     K = K.reshape(1, 3);
-    auto transform =
-        matchAndTriangulate(untracked_cur_img_keypoints, untracked_cur_img_descriptors,
-                            previous_img_keypoints, previous_img_descriptors, current_kf,
-                            previous_kf, K, current_img_to_map_keypoint_idx, map_keypoints);
+    
+    // Call feature matching only (no triangulation)
+    auto transform = matchFeaturesOnly(untracked_cur_img_keypoints, untracked_cur_img_descriptors,
+                                      previous_img_keypoints, previous_img_descriptors, current_kf,
+                                      previous_kf, K, current_img_to_map_keypoint_idx, map_keypoints);
 
     return transform;
 }
@@ -457,6 +455,124 @@ std::optional<core::types::Pose> OrbTracker::matchAndTriangulate(
         R.at<double>(2, 2);
     tf.orientation = Eigen::Quaterniond(R_eigen);
     tf.frame_id = "relative_tf";
+    return tf;
+}
+
+// NEW ARCHITECTURE: Feature matching only (no triangulation) - defer triangulation to graph_adapter.cpp
+std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
+    const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
+    const std::vector<cv::KeyPoint>& prev_img_kps, const cv::Mat& prev_img_desc,
+    const core::types::KeyFrame& cur_frame, const core::types::KeyFrame& prev_frame,
+    const cv::Mat& K, const std::map<uint32_t, uint32_t>& current_img_to_map_keypoint_idx,
+    std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
+    
+    std::vector<cv::DMatch> matches;
+    std::vector<std::vector<cv::DMatch>> knn_matches;
+
+    LOG(INFO) << "Performing matchFeaturesOnly (no triangulation) with: " << "\n\tCurrent image keypoints: "
+              << cur_img_kps.size() << " descs: " << cur_img_desc.size()
+              << "\n\tPrevious image keypoints: " << prev_img_kps.size()
+              << " descs: " << prev_img_desc.size();
+    matcher_->knnMatch(prev_img_desc, cur_img_desc, knn_matches, 2);
+
+    std::vector<cv::DMatch> good_matches;
+    const float ratio_thresh = 0.75f;
+    for (uint32_t i = 0; i < knn_matches.size(); ++i) {
+        if (knn_matches[i].size() == 2 &&
+            knn_matches[i][0].distance < ratio_thresh * knn_matches[i][1].distance) {
+            good_matches.push_back(knn_matches[i][0]);
+        }
+    }
+
+    if (good_matches.size() < min_matches_for_matching_) {
+        LOG(ERROR) << "Not enough matches available for feature creation";
+        return std::nullopt;
+    }
+
+    LOG(INFO) << "Found good matches: " << good_matches.size();
+    std::vector<cv::Point2f> prev_img_points, cur_img_points;
+    for (const auto& match : good_matches) {
+        prev_img_points.push_back(prev_img_kps[match.queryIdx].pt);
+        cur_img_points.push_back(cur_img_kps[match.trainIdx].pt);
+    }
+
+    cv::Mat E, R, t, inlier_mask_E;
+    LOG(INFO) << "Camera matrix K:\n" << K;
+    E = cv::findEssentialMat(prev_img_points, cur_img_points, K, cv::RANSAC, 0.999, 1.0,
+                             inlier_mask_E);
+
+    if (E.empty()) {
+        LOG(ERROR) << "Essential matrix not found";
+        return std::nullopt;
+    }
+
+    int inlier_count_E =
+        cv::recoverPose(E, prev_img_points, cur_img_points, K, R, t, inlier_mask_E);
+    if (inlier_count_E < min_matches_for_matching_ / 2) {
+        LOG(ERROR) << "Not enough inliers after recovering the pose";
+        return std::nullopt;
+    }
+
+    if (cv::norm(t) < 1e-3) {
+        LOG(ERROR) << "Translation should not be zero";
+        return std::nullopt;
+    }
+
+    std::vector<cv::DMatch> inlier_matches_for_keypoint_creation;
+    for (uint32_t i = 0; i < good_matches.size(); ++i) {
+        if (inlier_mask_E.at<uchar>(i)) {
+            inlier_matches_for_keypoint_creation.push_back(good_matches[i]);
+        }
+    }
+    
+    LOG(INFO) << "Inlier matches used for keypoint creation: "
+              << inlier_matches_for_keypoint_creation.size();
+
+    // CREATE MAP KEYPOINTS WITHOUT 3D POSITION (defer triangulation to graph_adapter.cpp)
+    for (uint64_t i = 0; i < inlier_matches_for_keypoint_creation.size(); ++i) {
+        auto prevImgIdx = inlier_matches_for_keypoint_creation[i].queryIdx;
+        auto curImgIdx = inlier_matches_for_keypoint_creation[i].trainIdx;
+        
+        // Only create new map keypoints for unmatched features
+        if (current_img_to_map_keypoint_idx.find(curImgIdx) ==
+            current_img_to_map_keypoint_idx.end()) {
+            
+            core::types::Keypoint keypoint(map_keypoints.size());
+            keypoint.position = Eigen::Vector3d::Zero();  // No 3D position yet
+            keypoint.needs_triangulation = true;  // Mark for triangulation during batch optimization
+            keypoint.descriptor = prev_img_desc.row(prevImgIdx).clone();
+            
+            // Add observations from both keyframes
+            addOrUpdateObservation(keypoint, cur_frame.id, cur_frame.color_data.value().frame_id,
+                                   cur_img_kps[curImgIdx].pt.x, cur_img_kps[curImgIdx].pt.y,
+                                   "deferred_matching");
+            addOrUpdateObservation(keypoint, prev_frame.id, prev_frame.color_data.value().frame_id,
+                                   prev_img_kps[prevImgIdx].pt.x, prev_img_kps[prevImgIdx].pt.y,
+                                   "deferred_matching");
+            
+            map_keypoints.insert(std::make_pair(keypoint.id(), keypoint));
+            
+            LOG(INFO) << "Created map keypoint " << keypoint.id() 
+                      << " without 3D position (marked for deferred triangulation)";
+        }
+    }
+
+    // Return relative pose for potential odometry use
+    core::types::Pose tf;
+    tf.position.x() = t.at<double>(0);
+    tf.position.y() = t.at<double>(1);
+    tf.position.z() = t.at<double>(2);
+
+    Eigen::Matrix3d R_eigen;
+    R_eigen << R.at<double>(0, 0), R.at<double>(0, 1), R.at<double>(0, 2), R.at<double>(1, 0),
+        R.at<double>(1, 1), R.at<double>(1, 2), R.at<double>(2, 0), R.at<double>(2, 1),
+        R.at<double>(2, 2);
+    tf.orientation = Eigen::Quaterniond(R_eigen);
+    tf.frame_id = "relative_tf";
+    
+    LOG(INFO) << "Feature matching completed - created " << inlier_matches_for_keypoint_creation.size() 
+              << " new map keypoints (triangulation deferred to graph_adapter.cpp)";
+    
     return tf;
 }
 
@@ -881,49 +997,42 @@ void OrbTracker::performDirectTriangulation(
     LOG(INFO) << "Features for triangulation: " << unmatched_prev_pts.size() << " (out of "
               << last_vo_data_.curr_matched_points.size() << " total matches)";
 
-    // PHASE 3: Triangulate only unmatched features
+    // PHASE 3: Create map keypoints for unmatched features (defer triangulation to batch optimization)
     if (!unmatched_prev_pts.empty()) {
-        std::vector<Eigen::Vector3d> triangulated_points;
+        LOG(INFO) << "Creating " << unmatched_prev_pts.size() 
+                  << " new map keypoints without 3D position (deferred triangulation to graph_adapter.cpp)";
 
-        // Call triangulation with only unmatched feature pairs
-        bool triangulation_success = reconstruct.triangulate(
-            previous_kf, current_kf, unmatched_prev_pts, unmatched_curr_pts, *tft_,
-            last_vo_data_.essential_transform, triangulated_points, true, base_link_frame_id_);
-
-        LOG(INFO) << "Triangulation produced " << triangulated_points.size()
-                  << " new 3D points from " << unmatched_prev_pts.size() << " unmatched features";
-
-        // Create new map keypoints only for successfully triangulated unmatched features
+        // Create new map keypoints WITHOUT 3D position (defer triangulation to batch optimization)
         size_t points_added = 0;
 
-        for (size_t i = 0; i < triangulated_points.size() && i < unmatched_curr_indices.size();
-             ++i) {
+        for (size_t i = 0; i < unmatched_curr_indices.size(); ++i) {
             size_t curr_kp_idx = unmatched_curr_indices[i];
 
             if (curr_kp_idx < last_vo_data_.curr_keypoints.size()) {
-                // Create new map keypoint
+                // Create new map keypoint WITHOUT 3D position - NEW ARCHITECTURE
                 core::types::Keypoint keypoint(map_keypoints.size());
-                keypoint.position = triangulated_points[i];
+                keypoint.position = Eigen::Vector3d::Zero();  // No 3D position yet
+                keypoint.needs_triangulation = true;  // Mark for triangulation during batch optimization
                 keypoint.descriptor = last_vo_data_.curr_descriptors.row(curr_kp_idx).clone();
 
                 // Add observations from both keyframes
                 addOrUpdateObservation(
                     keypoint, current_kf.id, current_kf.color_data.value().frame_id,
-                    unmatched_curr_pts[i].x, unmatched_curr_pts[i].y, "direct_triangulation");
+                    unmatched_curr_pts[i].x, unmatched_curr_pts[i].y, "deferred_visual_odometry");
                 addOrUpdateObservation(
                     keypoint, previous_kf.id, previous_kf.color_data.value().frame_id,
-                    unmatched_prev_pts[i].x, unmatched_prev_pts[i].y, "direct_triangulation");
+                    unmatched_prev_pts[i].x, unmatched_prev_pts[i].y, "deferred_visual_odometry");
 
                 map_keypoints.insert(std::make_pair(keypoint.id(), keypoint));
                 points_added++;
             }
         }
 
-        LOG(INFO) << "Added " << points_added << " new map keypoints from triangulation";
+        LOG(INFO) << "Visual odometry: Added " << points_added << " new map keypoints (without 3D position, triangulation deferred to graph_adapter.cpp)";
         LOG(INFO) << "Map size: " << initial_map_size << " → " << map_keypoints.size() << " (+"
                   << (map_keypoints.size() - initial_map_size) << ")";
     } else {
-        LOG(INFO) << "No unmatched features to triangulate";
+        LOG(INFO) << "Visual odometry: No unmatched features to create as map keypoints";
     }
 
     // Clear the data after use

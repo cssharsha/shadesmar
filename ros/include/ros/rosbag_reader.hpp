@@ -42,18 +42,31 @@ struct Config {
 
 class RosbagReader {
 public:
-    RosbagReader(const std::string& bagfile, core::graph::FactorGraph& graph,
-                 core::storage::MapStore& store, const Config& config,
+    RosbagReader(const std::string& bagfile,
+                 core::storage::MapStore& store,
+                 const Config& config,
                  std::shared_ptr<viz::RerunVisualizer> visualizer = nullptr);
 
     bool initialize();
     bool processBag();
 
-    // Configuration methods
     void setKeyframeThresholds(const core::graph::KeyframeThresholds& thresholds);
     void setOptimizationConfig(bool enable_background_optimization, size_t keyframe_interval);
 
 private:
+    std::string bagfile_;
+    Config config_;
+
+    // Only store MapStore reference - FactorGraph handled internally by GraphAdapter
+    core::storage::MapStore& store_;
+    std::shared_ptr<viz::RerunVisualizer> visualizer_;
+
+    // GraphAdapter manages both FactorGraph and MapStore coordination
+    core::graph::FactorGraph internal_graph_;  // Internal FactorGraph for GraphAdapter
+    core::graph::GraphAdapter graph_adapter_;
+
+    std::unique_ptr<rosbag2_cpp::Reader> reader_;
+
     // Message processing methods
     void processOdometry(const std::shared_ptr<nav_msgs::msg::Odometry> msg);
     void processStaticTransform(const std::shared_ptr<tf2_msgs::msg::TFMessage> msg);
@@ -68,20 +81,10 @@ private:
     void deserializeMessage(const rosbag2_storage::SerializedBagMessage& bag_msg,
                             std::shared_ptr<T> msg);
 
-    // Member variables
-    std::string bagfile_;
-    Config config_;
-    core::graph::FactorGraph& graph_;
-    core::storage::MapStore& store_;
-    std::unique_ptr<rosbag2_cpp::Reader> reader_;
-    std::shared_ptr<viz::RerunVisualizer> visualizer_;
-
     // Transform tree handling
     std::shared_ptr<stf::TransformTree> tf_tree_;
     bool tf_tree_built_{false};
 
-    // Graph adapter for handling synchronized messages
-    core::graph::GraphAdapter graph_adapter_;
     size_t odometry_count_ = 0;
 
     std::ofstream pose_file_;

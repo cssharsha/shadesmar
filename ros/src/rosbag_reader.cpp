@@ -15,15 +15,14 @@
 
 namespace ros {
 
-RosbagReader::RosbagReader(const std::string& bagfile, core::graph::FactorGraph& graph,
-                           core::storage::MapStore& store, const Config& config,
+RosbagReader::RosbagReader(const std::string& bagfile, core::storage::MapStore& store,
+                           const Config& config,
                            std::shared_ptr<viz::RerunVisualizer> visualizer)
     : bagfile_(bagfile),
       config_(config),
-      graph_(graph),
       store_(store),
       visualizer_(visualizer),
-      graph_adapter_(graph, store) {
+      graph_adapter_(internal_graph_, store) {
     tf_tree_ = std::make_shared<stf::TransformTree>();
 
     // Configure keyframe thresholds using the new comprehensive approach
@@ -54,22 +53,15 @@ RosbagReader::RosbagReader(const std::string& bagfile, core::graph::FactorGraph&
         graph_adapter_.enableVisualOdometryMode();
     }
 
-    // Set up graph update callback
+    // Set up clean storage-based visualization callback
     core::graph::GraphCallbacks callbacks;
-    callbacks.on_graph_updated = [this, &graph]() {
-        if (visualizer_ && visualizer_->isConnected()) {
-            auto map_points = graph_adapter_.getMapPointsCopy();  // Thread-safe access
-            visualizer_->visualizeFactorGraph(graph, map_points);
-        }
-    };
 
-    // Set up new storage-based visualization callback
+    // Clean storage-based visualization callback - gets keypoints from MapStore directly
     callbacks.on_storage_updated =
         [this](const core::storage::MapStore& map_store,
-               const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
                uint64_t current_keyframe_id, uint64_t previous_keyframe_id) {
             if (visualizer_ && visualizer_->isConnected()) {
-                visualizer_->visualizeFromStorage(map_store, map_keypoints, current_keyframe_id,
+                visualizer_->visualizeFromStorage(map_store, current_keyframe_id,
                                                   previous_keyframe_id);
             }
         };
@@ -225,7 +217,7 @@ bool RosbagReader::processBag() {
     std::filesystem::path output_dir = bagfile_path.parent_path();
     std::string output_filename = "factor_graph_" + bagfile_name + "_" + timestamp + ".vtk";
     std::filesystem::path output_path = output_dir / output_filename;
-    core::graph::util::dumpFactorGraph(graph_, output_path.string());
+    core::graph::util::dumpFactorGraph(store_, output_path.string());
     if (pose_file_.is_open()) {
         pose_file_.close();
     }

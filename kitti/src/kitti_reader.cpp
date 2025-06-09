@@ -15,21 +15,20 @@ namespace kitti {
 
 namespace fs = std::filesystem;
 
-KittiReader::KittiReader(const KittiReaderConfig& config, core::graph::FactorGraph& graph,
+KittiReader::KittiReader(const Config& config,
                          core::storage::MapStore& store,
                          std::shared_ptr<viz::RerunVisualizer> visualizer)
-    : config_(config), graph_adapter_(graph, store), visualizer_(visualizer) {
+    : config_(config), store_(store), visualizer_(visualizer),
+      graph_adapter_(internal_graph_, store) {
     tf_tree_ = std::make_shared<stf::TransformTree>();
     graph_adapter_.setKeyframeDistanceThreshold(config_.keyframe_distance_threshold);
     graph_adapter_.setTransformTree(tf_tree_);
     visualizer_->setTransformTree(tf_tree_);
-    // Set up graph update callback if needed, similar to RosAdapter
+    // Set up clean storage-based callbacks
     core::graph::GraphCallbacks callbacks;
-    callbacks.on_graph_updated = [this, &graph]() {
-        if (visualizer_ && visualizer_->isConnected()) {
-            // visualizer_->visualizeFactorGraph(graph); // Add specific kitti viz if needed
-        }
-    };
+    // REMOVED: on_graph_updated callback - deprecated since FactorGraph is stateless
+    // All visualization should use MapStore as single source of truth
+
     graph_adapter_.setCallbacks(callbacks);
 }
 

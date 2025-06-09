@@ -30,45 +30,23 @@ class FactorGraph {
 public:
     FactorGraph() = default;
 
-    void addKeyFrame(const KeyFramePtr& keyframe);
-    void addFactor(const types::Factor& factor);
-
-    // Bundle adjustment support - add landmarks as variables
-    void addLandmark(uint32_t landmark_id, const Eigen::Vector3d& position);
-    void addProjectionFactor(uint64_t keyframe_id, uint32_t landmark_id,
-                           const Eigen::Vector2d& measurement,
-                           const gtsam::SharedNoiseModel& noise_model,
-                           const gtsam::Cal3_S2& camera_calibration,
-                           const gtsam::Pose3& body_to_camera_transform = gtsam::Pose3());
-
-    bool optimize();
-
-    // Memory management
-    bool removeKeyFrame(uint64_t id);  // Remove keyframe from memory (but keep in storage)
-
     // On-demand optimization from storage with full bundle adjustment
     bool optimizeFromStorage(const core::storage::MapStore& store);
     bool optimizeFromStorageWithLandmarks(const core::storage::MapStore& store,
                                          const std::map<uint32_t, core::types::Keypoint>& map_keypoints);
 
+    // Memory-efficient optimization that processes poses without loading full keyframes
+    bool optimizeFromStorageMemoryEfficient(const core::storage::MapStore& store,
+                                           const std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+
     // Get optimization results
     std::map<uint64_t, types::Pose> getOptimizedPoses() const;
     std::map<uint32_t, Eigen::Vector3d> getOptimizedLandmarks() const;
 
-    KeyFramePtr getKeyFramePtr(uint64_t id) const;
-    types::KeyFrame& getKeyFrame(uint64_t id) const;
-    std::vector<KeyFramePtr> getAllKeyFrames() const;
-    std::vector<types::Factor> getFactors() const;
-
 private:
-    std::map<uint64_t, KeyFramePtr> keyframes_;
-    std::vector<types::Factor> factors_;
-
-    gtsam::NonlinearFactorGraph graph_;
-    gtsam::Values initial_estimates_;
     gtsam::Values result_;
 
-    void updateGTSAMGraph();
+    // Helper conversion methods (keep these)
     gtsam::Pose3 toPose3(const types::Pose& pose) const;
     types::Pose fromPose3(const gtsam::Pose3& pose3) const;
     gtsam::Point3 toPoint3(const Eigen::Vector3d& point) const;

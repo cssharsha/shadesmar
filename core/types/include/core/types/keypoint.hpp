@@ -22,6 +22,7 @@ struct Keypoint {
     Eigen::Vector3d position;
     cv::Mat descriptor;
     std::vector<Location> locations;
+    bool needs_triangulation = false;  // Flag for keypoints without 3D position
     // Add additional info like ellipsoid if required later
 
     Keypoint() {}
@@ -32,6 +33,7 @@ struct Keypoint {
         point.position =
             Eigen::Vector3d(keypoint_proto.position().x(), keypoint_proto.position().y(),
                             keypoint_proto.position().z());
+        point.needs_triangulation = keypoint_proto.needs_triangulation();
 
         for (const auto& location : keypoint_proto.locations()) {
             Location loc{location.keyframe_id(), location.frame_id()};
@@ -49,6 +51,7 @@ struct Keypoint {
         point_proto->set_x(position.x());
         point_proto->set_y(position.y());
         point_proto->set_z(position.z());
+        keypoint_proto.set_needs_triangulation(needs_triangulation);
 
         for (const auto& location : locations) {
             auto* l = keypoint_proto.add_locations();
