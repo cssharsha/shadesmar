@@ -59,9 +59,6 @@ public:
     KeyFramePtr getKeyFrame(uint64_t id) const;
     std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
     std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
-    
-    // Check if keypoint exists without loading it
-    bool hasKeyPoint(uint32_t id) const;
 
     std::vector<KeyFramePtr> getAllKeyFrames() const;
     std::vector<types::Factor> getAllFactors() const;
@@ -119,16 +116,15 @@ public:
 
     // NEW: Callback-based write system (replaces continuous sync thread)
     void swapAndWriteToDisk();
-    
-    // Write worker management
-    void enableWriteWorker();
-    void disableWriteWorker();
-    bool isWriteWorkerEnabled() const { return write_worker_running_.load(); }
 
     // Map point change tracking
     void markMapPointDirty(uint32_t id);
     bool isMapPointDirty(uint32_t id) const;
 
+    // Background sync methods - DEPRECATED (will be removed)
+    void enableBackgroundSync(std::chrono::seconds sync_interval);
+    void disableBackgroundSync();
+    void setSyncInterval(std::chrono::seconds interval);
     void requestSync();
 
 private:
@@ -166,21 +162,10 @@ private:
     mutable std::shared_mutex processed_non_optimized_queue_mutex_;
     mutable std::shared_mutex processed_optimized_queue_mutex_;
 
-    // NEW: Single-threaded write worker (replaces continuous sync thread)
-    std::unique_ptr<std::thread> write_worker_thread_;
-    std::atomic<bool> write_worker_running_{false};
-    std::atomic<bool> should_stop_write_worker_{false};
-    
-    // Write request queue with size limiting
-    std::queue<std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>>> pending_write_queue_;
-    std::mutex write_queue_mutex_;
-    std::condition_variable write_available_;
-    static constexpr size_t MAX_WRITE_QUEUE_SIZE = 3;  // Allow max 3 pending writes
-    
-    // Write synchronization
+    // Write thread management (replaces continuous sync thread)
     std::atomic<bool> write_in_progress_{false};
-    std::mutex write_completion_mutex_;
-    std::condition_variable write_completed_;
+    std::mutex write_mutex_;
+    std::unique_ptr<std::thread> write_thread_;
 
     // Map point change tracking
     std::unordered_set<uint32_t> dirty_map_points_;
@@ -269,15 +254,8 @@ private:
     // Modified background sync to handle processed optimized queue
     void syncProcessedOptimizedToDisk();
 
-    // NEW: Single-threaded write worker methods
-    void startWriteWorker();
-    void stopWriteWorker();
-    void writeWorkerLoop();
-    void queueWriteRequest(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> batch);
-    void waitForWriteCompletion();
-    
-    // NEW: Complete write process (data + index + metadata)
-    void writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write);
+    // NEW: Helper methods for atomic queue system
+    void writeBatchToDisk(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write);
     void initializeAtomicQueues();
 };
 

@@ -18,6 +18,8 @@
 #include "core/types/keyframe.hpp"
 #include "stf/transform_tree.hpp"
 #include "utils/message_synchronizer/message_synchronizer.hpp"
+#include "2d/gtsam_reconstruction.hpp"
+#include "2d/reconstruction.hpp"
 
 #include "logging/logging.hpp"
 namespace core {
@@ -217,11 +219,11 @@ private:
 };
 
 struct GraphCallbacks {
-    std::function<void()> on_graph_updated;
+    // REMOVED: on_graph_updated - deprecated since FactorGraph is now stateless
+    // All callbacks should use MapStore as single source of truth
 
-    // New callback for storage-based visualization
+    // Clean storage-based visualization callback - MapStore is single source of truth
     std::function<void(const core::storage::MapStore&,
-                       const std::map<uint32_t, core::types::Keypoint>&,
                        uint64_t current_keyframe_id, uint64_t previous_keyframe_id)>
         on_storage_updated;
 };
@@ -255,45 +257,39 @@ public:
     }
 
     auto& getMapPoints() const {
-        return map_keypoints_;
+        LOG(WARNING) << "getMapPoints() deprecated - use getMapPointsCopy() for thread-safe access";
+        static std::map<uint32_t, core::types::Keypoint> empty_map;
+        return empty_map;
     }
 
-    // Thread-safe access to map keypoints
+    // Thread-safe access to map keypoints via MapStore
     std::map<uint32_t, core::types::Keypoint> getMapPointsCopy() const {
-        std::shared_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-        return map_keypoints_;
+        auto all_keypoints = store_.getAllKeyPoints();
+        std::map<uint32_t, core::types::Keypoint> keypoint_map;
+        for (const auto& kp : all_keypoints) {
+            keypoint_map[kp.id()] = kp;
+        }
+        return keypoint_map;
     }
 
-    // Thread-safe access to specific map keypoint
+    // Thread-safe access to specific map keypoint via MapStore
     std::optional<core::types::Keypoint> getMapPoint(uint32_t id) const {
-        std::shared_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-        auto it = map_keypoints_.find(id);
-        if (it != map_keypoints_.end()) {
-            return it->second;
-        }
-        return std::nullopt;
+        return store_.getKeyPoint(id);
     }
 
-    // Thread-safe update of map keypoints (for optimization results)
-    void updateMapPoints(const std::map<uint32_t, core::types::Keypoint>& updated_points) {
-        std::unique_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-        for (const auto& [id, point] : updated_points) {
-            if (map_keypoints_.find(id) != map_keypoints_.end()) {
-                map_keypoints_[id] = point;
-            }
-        }
-    }
+    // Thread-safe update of map keypoints via MapStore
+    void updateMapPoints(const std::map<uint32_t, core::types::Keypoint>& updated_points);
 
     // Thread-safe access to in-memory keyframes
     std::shared_ptr<types::KeyFrame> getInMemoryKeyFrameSafe(uint64_t id) const {
         std::shared_lock<std::shared_mutex> lock(in_memory_keyframes_mutex_);
-        return graph_.getKeyFramePtr(id);
+        return store_.getKeyFrame(id);  // Use MapStore instead of FactorGraph
     }
 
     // Thread-safe access to all in-memory keyframes
     std::vector<std::shared_ptr<types::KeyFrame>> getAllInMemoryKeyFramesSafe() const {
         std::shared_lock<std::shared_mutex> lock(in_memory_keyframes_mutex_);
-        return graph_.getAllKeyFrames();
+        return store_.getAllKeyFrames();  // Use MapStore instead of FactorGraph
     }
 
     // Thread-safe update of in-memory keyframes with optimized poses
@@ -301,7 +297,7 @@ public:
         const std::map<uint64_t, types::Pose>& optimized_poses) {
         std::unique_lock<std::shared_mutex> lock(in_memory_keyframes_mutex_);
         for (const auto& [keyframe_id, optimized_pose] : optimized_poses) {
-            auto keyframe = graph_.getKeyFramePtr(keyframe_id);
+            auto keyframe = store_.getKeyFrame(keyframe_id);  // Use MapStore instead of FactorGraph
             if (keyframe) {
                 keyframe->pose = optimized_pose;
             }
@@ -353,17 +349,18 @@ public:
     // Storage-based optimization
     bool performOptimization();  // Optimize using storage data and update results
 
-    // Step 5: Map keypoint final storage methods
+    // DEPRECATED: Manual storage methods - MapStore now handles all persistence automatically
+    // These methods are kept for compatibility but MapStore background sync replaces them
     bool updateMapKeypointsAfterOptimization(
-        const std::map<uint64_t, types::Pose>& optimized_poses);
+        const std::map<uint64_t, types::Pose>& optimized_poses);  // DEPRECATED: Use MapStore.updateOptimizedPoses()
     bool updateMapKeypointsFromOptimizedLandmarks(
-        const std::map<uint32_t, Eigen::Vector3d>& optimized_landmarks);
-    bool storeOptimizedMapKeypoints();
+        const std::map<uint32_t, Eigen::Vector3d>& optimized_landmarks);  // Still used for MapStore coordination
+    bool storeOptimizedMapKeypoints();  // DEPRECATED: MapStore background sync handles this
     std::map<uint32_t, core::types::Keypoint> recomputeMapKeypointsFromOptimizedPoses(
-        const std::map<uint64_t, types::Pose>& optimized_poses);
+        const std::map<uint64_t, types::Pose>& optimized_poses);  // DEPRECATED: MapStore handles triangulation
     bool validateMapKeypointConsistency(const std::map<uint32_t, core::types::Keypoint>& keypoints);
     bool exportFinalOptimizedMap(
-        const std::string& export_path = "/data/robot/final_optimized_map.json");
+        const std::string& export_path = "/data/robot/final_optimized_map.json");  // Still useful for final export
 
     // Step 3: Optimization thread configuration
     void setOptimizationInterval(size_t keyframe_interval);
@@ -388,6 +385,15 @@ public:
                           const std::vector<std::pair<uint64_t, types::Pose>>& observing_keyframes,
                           Eigen::Vector3d& triangulated_position);
 
+    // Helper method to get keyframe from any queue
+    std::shared_ptr<types::KeyFrame> getKeyFrameFromAnyQueue(uint64_t keyframe_id) const;
+    
+    // NEW: Triangulation phase before batch optimization
+    bool triangulateMapKeypoints(std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+    bool triangulateKeypoint(const core::types::Keypoint& keypoint, 
+                            const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+                            Eigen::Vector3d& triangulated_position);
+
 private:
     FactorGraph& graph_;
     storage::MapStore& store_;
@@ -395,6 +401,8 @@ private:
 
     tracking::image::OrbTracker orb_tracker_;
     KeyframeManager keyframe_manager_;
+    tracking::image::GtsamReconstruct gtsam_reconstructor_;  // GTSAM triangulation
+    tracking::image::Reconstruct reconstructor_;  // New triangulation API
 
     std::atomic<uint64_t> current_keyframe_id_{0};  // Make atomic for thread safety
     std::vector<uint64_t> keyframe_ids_with_images_;
@@ -416,8 +424,6 @@ private:
 
     double total_keyframe_distance_ = 0.0;
     std::shared_ptr<stf::TransformTree> transform_tree_;
-
-    std::map<uint32_t, core::types::Keypoint> map_keypoints_;
 
     // IMU preintegration
     std::unique_ptr<SimpleImuPreintegrator> imu_preintegrator_;
@@ -448,9 +454,6 @@ private:
     // Store most recent camera info for visual odometry
     std::optional<types::CameraInfo> latest_camera_info_;
     double latest_camera_info_timestamp_ = 0.0;
-
-    // Thread synchronization for map keypoints
-    mutable std::shared_mutex map_keypoints_mutex_;
 
     // Thread synchronization for in-memory keyframes (current + previous)
     mutable std::shared_mutex in_memory_keyframes_mutex_;

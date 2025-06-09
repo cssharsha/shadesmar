@@ -29,15 +29,26 @@ struct CalibrationData {
 
 class KittiReader {
 public:
-    KittiReader(const KittiReaderConfig& config, core::graph::FactorGraph& graph,
-                core::storage::MapStore& store, std::shared_ptr<viz::RerunVisualizer> visualizer);
+    KittiReader(const Config& config,
+                core::storage::MapStore& store,
+                std::shared_ptr<viz::RerunVisualizer> visualizer = nullptr);
 
     bool initialize();
-    // void run();  // Main loop to process sequence - replaced by processSequence
-    bool processNextFrame();  // Processes a single frame
-    bool processSequence();   // Processes all frames in the sequence
+    bool processSequence();
 
 private:
+    Config config_;
+
+    // Only store MapStore reference - FactorGraph handled internally by GraphAdapter
+    core::storage::MapStore& store_;
+    std::shared_ptr<viz::RerunVisualizer> visualizer_;
+
+    // GraphAdapter manages both FactorGraph and MapStore coordination
+    core::graph::FactorGraph internal_graph_;  // Internal FactorGraph for GraphAdapter
+    core::graph::GraphAdapter graph_adapter_;
+
+    std::shared_ptr<stf::TransformTree> tf_tree_;
+
     bool loadCalibration();
     bool loadTimestamps();
     bool loadGroundTruthPoses();  // New method to load GT poses
@@ -53,11 +64,6 @@ private:
     // const; // Updated signature
     std::string getImagePath(size_t frame_idx, int camera_idx) const;
     std::string getVelodynePath(size_t frame_idx) const;
-
-    KittiReaderConfig config_;
-    core::graph::GraphAdapter graph_adapter_;
-    std::shared_ptr<viz::RerunVisualizer> visualizer_;
-    std::shared_ptr<stf::TransformTree> tf_tree_;
 
     // Paths
     fs::path sequence_data_path_;  // Path to the sequence dir (e.g., .../sequences/00/)

@@ -34,11 +34,19 @@ GraphAdapter::GraphAdapter(FactorGraph& graph, storage::MapStore& store)
       next_dump_distance_(1.0),
       imu_preintegrator_(std::make_unique<SimpleImuPreintegrator>()),
       bias_initialized_(false),
-      bias_estimation_window_(100) {}
+      bias_estimation_window_(100),
+      optimization_keyframe_interval_(10) {  // Set to 10 keyframes as specified
+
+    LOG(INFO) << "GraphAdapter initialized with callback-based MapStore write system (optimization every "
+              << optimization_keyframe_interval_ << " keyframes)";
+}
 
 // Destructor - ensure optimization thread is properly stopped
 GraphAdapter::~GraphAdapter() {
+    LOG(INFO) << "GraphAdapter destructor: stopping optimization thread";
     stopOptimizationThread();
+
+    LOG(INFO) << "GraphAdapter destructor completed (callback-based write system)";
 }
 
 // Modify input handlers to use synchronizer
@@ -50,43 +58,10 @@ void GraphAdapter::handleOdometryInput(const types::Pose& pose, double timestamp
 
 void GraphAdapter::handleImageInput(const types::Image& image, double timestamp) {
     synchronizer_.addMessage(image, timestamp);
-
-    if (visual_odometry_mode_) {
-        if (latest_camera_info_.has_value()) {
-            double time_diff = std::abs(timestamp - latest_camera_info_timestamp_);
-            if (time_diff < 0.5) {
-                if (!first_frame_processed_) {
-                    // Initialize with first frame
-                    initializeFirstFrame(image, latest_camera_info_.value(), timestamp);
-                } else {
-                    // Estimate pose from visual odometry
-                    types::Pose estimated_pose;
-                    if (estimatePoseFromVisualOdometry(image, latest_camera_info_.value(),
-                                                       timestamp, estimated_pose)) {
-                        // Add generated pose to synchronizer
-                        synchronizer_.addPoseMessage(estimated_pose, timestamp);
-                    } else {
-                        LOG(WARNING) << "Visual odometry failed for timestamp " << timestamp;
-                    }
-                }
-            } else {
-                LOG(WARNING) << "Camera info too old for visual odometry: " << time_diff << "s";
-            }
-        } else {
-            LOG(INFO) << "Waiting for camera info for visual odometry at timestamp " << timestamp;
-        }
-    }
 }
 
 void GraphAdapter::handleCameraInfo(const types::CameraInfo& camera_info, double timestamp) {
     synchronizer_.addMessage(camera_info, timestamp);
-
-    // Store latest camera info for visual odometry
-    if (visual_odometry_mode_) {
-        latest_camera_info_ = camera_info;
-        latest_camera_info_timestamp_ = timestamp;
-    }
-
     orb_tracker_.addCameraInfo(camera_info);
 
     // Only try to get transform if transform tree is available and we have the required frames
@@ -191,8 +166,6 @@ void GraphAdapter::handleLoopClosure(uint64_t from_id, uint64_t to_id,
     loop_factor.connected_nodes = {from_id, to_id};
     loop_factor.measurement.emplace<1>(relative_pose);
     loop_factor.information = Eigen::Matrix<double, 6, 6>::Identity();
-
-    graph_.addFactor(loop_factor);
     store_.addFactor(loop_factor);
 
     LOG(INFO) << "Created loop closure factor #" << loop_factor.id << " between keyframes "
@@ -207,8 +180,6 @@ void GraphAdapter::addOdometryFactor(uint64_t from_id, uint64_t to_id,
     odom_factor.connected_nodes = {from_id, to_id};
     odom_factor.measurement.emplace<1>(relative_pose);
     odom_factor.information = Eigen::Matrix<double, 6, 6>::Identity();
-
-    graph_.addFactor(odom_factor);
     store_.addFactor(odom_factor);
 
     cumulative_distance_ += calculateDistance(relative_pose);
@@ -223,33 +194,34 @@ void GraphAdapter::maybeDumpGraph(bool force) {
     if (cumulative_distance_ >= next_dump_distance_ || force) {
         LOG(INFO) << "Dumping factor graph at distance " << cumulative_distance_ << "m";
 
-        std::string filename = "/data/robot/factor_graph_" +
-                               std::to_string(static_cast<int>(cumulative_distance_)) + "m.vtk";
+        std::string filename_prefix = "factor_graph_" + 
+                                     std::to_string(static_cast<int>(cumulative_distance_)) + "m";
 
-        util::dumpFactorGraph(graph_, filename);
+        try {
+            util::dumpFactorGraphWithAutoPath(store_, filename_prefix);
+            LOG(INFO) << "Factor graph dumped with prefix: " << filename_prefix;
+        } catch (const std::exception& e) {
+            LOG(WARNING) << "Failed to dump factor graph: " << e.what();
+        }
+        
         next_dump_distance_ = cumulative_distance_ + DUMP_INTERVAL;
-
         LOG(INFO) << "Next graph dump at " << next_dump_distance_ << "m";
     }
 }
 
 void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& keyframe) {
-    LOG(INFO) << "Adding keyframe to storage at pose: " << keyframe->pose.position.transpose()
+    LOG(INFO) << "Adding keyframe to three-queue processing pipeline at pose: "
+              << keyframe->pose.position.transpose()
               << " with timestamp: " << keyframe->pose.timestamp;
 
-    store_.addKeyFrame(keyframe);
-    LOG(INFO) << "Keyframe " << keyframe->id << " stored to persistent storage";
+    // Add keyframe to unprocessed cache
+    store_.addToUnprocessedCache(keyframe);
+    LOG(INFO) << "Keyframe " << keyframe->id << " added to unprocessed cache";
 
-    {
-        std::unique_lock<std::shared_mutex> lock(in_memory_keyframes_mutex_);
-        graph_.addKeyFrame(keyframe);
-
-        manageInMemoryKeyframesUnsafe();
-    }
-
+    // Create odometry factor if we have a previous keyframe
     if (current_keyframe_id_ > 1) {
-        // Get the previous keyframe pose from the KeyframeManager's last pose
-        auto prev_keyframe = graph_.getKeyFramePtr(current_keyframe_id_ - 1);
+        // Get the previous keyframe pose from unprocessed cache or other queues
+        auto prev_keyframe = getKeyFrameFromAnyQueue(current_keyframe_id_ - 1);
         if (prev_keyframe) {
             types::Pose relative_pose = prev_keyframe->pose.inverse() * keyframe->pose;
             double distance = calculateDistance(relative_pose);
@@ -277,7 +249,6 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                 imu_factor.timestamp = keyframe->pose.timestamp;
                 imu_factor.description = "IMU preintegrated measurement";
 
-                graph_.addFactor(imu_factor);
                 store_.addFactor(imu_factor);
 
                 LOG(INFO) << "Created IMU factor #" << imu_factor.id << " between keyframes "
@@ -289,81 +260,71 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                 // Reset preintegrator for next keyframe interval
                 imu_preintegrator_->reset();
                 last_keyframe_for_imu_ = current_keyframe_id_;
-            } else {
-                LOG(INFO) << "IMU factor check: hasData=" << imu_preintegrator_->hasData()
-                          << ", last_keyframe_for_imu=" << last_keyframe_for_imu_
-                          << ", current_keyframe_id=" << current_keyframe_id_
-                          << ", data_count=" << imu_preintegrator_->getDataCount();
             }
         }
 
-        if (keyframe_ids_with_images_.size() > 1 &&
-            last_keyframe_for_orb_ != keyframe_ids_with_images_.back()) {
-            if (visual_odometry_mode_) {
-                LOG(INFO) << "Visual odometry mode: using direct triangulation instead of full ORB "
-                             "tracking";
-                try {
-                    std::unique_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-                    uint64_t current_kf_id = keyframe_ids_with_images_.back();
-                    uint64_t previous_kf_id =
-                        keyframe_ids_with_images_.at(keyframe_ids_with_images_.size() - 2);
+        // ===== ORB PROCESSING WITH 2-FRAME DELAY =====
 
-                    // Use new interface that leverages stored odometry factors
-                    orb_tracker_.performDirectTriangulationWithMapStore(
-                        current_kf_id, previous_kf_id, store_, map_keypoints_);
-                    lock.unlock();  // Release lock after triangulation
-                    last_keyframe_for_orb_ = keyframe_ids_with_images_.back();
-                    LOG(INFO) << "Direct triangulation with map_store completed successfully";
-                } catch (const std::exception& e) {
-                    LOG(WARNING) << "Direct triangulation failed: " << e.what();
-                }
-            } else {
-                LOG(INFO) << "Standard mode: performing traditional ORB tracking";
+        // Check if we can process ORB features (need current frame N and previous frame N-1)
+        if (current_keyframe_id_ >= 2) {
+            auto current_frame_for_orb = getKeyFrameFromAnyQueue(current_keyframe_id_);  // Frame N
+            auto previous_frame_for_orb =
+                getKeyFrameFromAnyQueue(current_keyframe_id_ - 1);  // Frame N-1
+
+            if (current_frame_for_orb && previous_frame_for_orb &&
+                current_frame_for_orb->hasColorImage() && previous_frame_for_orb->hasColorImage()) {
                 try {
-                    std::unique_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-                    LOG(INFO) << "Current number of keyframes with images: "
-                              << keyframe_ids_with_images_.size();
-                    LOG(INFO) << "Current: " << keyframe_ids_with_images_.back() << " "
-                              << keyframe_ids_with_images_.at(keyframe_ids_with_images_.size() - 2);
-                    orb_tracker_(*store_.getKeyFrame(keyframe_ids_with_images_.back()),
-                                 *store_.getKeyFrame(keyframe_ids_with_images_.at(
-                                     keyframe_ids_with_images_.size() - 2)),
-                                 map_keypoints_);
-                    // orb_tracker_(graph_.getKeyFrame(keyframe_ids_with_images_.back()),
-                    //              graph_.getKeyFrame(keyframe_ids_with_images_.at(
-                    //                  keyframe_ids_with_images_.size() - 2)),
-                    //              map_keypoints_);
-                    lock.unlock();  // Release lock after tracking
-                    last_keyframe_for_orb_ = keyframe_ids_with_images_.back();
-                    LOG(INFO) << "Traditional ORB tracking completed successfully";
+                    LOG(INFO) << "Processing ORB features for frames " << (current_keyframe_id_ - 1)
+                              << " → " << current_keyframe_id_;
+
+                    // Get current map keypoints from MapStore
+                    auto current_map_keypoints = getMapPointsCopy();
+
+                    // Process ORB features
+                    orb_tracker_(*current_frame_for_orb, *previous_frame_for_orb,
+                                 current_map_keypoints);
+
+                    // Update MapStore with new/updated map keypoints
+                    updateMapPoints(current_map_keypoints);
+
+                    LOG(INFO) << "ORB processing completed successfully for frames "
+                              << (current_keyframe_id_ - 1) << " → " << current_keyframe_id_;
+
                 } catch (const std::exception& e) {
-                    LOG(WARNING) << "Traditional ORB tracking failed: " << e.what();
+                    LOG(WARNING) << "ORB processing failed for frames "
+                                 << (current_keyframe_id_ - 1) << " → " << current_keyframe_id_
+                                 << ": " << e.what();
+                    // Continue processing even if ORB fails
                 }
+            }
+
+            // Move frame N-2 to processed non-optimized queue (2-frame delay)
+            if (current_keyframe_id_ >= 3) {
+                uint64_t frame_to_move = current_keyframe_id_ - 2;
+                store_.moveToProcessedNonOptimized(frame_to_move);
+                LOG(INFO) << "Moved keyframe " << frame_to_move
+                          << " to processed non-optimized queue";
+
+                // Update map point eviction tracking
+                store_.evictOldMapPoints(current_keyframe_id_,
+                                         30);  // Evict points older than 30 keyframes
             }
         }
     }
 
-    if (callbacks_.on_graph_updated) {
-        callbacks_.on_graph_updated();
-    }
-
-    // New storage-based visualization callback
+    // Trigger storage-based visualization callback using MapStore as single source of truth
     if (callbacks_.on_storage_updated) {
-        std::shared_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-        auto map_keypoints_copy = map_keypoints_;  // Make a copy for thread safety
-        lock.unlock();
-        callbacks_.on_storage_updated(store_, map_keypoints_copy, current_keyframe_id_,
-                                      getPreviousKeyframeId());
+        // Visualization gets keypoints directly from MapStore - no need to pass them
+        callbacks_.on_storage_updated(store_, current_keyframe_id_, getPreviousKeyframeId());
     }
 
     // Debug: Dump map keypoints after each keyframe addition
     dumpMapKeypointsToJson();
 
-    // Step 3: Check if optimization should be triggered
     keyframes_since_last_optimization_++;
 
     if (shouldTriggerOptimization()) {
-        LOG(INFO) << "Triggering background optimization after "
+        LOG(INFO) << "Triggering batch optimization after "
                   << keyframes_since_last_optimization_.load() << " keyframes";
         triggerOptimization();
     }
@@ -452,27 +413,6 @@ void GraphAdapter::initializeFirstFrame(const types::Image& image,
     current_pose_.timestamp = timestamp;
     current_pose_.frame_id = reference_frame_id_;
 
-    if (visual_odometry_mode_) {
-        if (!base_link_frame_id_.empty()) {
-            orb_tracker_.enableVisualOdometry(true);
-            orb_tracker_.setVisualOdometryParams(0.5);  // Default speed
-        }
-
-        types::Image prev_image = image;
-
-        auto result = orb_tracker_.estimateVisualOdometryPose(image, prev_image, camera_info,
-                                                              timestamp, timestamp - 0.1);
-
-        if (result.has_value()) {
-            current_pose_ = result.value();
-            current_pose_.frame_id = reference_frame_id_;
-            LOG(INFO) << "Visual odometry initialized using OrbTracker with "
-                      << " features at timestamp " << timestamp;
-        } else {
-            LOG(INFO) << "Visual odometry initialization using OrbTracker, pose at origin";
-        }
-    }
-
     if (image.encoding == "rgb8" || image.encoding == "bgr8") {
         if (image.encoding == "rgb8") {
             cv::cvtColor(image.data, previous_image_, cv::COLOR_RGB2GRAY);
@@ -492,53 +432,6 @@ void GraphAdapter::initializeFirstFrame(const types::Image& image,
     LOG(INFO) << "Visual odometry initialized at timestamp " << timestamp;
 
     synchronizer_.addPoseMessage(current_pose_, timestamp);
-}
-
-bool GraphAdapter::estimatePoseFromVisualOdometry(const types::Image& image,
-                                                  const types::CameraInfo& camera_info,
-                                                  double timestamp, types::Pose& estimated_pose) {
-    if (visual_odometry_mode_) {
-        if (!first_frame_processed_) {
-            LOG(WARNING)
-                << "Cannot estimate pose: first frame not yet processed for visual odometry";
-            return false;
-        }
-
-        types::Image previous_image;
-        previous_image.data = previous_image_;
-        previous_image.encoding = "mono8";
-
-        auto result = orb_tracker_.estimateVisualOdometryPose(image, previous_image, camera_info,
-                                                              timestamp, last_visual_timestamp_);
-
-        if (result.has_value()) {
-            estimated_pose = result.value();
-            estimated_pose.frame_id = reference_frame_id_;
-
-            cv::Mat current_gray;
-            if (image.encoding == "rgb8" || image.encoding == "bgr8") {
-                if (image.encoding == "rgb8") {
-                    cv::cvtColor(image.data, current_gray, cv::COLOR_RGB2GRAY);
-                } else {
-                    cv::cvtColor(image.data, current_gray, cv::COLOR_BGR2GRAY);
-                }
-            } else if (image.encoding == "mono8" || image.encoding == "8UC1") {
-                current_gray = image.data.clone();
-            }
-
-            previous_image_ = current_gray.clone();
-            last_visual_timestamp_ = timestamp;
-
-            LOG(INFO) << "Visual odometry (OrbTracker) estimated pose: "
-                      << estimated_pose.position.transpose();
-            return true;
-        } else {
-            LOG(WARNING)
-                << "OrbTracker visual odometry failed, should probably use the other method";
-        }
-    }
-
-    return false;
 }
 
 std::optional<types::CameraInfo> GraphAdapter::findSynchronizedCameraInfo(double timestamp) {
@@ -565,12 +458,6 @@ void GraphAdapter::setFrameIds(const std::string& reference_frame_id,
     base_link_frame_id_ = base_link_frame_id;
     camera_frame_id_ = camera_frame_id;
     orb_tracker_.setBaseFrameId(base_link_frame_id_);
-
-    if (visual_odometry_mode_) {
-        orb_tracker_.enableVisualOdometry(true);
-        orb_tracker_.setVisualOdometryParams(0.5);  // Default speed
-        LOG(INFO) << "Enabled visual odometry in OrbTracker for TUM-style processing";
-    }
 }
 
 void GraphAdapter::enableVisualOdometryMode() {
@@ -596,10 +483,8 @@ void GraphAdapter::dumpMapKeypointsToJson(const std::string& filepath) const {
         return;
     }
 
-    std::shared_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-    // TODO Check for something more efficient
-    auto map_keypoints_copy = map_keypoints_;
-    lock.unlock();
+    // Get map keypoints from MapStore instead of local storage
+    auto map_keypoints_copy = getMapPointsCopy();
 
     json_file << "{\n";
     json_file << "  \"timestamp\": " << std::time(nullptr) << ",\n";
@@ -698,197 +583,163 @@ void GraphAdapter::dumpMapKeypointsToJson(const std::string& filepath) const {
     LOG(INFO) << "DEBUG: Dumped " << map_keypoints_copy.size() << " map keypoints to " << filepath;
 }
 
-void GraphAdapter::manageInMemoryKeyframes() {
-    std::unique_lock<std::shared_mutex> lock(in_memory_keyframes_mutex_);
-    manageInMemoryKeyframesUnsafe();
-}
-
-void GraphAdapter::manageInMemoryKeyframesUnsafe() {
-    auto all_keyframes = graph_.getAllKeyFrames();
-
-    if (all_keyframes.size() <= in_memory_keyframe_limit_) {
-        // Nothing to remove yet
-        return;
-    }
-
-    std::sort(all_keyframes.begin(), all_keyframes.end(),
-              [](const auto& a, const auto& b) { return a->id < b->id; });
-
-    size_t keyframes_to_remove = all_keyframes.size() - in_memory_keyframe_limit_;
-
-    LOG(INFO) << "Memory management: removing " << keyframes_to_remove
-              << " keyframes from in-memory factor graph (keeping " << in_memory_keyframe_limit_
-              << " most recent)";
-
-    for (size_t i = 0; i < keyframes_to_remove; ++i) {
-        uint64_t keyframe_id = all_keyframes[i]->id;
-
-        auto stored_keyframe = store_.getKeyFrame(keyframe_id);
-        if (stored_keyframe) {
-            if (graph_.removeKeyFrame(keyframe_id)) {
-                LOG(INFO) << "Removed keyframe " << keyframe_id
-                          << " from memory (still in storage)";
-            } else {
-                LOG(WARNING) << "Failed to remove keyframe " << keyframe_id << " from memory";
-            }
-        } else {
-            LOG(WARNING) << "Keyframe " << keyframe_id
-                         << " not found in storage, skipping memory removal";
-        }
-    }
-
-    LOG(INFO) << "Memory management complete: " << graph_.getAllKeyFrames().size()
-              << " keyframes remain in memory";
-}
-
 bool GraphAdapter::performOptimization() {
     auto optimization_start = std::chrono::high_resolution_clock::now();
 
-    LOG(INFO) << "Starting comprehensive bundle adjustment optimization with landmarks";
+    LOG(INFO) << "Starting batch bundle adjustment optimization with landmarks";
 
-    auto all_keyframes = store_.getAllKeyFrames();
-    if (all_keyframes.size() < 2) {
-        LOG(INFO) << "Insufficient keyframes for optimization (" << all_keyframes.size()
-                  << " < 2), skipping";
+    // Get batch of keyframes for optimization from processed non-optimized queue
+    auto optimization_batch = store_.getBatchForOptimization(50);  // Max 50 keyframes per batch
+    if (optimization_batch.empty()) {
+        LOG(INFO) << "No keyframes ready for optimization in processed non-optimized queue";
         return true;
     }
 
+    // Extract keyframe IDs from batch
+    std::vector<uint64_t> batch_keyframe_ids;
+    for (const auto& kf : optimization_batch) {
+        batch_keyframe_ids.push_back(kf->id);
+    }
+
+    LOG(INFO) << "Optimizing batch of " << optimization_batch.size() << " keyframes: ["
+              << batch_keyframe_ids.front() << " to " << batch_keyframe_ids.back() << "]";
+
+    // Get factors relevant to this batch
     auto all_factors = store_.getAllFactors();
-    if (all_factors.empty()) {
-        LOG(WARNING) << "No factors found in storage, skipping optimization";
-        return true;
+    std::vector<types::Factor> batch_factors;
+
+    for (const auto& factor : all_factors) {
+        // Include factor if any of its connected nodes are in the batch
+        bool include_factor = false;
+        for (uint64_t node_id : factor.connected_nodes) {
+            if (std::find(batch_keyframe_ids.begin(), batch_keyframe_ids.end(), node_id) !=
+                batch_keyframe_ids.end()) {
+                include_factor = true;
+                break;
+            }
+        }
+        if (include_factor) {
+            batch_factors.push_back(factor);
+        }
+    }
+
+    LOG(INFO) << "Using " << batch_factors.size() << " factors for batch optimization";
+
+    // VISUALIZATION: Dump factor graph before optimization for debugging
+    if (!batch_keyframe_ids.empty()) {
+        std::string filename_prefix = "pre_optimization_kf" + 
+                                     std::to_string(batch_keyframe_ids.front()) + "_to_" +
+                                     std::to_string(batch_keyframe_ids.back());
+        try {
+            util::dumpFactorGraphWithAutoPath(store_, filename_prefix);
+            LOG(INFO) << "Dumped factor graph before optimization with prefix: " << filename_prefix;
+        } catch (const std::exception& e) {
+            LOG(WARNING) << "Failed to dump factor graph before optimization: " << e.what();
+        }
     }
 
     // Get current map keypoints for bundle adjustment
     auto current_map_keypoints = getMapPointsCopy();
     if (current_map_keypoints.empty()) {
         LOG(INFO) << "No map keypoints available, falling back to pose-only optimization";
-        return graph_.optimizeFromStorage(store_);
+        // ALWAYS move batch to processed optimized and sync to disk, even without optimization
+        store_.markBatchAsOptimized(batch_keyframe_ids);
+        return true;
     }
 
-    LOG(INFO) << "Bundle adjustment input: " << all_keyframes.size() << " keyframes, "
-              << all_factors.size() << " factors, " << current_map_keypoints.size() << " landmarks";
-
-    auto gtsam_start = std::chrono::high_resolution_clock::now();
-
-    // Use bundle adjustment with landmarks instead of pose-only optimization
-    if (!graph_.optimizeFromStorageWithLandmarks(store_, current_map_keypoints)) {
-        LOG(ERROR) << "GTSAM bundle adjustment failed";
-        return false;
+    // NEW: Triangulation phase - triangulate keypoints that need 3D positions
+    LOG(INFO) << "Starting triangulation phase before batch optimization";
+    bool triangulation_success = triangulateMapKeypoints(current_map_keypoints);
+    
+    if (triangulation_success) {
+        // Update MapStore with newly triangulated keypoints
+        updateMapPoints(current_map_keypoints);
+        LOG(INFO) << "Updated MapStore with newly triangulated keypoints";
+        
+        // Refresh map keypoints after triangulation
+        current_map_keypoints = getMapPointsCopy();
     }
 
-    auto gtsam_end = std::chrono::high_resolution_clock::now();
-    auto gtsam_duration =
-        std::chrono::duration_cast<std::chrono::milliseconds>(gtsam_end - gtsam_start);
-
-    auto optimized_poses = graph_.getOptimizedPoses();
-    auto optimized_landmarks = graph_.getOptimizedLandmarks();
-
-    if (optimized_poses.empty()) {
-        LOG(WARNING) << "No optimized poses received from GTSAM bundle adjustment";
-        return false;
-    }
-
-    if (optimized_landmarks.empty()) {
-        LOG(WARNING) << "No optimized landmarks received from GTSAM bundle adjustment";
-        return false;
-    }
-
-    LOG(INFO) << "GTSAM bundle adjustment completed in " << gtsam_duration.count()
-              << "ms, received " << optimized_poses.size() << " optimized poses and "
-              << optimized_landmarks.size() << " optimized landmarks";
-
-    updateInMemoryKeyframesWithOptimizedPoses(optimized_poses);
-
-    // Update map keypoints with optimized landmark positions (no retriangulation needed!)
-    if (!updateMapKeypointsFromOptimizedLandmarks(optimized_landmarks)) {
-        LOG(WARNING) << "Failed to update map keypoints with optimized landmarks";
-    }
-
-    if (!storeOptimizedMapKeypoints()) {
-        LOG(WARNING) << "Failed to store optimized map keypoints to disk";
-    }
-
-    size_t poses_updated = 0;
-    double max_position_change = 0.0;
-    double max_rotation_change = 0.0;
-    double total_position_change = 0.0;
-
-    auto storage_update_start = std::chrono::high_resolution_clock::now();
-
-    for (const auto& [keyframe_id, optimized_pose] : optimized_poses) {
-        auto keyframe = store_.getKeyFrame(keyframe_id);
-        if (keyframe) {
-            double position_change = (keyframe->pose.position - optimized_pose.position).norm();
-            double rotation_change =
-                keyframe->pose.orientation.angularDistance(optimized_pose.orientation);
-
-            max_position_change = std::max(max_position_change, position_change);
-            max_rotation_change = std::max(max_rotation_change, rotation_change);
-            total_position_change += position_change;
-
-            // keyframe->pose = optimized_pose;
-
-            if (store_.addKeyFrame(keyframe)) {
-                poses_updated++;
-
-                if (position_change > 0.01 || rotation_change > 0.05) {
-                    LOG(INFO) << "Keyframe " << keyframe_id << " pose updated: Δpos=" << std::fixed
-                              << std::setprecision(3) << position_change
-                              << "m, Δrot=" << std::setprecision(2)
-                              << (rotation_change * 180.0 / M_PI) << "°";
-                }
-            } else {
-                LOG(WARNING) << "Failed to update keyframe " << keyframe_id << " in storage";
-            }
-        } else {
-            LOG(WARNING) << "Keyframe " << keyframe_id
-                         << " not found in storage during pose update";
+    // Count landmarks that have valid 3D positions for optimization
+    size_t valid_landmarks = 0;
+    for (const auto& [id, keypoint] : current_map_keypoints) {
+        if (!keypoint.needs_triangulation && keypoint.position.norm() > 1e-6) {
+            valid_landmarks++;
         }
     }
 
-    auto storage_update_end = std::chrono::high_resolution_clock::now();
-    auto storage_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        storage_update_end - storage_update_start);
+    LOG(INFO) << "Batch bundle adjustment input: " << optimization_batch.size() << " keyframes, "
+              << batch_factors.size() << " factors, " << current_map_keypoints.size()
+              << " total keypoints (" << valid_landmarks << " with valid 3D positions)";
 
-    auto persistence_start = std::chrono::high_resolution_clock::now();
+    // Variables to track optimization results
+    bool optimization_succeeded = false;
+    bool poses_success = false;
+    bool landmarks_success = false;
 
-    if (!store_.saveChanges()) {
-        LOG(WARNING) << "Failed to persist updated map indices to disk after optimization";
+    auto gtsam_start = std::chrono::high_resolution_clock::now();
+
+    // Try to perform GTSAM optimization
+    if (!graph_.optimizeFromStorageMemoryEfficient(store_, current_map_keypoints)) {
+        LOG(ERROR) << "GTSAM batch bundle adjustment failed - will still sync batch to disk";
+        optimization_succeeded = false;
     } else {
-        LOG(INFO) << "Successfully persisted updated map indices to disk";
+        auto gtsam_end = std::chrono::high_resolution_clock::now();
+        auto gtsam_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(gtsam_end - gtsam_start);
+
+        auto optimized_poses = graph_.getOptimizedPoses();
+        auto optimized_landmarks = graph_.getOptimizedLandmarks();
+
+        if (optimized_poses.empty()) {
+            LOG(WARNING) << "No optimized poses received from GTSAM batch bundle adjustment";
+            optimization_succeeded = false;
+        } else if (optimized_landmarks.empty()) {
+            LOG(WARNING) << "No optimized landmarks received from GTSAM batch bundle adjustment";
+            optimization_succeeded = false;
+        } else {
+            LOG(INFO) << "GTSAM batch bundle adjustment completed in " << gtsam_duration.count()
+                      << "ms, received " << optimized_poses.size() << " optimized poses and "
+                      << optimized_landmarks.size() << " optimized landmarks";
+
+            // Update poses and landmarks through MapStore
+            LOG(INFO) << "Updating batch optimization results via MapStore coordination";
+            poses_success = store_.updateOptimizedPoses(optimized_poses);
+            landmarks_success = updateMapKeypointsFromOptimizedLandmarks(optimized_landmarks);
+
+            if (!poses_success) {
+                LOG(WARNING) << "Failed to update optimized poses via MapStore";
+            }
+            if (!landmarks_success) {
+                LOG(WARNING) << "Failed to update optimized landmarks via MapStore";
+            }
+
+            optimization_succeeded = poses_success && landmarks_success;
+        }
     }
 
-    auto persistence_end = std::chrono::high_resolution_clock::now();
-    auto persistence_duration =
-        std::chrono::duration_cast<std::chrono::milliseconds>(persistence_end - persistence_start);
+    // ALWAYS move batch to processed optimized queue and sync to disk
+    // This ensures data is persisted regardless of optimization success/failure
+    LOG(INFO) << "Moving batch to processed optimized queue for disk sync (optimization "
+              << (optimization_succeeded ? "SUCCEEDED" : "FAILED") << ")";
+    store_.markBatchAsOptimized(batch_keyframe_ids);
 
     auto optimization_end = std::chrono::high_resolution_clock::now();
     auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(optimization_end -
                                                                                 optimization_start);
 
-    LOG(INFO) << "Bundle adjustment summary:";
+    LOG(INFO) << "Batch bundle adjustment summary:";
+    LOG(INFO) << "    Batch size: " << optimization_batch.size() << " keyframes";
     LOG(INFO) << "    Total time: " << total_duration.count() << "ms";
-    LOG(INFO) << "    GTSAM time: " << gtsam_duration.count() << "ms ("
-              << (100.0 * gtsam_duration.count() / total_duration.count()) << "%)";
-    LOG(INFO) << "    Storage update: " << storage_duration.count() << "ms ("
-              << (100.0 * storage_duration.count() / total_duration.count()) << "%)";
-    LOG(INFO) << "    Persistence: " << persistence_duration.count() << "ms ("
-              << (100.0 * persistence_duration.count() / total_duration.count()) << "%)";
-    LOG(INFO) << "    Poses updated: " << poses_updated << "/" << optimized_poses.size();
-    LOG(INFO) << "    Landmarks updated: " << optimized_landmarks.size();
+    LOG(INFO) << "    Optimization result: " << (optimization_succeeded ? "SUCCESS" : "FAILED");
+    LOG(INFO) << "    Poses updated: " << (poses_success ? "SUCCESS" : "FAILED");
+    LOG(INFO) << "    Landmarks updated: " << (landmarks_success ? "SUCCESS" : "FAILED");
+    LOG(INFO) << "    Batch moved to processed optimized queue: YES (always)";
+    LOG(INFO) << "    Background sync: AUTOMATIC (triggered by batch completion)";
 
-    if (poses_updated > 0) {
-        double avg_position_change = total_position_change / poses_updated;
-        LOG(INFO) << "    Position changes: max=" << std::fixed << std::setprecision(3)
-                  << max_position_change << "m, avg=" << avg_position_change << "m";
-        LOG(INFO) << "    Rotation changes: max=" << std::fixed << std::setprecision(2)
-                  << (max_rotation_change * 180.0 / M_PI) << "°";
-    }
+    LOG(INFO) << "Batch bundle adjustment pipeline completed via MapStore coordination";
 
-    LOG(INFO) << "Bundle adjustment pipeline completed successfully";
-
-    return true;
+    return optimization_succeeded;
 }
 
 void GraphAdapter::setOptimizationInterval(size_t keyframe_interval) {
@@ -969,197 +820,17 @@ bool GraphAdapter::shouldTriggerOptimization() const {
 
 bool GraphAdapter::updateMapKeypointsAfterOptimization(
     const std::map<uint64_t, types::Pose>& optimized_poses) {
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    LOG(INFO) << "Updating map keypoints after pose optimization";
-
-    if (optimized_poses.empty()) {
-        LOG(WARNING) << "No optimized poses provided for map keypoint update";
-        return false;
-    }
-
-    // Recompute 3D positions of map keypoints based on optimized camera poses
-    auto updated_keypoints = recomputeMapKeypointsFromOptimizedPoses(optimized_poses);
-
-    if (updated_keypoints.empty()) {
-        LOG(WARNING) << "No map keypoints updated after pose optimization";
-        return true;
-    }
-
-    // Validate consistency of updated keypoints
-    if (!validateMapKeypointConsistency(updated_keypoints)) {
-        LOG(ERROR) << "Map keypoint consistency validation failed";
-        return false;
-    }
-
-    {
-        std::unique_lock<std::shared_mutex> lock(map_keypoints_mutex_);
-        for (const auto& [id, keypoint] : updated_keypoints) {
-            if (map_keypoints_.find(id) != map_keypoints_.end()) {
-                // map_keypoints_[id] = keypoint;
-            }
-        }
-    }
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-    LOG(INFO) << "Updated " << updated_keypoints.size() << " map keypoints in " << duration.count()
-              << "ms";
-
-    return true;
+    LOG(INFO) << "updateMapKeypointsAfterOptimization: DEPRECATED - MapStore handles optimization "
+                 "results";
+    LOG(INFO) << "Use MapStore.updateOptimizedPoses() and background sync instead";
+    return true;  // MapStore handles this automatically
 }
 
 std::map<uint32_t, core::types::Keypoint> GraphAdapter::recomputeMapKeypointsFromOptimizedPoses(
     const std::map<uint64_t, types::Pose>& optimized_poses) {
-    LOG(INFO) << "Recomputing 3D map keypoint positions from optimized poses";
-
-    std::map<uint32_t, core::types::Keypoint> updated_keypoints;
-
-    auto current_keypoints = getMapPointsCopy();
-    if (current_keypoints.empty()) {
-        LOG(INFO) << "No map keypoints to update";
-        return updated_keypoints;
-    }
-
-    size_t points_updated = 0;
-    size_t points_failed = 0;
-    double total_position_change = 0.0;
-    double max_position_change = 0.0;
-
-    for (const auto& [keypoint_id, original_keypoint] : current_keypoints) {
-        try {
-            std::vector<std::pair<uint64_t, types::Pose>> observing_keyframes;
-
-            for (const auto& keyframe_pose_pair : optimized_poses) {
-                uint64_t keyframe_id = keyframe_pose_pair.first;
-                const types::Pose& pose = keyframe_pose_pair.second;
-
-                auto observation_it = std::find_if(original_keypoint.locations.begin(),
-                                                   original_keypoint.locations.end(),
-                                                   [keyframe_id](const auto& loc) -> bool {
-                                                       return loc.keyframe_id == keyframe_id;
-                                                   });
-
-                if (observation_it == original_keypoint.locations.end()) {
-                    continue;
-                }
-
-                observing_keyframes.push_back({keyframe_id, pose});
-            }
-
-            if (observing_keyframes.size() < 2) {
-                points_failed++;
-                continue;
-            }
-
-            Eigen::Vector3d triangulated_position;
-            if (triangulatePoint(original_keypoint, observing_keyframes, triangulated_position)) {
-                core::types::Keypoint updated_keypoint = original_keypoint;
-
-                double position_change = (updated_keypoint.position - triangulated_position).norm();
-                total_position_change += position_change;
-                max_position_change = std::max(max_position_change, position_change);
-
-                updated_keypoint.position = triangulated_position;
-                updated_keypoints[keypoint_id] = updated_keypoint;
-                points_updated++;
-
-                if (position_change > 0.05) {
-                    LOG(INFO) << "Map point " << keypoint_id
-                              << " position updated: Δ=" << std::fixed << std::setprecision(3)
-                              << position_change << "m";
-                }
-            } else {
-                points_failed++;
-            }
-
-        } catch (const std::exception& e) {
-            LOG(WARNING) << "Failed to update map point " << keypoint_id << ": " << e.what();
-            points_failed++;
-        }
-    }
-
-    double avg_position_change =
-        (points_updated > 0) ? (total_position_change / points_updated) : 0.0;
-
-    LOG(INFO) << "Map keypoint update summary:";
-    LOG(INFO) << "    Total points: " << current_keypoints.size();
-    LOG(INFO) << "    Updated: " << points_updated;
-    LOG(INFO) << "    Failed: " << points_failed;
-    if (points_updated > 0) {
-        LOG(INFO) << "    Position changes: max=" << std::fixed << std::setprecision(3)
-                  << max_position_change << "m, avg=" << avg_position_change << "m";
-    }
-
-    return updated_keypoints;
-}
-
-bool GraphAdapter::triangulatePoint(
-    const core::types::Keypoint& original_keypoint,
-    const std::vector<std::pair<uint64_t, types::Pose>>& observing_keyframes,
-    Eigen::Vector3d& triangulated_position) {
-    if (observing_keyframes.size() < 2) {
-        return false;
-    }
-
-    // Use simple linear triangulation for now
-    // In a full implementation, might need to use DLT or iterative optimization and actually reuse
-    // the one in orbtracker
-
-    Eigen::MatrixXd A(2 * observing_keyframes.size(), 4);
-    int row = 0;
-
-    for (size_t i = 0; i < observing_keyframes.size(); ++i) {
-        uint64_t keyframe_id = observing_keyframes[i].first;
-        const types::Pose& pose = observing_keyframes[i].second;
-
-        auto observation_it = std::find_if(
-            original_keypoint.locations.begin(), original_keypoint.locations.end(),
-            [keyframe_id](const auto& loc) -> bool { return loc.keyframe_id == keyframe_id; });
-
-        if (observation_it == original_keypoint.locations.end()) {
-            continue;
-        }
-
-        double u = observation_it->x;
-        double v = observation_it->y;
-
-        // TODO: get fx, fy, cx, cy from camera info
-        double fx = 525.0, fy = 525.0, cx = 319.5, cy = 239.5;
-
-        double x_norm = (u - cx) / fx;
-        double y_norm = (v - cy) / fy;
-
-        Eigen::Matrix3d R = pose.orientation.toRotationMatrix();
-        Eigen::Vector3d t = pose.position;
-
-        // Projection matrix P = K[R|t]
-        Eigen::Matrix<double, 3, 4> P;
-        P.block<3, 3>(0, 0) = R.transpose();
-        P.block<3, 1>(0, 3) = -R.transpose() * t;
-
-        // Set up linear system for DLT triangulation
-        A.row(row) = x_norm * P.row(2) - P.row(0);
-        A.row(row + 1) = y_norm * P.row(2) - P.row(1);
-        row += 2;
-    }
-
-    // Solve using SVD
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
-    Eigen::Vector4d homogeneous_point = svd.matrixV().col(3);
-
-    if (std::abs(homogeneous_point(3)) < 1e-8) {
-        return false;
-    }
-
-    triangulated_position = homogeneous_point.head<3>() / homogeneous_point(3);
-
-    if (!triangulated_position.allFinite() || triangulated_position.norm() > 100.0) {
-        return false;
-    }
-
-    return true;
+    LOG(INFO)
+        << "recomputeMapKeypointsFromOptimizedPoses: DEPRECATED - MapStore handles optimization";
+    return {};  // Return empty map - MapStore handles triangulation and updates
 }
 
 bool GraphAdapter::validateMapKeypointConsistency(
@@ -1204,46 +875,9 @@ bool GraphAdapter::validateMapKeypointConsistency(
 }
 
 bool GraphAdapter::storeOptimizedMapKeypoints() {
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    LOG(INFO) << "Storing optimized map keypoints to persistent storage";
-
-    // Get current optimized map keypoints (thread-safe)
-    auto optimized_keypoints = getMapPointsCopy();
-    if (optimized_keypoints.empty()) {
-        LOG(INFO) << "No map keypoints to store";
-        return true;
-    }
-
-    size_t stored_count = 0;
-    size_t failed_count = 0;
-
-    for (const auto& [id, keypoint] : optimized_keypoints) {
-        try {
-            if (store_.addKeyPoint(keypoint)) {
-                stored_count++;
-            } else {
-                failed_count++;
-                LOG(WARNING) << "Failed to store map keypoint " << id;
-            }
-        } catch (const std::exception& e) {
-            failed_count++;
-            LOG(WARNING) << "Exception storing map keypoint " << id << ": " << e.what();
-        }
-    }
-
-    if (!store_.saveChanges()) {
-        LOG(ERROR) << "Failed to persist map keypoints to disk";
-        return false;
-    }
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-    LOG(INFO) << "Stored " << stored_count << " map keypoints to disk in " << duration.count()
-              << "ms (failed: " << failed_count << ")";
-
-    return failed_count == 0;
+    LOG(INFO) << "storeOptimizedMapKeypoints: DEPRECATED - MapStore handles optimization storage";
+    LOG(INFO) << "MapStore background sync automatically persists optimization results";
+    return true;  // MapStore handles storage automatically
 }
 
 bool GraphAdapter::exportFinalOptimizedMap(const std::string& export_path) {
@@ -1419,7 +1053,8 @@ void GraphAdapter::optimizationThreadLoop() {
     while (optimization_thread_running_.load() && !should_stop_optimization_.load()) {
         std::unique_lock<std::mutex> lock(optimization_mutex_);
 
-        optimization_trigger_.wait_for(lock, std::chrono::seconds(1), [this]() {
+        // Wait indefinitely for optimization trigger (no timeout to avoid continuous iteration)
+        optimization_trigger_.wait(lock, [this]() {
             return optimization_pending_.load() || should_stop_optimization_.load();
         });
 
@@ -1446,9 +1081,12 @@ void GraphAdapter::optimizationThreadLoop() {
                 auto attempt_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                     attempt_end - attempt_start);
 
+                // ALWAYS reset keyframes counter since we processed a batch regardless of
+                // success/failure
+                keyframes_since_last_optimization_ = 0;
+
                 if (success) {
                     successful_optimizations++;
-                    keyframes_since_last_optimization_ = 0;
                     LOG(INFO) << "Background bundle adjustment #" << optimization_attempts
                               << " completed successfully in " << attempt_duration.count() << "ms";
 
@@ -1462,15 +1100,20 @@ void GraphAdapter::optimizationThreadLoop() {
                 } else {
                     failed_optimizations++;
                     LOG(WARNING) << "Background bundle adjustment #" << optimization_attempts
-                                 << " failed after " << attempt_duration.count() << "ms";
+                                 << " failed after " << attempt_duration.count() << "ms"
+                                 << " - batch still moved to processed optimized queue";
                 }
 
             } catch (const std::exception& e) {
                 failed_optimizations++;
+                // Reset counter even for exceptions since batch was likely processed
+                keyframes_since_last_optimization_ = 0;
                 LOG(ERROR) << "Background bundle adjustment #" << optimization_attempts
                            << " exception: " << e.what();
             } catch (...) {
                 failed_optimizations++;
+                // Reset counter even for unknown exceptions
+                keyframes_since_last_optimization_ = 0;
                 LOG(ERROR) << "Background bundle adjustment #" << optimization_attempts
                            << " unknown exception";
             }
@@ -1493,6 +1136,7 @@ void GraphAdapter::optimizationThreadLoop() {
                 LOG(INFO) << "    Successful: " << successful_optimizations << " (" << std::fixed
                           << std::setprecision(1) << success_rate << "%)";
                 LOG(INFO) << "    Failed: " << failed_optimizations;
+                LOG(INFO) << "    Note: Failed optimizations still sync data to disk";
             }
         }
     }
@@ -1518,56 +1162,181 @@ bool GraphAdapter::updateMapKeypointsFromOptimizedLandmarks(
         return false;
     }
 
-    size_t points_updated = 0;
-    size_t points_not_found = 0;
-    double total_position_change = 0.0;
-    double max_position_change = 0.0;
+    // Use MapStore's optimization result handling instead of direct manipulation
+    bool success = store_.updateOptimizedLandmarks(optimized_landmarks);
 
-    {
-        std::unique_lock<std::shared_mutex> lock(map_keypoints_mutex_);
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-        for (const auto& [landmark_id, optimized_position] : optimized_landmarks) {
-            auto it = map_keypoints_.find(landmark_id);
-            if (it != map_keypoints_.end()) {
-                double position_change = (it->second.position - optimized_position).norm();
-                total_position_change += position_change;
-                max_position_change = std::max(max_position_change, position_change);
+    LOG(INFO) << "Map keypoint update from bundle adjustment completed in " << duration.count()
+              << "ms"
+              << " via MapStore coordination (success: " << (success ? "YES" : "NO") << ")";
 
-                // Update the 3D position with optimized result
-                it->second.position = optimized_position;
-                points_updated++;
+    return success;
+}
 
-                if (position_change > 0.05) {
-                    LOG(INFO) << "Map point " << landmark_id
-                              << " position updated by bundle adjustment: Δ=" << std::fixed
-                              << std::setprecision(3) << position_change << "m";
-                }
-            } else {
-                points_not_found++;
-                LOG(WARNING) << "Optimized landmark " << landmark_id
-                             << " not found in current map keypoints";
-            }
+// ===== NEW TRIANGULATION PHASE =====
+
+bool GraphAdapter::triangulateMapKeypoints(std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    size_t keypoints_needing_triangulation = 0;
+    size_t keypoints_triangulated = 0;
+    size_t keypoints_insufficient_observations = 0;
+    
+    // Count keypoints needing triangulation
+    for (const auto& [id, keypoint] : map_keypoints) {
+        if (keypoint.needs_triangulation) {
+            keypoints_needing_triangulation++;
         }
+    }
+    
+    LOG(INFO) << "Triangulation phase: " << keypoints_needing_triangulation 
+              << " keypoints need triangulation";
+    
+    if (keypoints_needing_triangulation == 0) {
+        return true;  // Nothing to triangulate
+    }
+    
+    // Triangulate keypoints that need it
+    for (auto& [id, keypoint] : map_keypoints) {
+        if (!keypoint.needs_triangulation) {
+            continue;  // Skip keypoints that already have 3D position
+        }
+        
+        // Check minimum observations (need at least 2, recommend 3+ for robustness)
+        if (keypoint.locations.size() < 2) {
+            keypoints_insufficient_observations++;
+            LOG(INFO) << "Keypoint " << id << " has only " << keypoint.locations.size() 
+                      << " observations (need minimum 2), keeping for future triangulation";
+            continue;  // Keep for future attempts
+        }
+        
+        Eigen::Vector3d triangulated_position;
+        if (triangulateKeypoint(keypoint, map_keypoints, triangulated_position)) {
+            // Successfully triangulated
+            keypoint.position = triangulated_position;
+            keypoint.needs_triangulation = false;
+            keypoints_triangulated++;
+            
+            LOG(INFO) << "Triangulated keypoint " << id << " at position: " 
+                      << triangulated_position.transpose() 
+                      << " from " << keypoint.locations.size() << " observations";
+        } else {
+            LOG(WARNING) << "Failed to triangulate keypoint " << id 
+                        << " with " << keypoint.locations.size() << " observations";
+            // Keep needs_triangulation=true for future attempts
+        }
+    }
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    
+    LOG(INFO) << "Triangulation phase completed in " << duration.count() << "ms:";
+    LOG(INFO) << "    Total needing triangulation: " << keypoints_needing_triangulation;
+    LOG(INFO) << "    Successfully triangulated: " << keypoints_triangulated;
+    LOG(INFO) << "    Insufficient observations: " << keypoints_insufficient_observations;
+    LOG(INFO) << "    Still pending: " << (keypoints_needing_triangulation - keypoints_triangulated);
+    
+    return keypoints_triangulated > 0;
+}
+
+bool GraphAdapter::triangulateKeypoint(const core::types::Keypoint& keypoint, 
+                                       const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+                                       Eigen::Vector3d& triangulated_position) {
+    if (keypoint.locations.size() < 2) {
+        return false;  // Need at least 2 observations
+    }
+    
+    if (!transform_tree_) {
+        LOG(ERROR) << "Transform tree not available for triangulation";
+        return false;
+    }
+    
+    try {
+        // Use new triangulation API that handles multiple observations automatically
+        bool success = reconstructor_.triangulateFromMapKeypoint(
+            keypoint, store_, *transform_tree_, triangulated_position, base_link_frame_id_);
+        
+        if (success) {
+            // Validate triangulated point
+            if (!triangulated_position.allFinite()) {
+                LOG(WARNING) << "Triangulated position is not finite";
+                return false;
+            }
+            
+            if (triangulated_position.norm() > 1000.0) {
+                LOG(WARNING) << "Triangulated position too far: " << triangulated_position.norm() << "m";
+                return false;
+            }
+            
+            LOG(INFO) << "Successfully triangulated keypoint " << keypoint.id() 
+                      << " at position: " << triangulated_position.transpose()
+                      << " from " << keypoint.locations.size() << " observations";
+            return true;
+        }
+        
+    } catch (const std::exception& e) {
+        LOG(WARNING) << "Triangulation failed with exception: " << e.what();
+    }
+    
+    return false;
+}
+
+// Helper method to get keyframe from any queue
+std::shared_ptr<types::KeyFrame> GraphAdapter::getKeyFrameFromAnyQueue(uint64_t keyframe_id) const {
+    // Try unprocessed cache first
+    auto keyframe = store_.getUnprocessedKeyFrame(keyframe_id);
+    if (keyframe) {
+        return keyframe;
+    }
+
+    // Try processed non-optimized cache
+    keyframe = store_.getProcessedNonOptimizedKeyFrame(keyframe_id);
+    if (keyframe) {
+        return keyframe;
+    }
+
+    // Try processed optimized cache
+    keyframe = store_.getProcessedOptimizedKeyFrame(keyframe_id);
+    if (keyframe) {
+        return keyframe;
+    }
+
+    // Finally try the main storage (disk)
+    return store_.getKeyFrame(keyframe_id);
+}
+
+void GraphAdapter::updateMapPoints(const std::map<uint32_t, core::types::Keypoint>& updated_map_keypoints) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    LOG(INFO) << "Updating map keypoints with " << updated_map_keypoints.size() << " ORB-processed points";
+
+    size_t new_points = 0;
+    size_t updated_points = 0;
+
+    for (const auto& [id, keypoint] : updated_map_keypoints) {
+        bool is_new = !store_.hasKeyPoint(id);
+
+        if (is_new) {
+            new_points++;
+            LOG(INFO) << "Adding new map point " << id << " at position: "
+                      << keypoint.position.transpose();
+        } else {
+            updated_points++;
+        }
+
+        // Add/update keypoint and mark as dirty for disk write
+        store_.addKeyPoint(keypoint);
+        store_.markMapPointDirty(id);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    double avg_position_change =
-        (points_updated > 0) ? (total_position_change / points_updated) : 0.0;
-
-    LOG(INFO) << "Map keypoint update from bundle adjustment summary:";
-    LOG(INFO) << "    Total optimized landmarks: " << optimized_landmarks.size();
-    LOG(INFO) << "    Updated: " << points_updated;
-    LOG(INFO) << "    Not found: " << points_not_found;
-    LOG(INFO) << "    Update time: " << duration.count() << "ms";
-
-    if (points_updated > 0) {
-        LOG(INFO) << "    Position changes: max=" << std::fixed << std::setprecision(3)
-                  << max_position_change << "m, avg=" << avg_position_change << "m";
-    }
-
-    return points_not_found == 0;  // Success if all landmarks were found and updated
+    LOG(INFO) << "Updated map keypoints from ORB processing in " << duration.count() << "ms"
+              << " (" << new_points << " new, " << updated_points << " updated)"
+              << " - all marked dirty for disk write";
 }
 
 }  // namespace graph

@@ -101,6 +101,7 @@ private:
         std::map<uint32_t, core::types::Keypoint>& map_keypoints,
         std::map<uint32_t, uint32_t>& current_img_to_map_keypoint_idx);
 
+    // OLD ARCHITECTURE: Immediate triangulation (still available for legacy use)
     std::optional<core::types::Pose> matchAndTriangulate(
         const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
         const std::vector<cv::KeyPoint>& prev_img_kps, const cv::Mat& prev_img_desc,
@@ -108,7 +109,15 @@ private:
         const cv::Mat& K, const std::map<uint32_t, uint32_t>& current_img_to_map_keypoint_idx,
         std::map<uint32_t, core::types::Keypoint>& map_keypoints);
 
-    // New version using map_store
+    // NEW ARCHITECTURE: Feature matching only (no triangulation) - defer to graph_adapter.cpp
+    std::optional<core::types::Pose> matchFeaturesOnly(
+        const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
+        const std::vector<cv::KeyPoint>& prev_img_kps, const cv::Mat& prev_img_desc,
+        const core::types::KeyFrame& cur_frame, const core::types::KeyFrame& prev_frame,
+        const cv::Mat& K, const std::map<uint32_t, uint32_t>& current_img_to_map_keypoint_idx,
+        std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+
+    // Legacy version using map_store (still uses immediate triangulation)
     std::optional<core::types::Pose> matchAndTriangulateWithMapStore(
         const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
         const std::vector<cv::KeyPoint>& prev_img_kps, const cv::Mat& prev_img_desc,

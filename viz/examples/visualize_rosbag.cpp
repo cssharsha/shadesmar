@@ -45,8 +45,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Set up data structures
-    core::graph::FactorGraph graph;
+    // Set up data structures - only need MapStore, FactorGraph handled internally
     core::storage::MapStore store("/data/robots");
 
     // Create and initialize rosbag reader with loaded configuration
@@ -79,7 +78,7 @@ int main(int argc, char** argv) {
     std::cout << "  Background Optimization: " << (dataset_config.enable_background_optimization ? "enabled" : "disabled") << std::endl;
     std::cout << "  Keyframe Interval: " << dataset_config.optimization_keyframe_interval << " keyframes" << std::endl;
 
-    ros::RosbagReader reader(argv[1], graph, store, dataset_config.ros_config, visualizer);
+    ros::RosbagReader reader(argv[1], store, dataset_config.ros_config, visualizer);
 
     // Configure keyframe thresholds
     reader.setKeyframeThresholds(dataset_config.keyframe_thresholds);

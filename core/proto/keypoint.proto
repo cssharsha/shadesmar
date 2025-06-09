@@ -15,4 +15,5 @@ message Keypoint {
   uint32 id = 1;
   Vector3 position = 2;
   repeated Location locations = 3;
+  bool needs_triangulation = 4;
 }

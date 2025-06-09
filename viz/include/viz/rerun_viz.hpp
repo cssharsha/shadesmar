@@ -33,10 +33,6 @@ public:
                        const core::types::Pose& pose = core::types::Pose()) override {}
     void addImage(const cv::Mat& image, const std::string& name = "image") override {}
 
-    void visualizeFactorGraph(
-        const core::graph::FactorGraph& graph,
-        const std::map<uint32_t, core::types::Keypoint>& map_keypoints) override;
-
     void visualizeKeyFrame(const core::types::KeyFrame::ConstPtr& keyframe) override {}
     void clear() override {}
     void update() override {}
@@ -64,10 +60,9 @@ public:
         camera_frame_id_ = camera_frame_id;
     }
 
-    // New method to visualize from storage with last N keyframes for trajectory
+    // Clean storage-based visualization - gets keypoints directly from MapStore
     void visualizeFromStorage(
         const core::storage::MapStore& map_store,
-        const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
         uint64_t current_keyframe_id,
         uint64_t previous_keyframe_id,
         size_t trajectory_keyframe_count = 5);
