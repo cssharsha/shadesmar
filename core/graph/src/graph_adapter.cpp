@@ -1254,8 +1254,8 @@ bool GraphAdapter::triangulateKeypoint(const core::types::Keypoint& keypoint,
     }
     
     try {
-        // Use new triangulation API that handles multiple observations automatically
-        bool success = reconstructor_.triangulateFromMapKeypoint(
+        // Use GTSAM triangulation API that handles multiple observations automatically
+        bool success = gtsam_reconstructor_.triangulateFromMapKeypoint(
             keypoint, store_, *transform_tree_, triangulated_position, base_link_frame_id_);
         
         if (success) {

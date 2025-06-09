@@ -6,11 +6,13 @@ cc_library(
         "2d/orb_tracker.cpp",
         "2d/reconstruction.cpp",
         "2d/gtsam_reconstruction.cpp",
+        "2d/triangulation_common.cpp",
     ],
     hdrs = [
         "2d/orb_tracker.hpp",
         "2d/reconstruction.hpp",
         "2d/gtsam_reconstruction.hpp",
+        "2d/triangulation_common.hpp",
     ],
     includes = ["."],
     visibility = ["//visibility:public"],

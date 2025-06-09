@@ -8,18 +8,10 @@
 #include <core/storage/map_store.hpp>
 #include <core/types/keyframe.hpp>
 #include <stf/transform_tree.hpp>
+#include "triangulation_common.hpp"
 
 namespace tracking {
 namespace image {
-
-// Helper structures for map keypoint triangulation
-struct ObservationData {
-    std::shared_ptr<core::types::KeyFrame> keyframe;
-    cv::Point2f pixel;
-    std::string camera_frame_id;
-    Eigen::Matrix3d K;
-    Eigen::Isometry3d camera_pose_in_odom;
-};
 
 class Reconstruct {
 public:
