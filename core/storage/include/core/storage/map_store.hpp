@@ -1,9 +1,20 @@
 #pragma once
 
 #include <fstream>
-#include "core/proto/map.pb.h"
+#include <memory>
+#include <list>
+#include <unordered_map>
+#include <shared_mutex>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 #include "core/types/factor.hpp"
 #include "core/types/keyframe.hpp"
+#include "core/types/keypoint.hpp"
+
+#include "core/proto/map_storage_index.pb.h"
+
+#include <Eigen/Core>
 
 namespace core {
 namespace storage {
@@ -11,30 +22,263 @@ namespace storage {
 using KeyFramePtr = types::KeyFrame::Ptr;
 class MapStore {
 public:
-    MapStore() {
-        map_proto_.mutable_metadata()->set_version("1.0");
-        map_proto_.mutable_metadata()->set_created_by("Shadesmar");
-    }
+    MapStore(const std::string& map_base_filepth);
+    ~MapStore();
 
-    void addKeyFrame(const KeyFramePtr& keyframe);
+    bool initializeFilePaths(const std::string& map_base_filepath);
+
+    // Cache configuration
+    void setCacheSize(size_t max_keyframes) { max_cache_size_ = max_keyframes; }
+    size_t getCacheSize() const { return max_cache_size_; }
+    size_t getCurrentCacheSize() const;
+
+    // Factor-keyframe association queries
+    std::vector<types::Factor> getFactorsForKeyFrame(uint64_t keyframe_id) const;
+    std::vector<uint64_t> getFactorIdsForKeyFrame(uint64_t keyframe_id) const;
+
+    // Optimization result handling
+    bool updateOptimizedPoses(const std::map<uint64_t, types::Pose>& optimized_poses);
+    bool updateOptimizedLandmarks(const std::map<uint32_t, Eigen::Vector3d>& optimized_landmarks);
+    bool triggerImmediateSync();
+
+    // Optimization tracking
+    void setLastOptimizedKeyFrameId(uint64_t keyframe_id) { last_optimized_keyframe_id_ = keyframe_id; }
+    uint64_t getLastOptimizedKeyFrameId() const { return last_optimized_keyframe_id_; }
+
+    // Background sync thread management
+    void enableBackgroundSync(std::chrono::seconds sync_interval = std::chrono::seconds(30));
+    void disableBackgroundSync();
+    bool isBackgroundSyncEnabled() const { return sync_thread_running_.load(); }
+    void setSyncInterval(std::chrono::seconds interval);
+    std::chrono::seconds getSyncInterval() const { return sync_interval_; }
+
+    bool addKeyFrame(const KeyFramePtr& keyframe);
+    bool addFactor(const types::Factor& factor);
+    bool addKeyPoint(const types::Keypoint& keypoint);
+
     KeyFramePtr getKeyFrame(uint64_t id) const;
+    std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
+    std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
+    
+    // Check if keypoint exists without loading it
+    bool hasKeyPoint(uint32_t id) const;
+
     std::vector<KeyFramePtr> getAllKeyFrames() const;
-
-    void addFactor(const types::Factor& factor);
-    types::Factor getFactor(uint64_t id) const;
     std::vector<types::Factor> getAllFactors() const;
+    std::vector<types::Keypoint> getAllKeyPoints() const;
 
-    std::vector<types::Factor> getConnectedFactors(uint64_t keyframe_id) const;
+    // Memory-efficient pose extraction - only loads pose data, not full keyframes
+    std::map<uint64_t, types::Pose> getAllKeyFramePoses() const;
 
-    bool save(const std::string& filename);
-    bool load(const std::string& filename);
+    std::vector<KeyFramePtr> getKeyFramesByTimestamp(double timestamp) const;
+    std::vector<KeyFramePtr> getKeyFramesByTimestampRange(double start_timestamp,
+                                                          double end_timestamp) const;
+    std::vector<KeyFramePtr> findKeyFramesNearPosition(const Eigen::Vector3d& target_position,
+                                                       double radius, int max_results = -1) const;
 
-    void updateBounds();
+    bool saveChanges();
+    bool loadMap();
+
+    const proto::MapDiskMetadata& getMetadata() const {
+        return metadata_;
+    }
+    void clearDataAndIndices();
+
+    // ===== THREE-QUEUE SYSTEM METHODS =====
+
+    // Queue management methods
+    void addToUnprocessedCache(const KeyFramePtr& keyframe);
+    void moveToProcessedNonOptimized(uint64_t keyframe_id);
+    void moveToProcessedOptimized(uint64_t keyframe_id);
+    void moveBatchToProcessedOptimized(const std::vector<uint64_t>& keyframe_ids);
+
+    // Queue-specific accessors
+    std::vector<KeyFramePtr> getUnprocessedKeyFrames() const;
+    std::vector<KeyFramePtr> getProcessedNonOptimizedKeyFrames() const;
+    std::vector<KeyFramePtr> getProcessedOptimizedKeyFrames() const;
+
+    KeyFramePtr getUnprocessedKeyFrame(uint64_t id) const;
+    KeyFramePtr getProcessedNonOptimizedKeyFrame(uint64_t id) const;
+    KeyFramePtr getProcessedOptimizedKeyFrame(uint64_t id) const;
+
+    // Queue state queries
+    size_t getUnprocessedCount() const;
+    size_t getProcessedNonOptimizedCount() const;
+    size_t getProcessedOptimizedCount() const;
+
+    bool hasUnprocessedKeyFrame(uint64_t id) const;
+    bool hasProcessedNonOptimizedKeyFrame(uint64_t id) const;
+    bool hasProcessedOptimizedKeyFrame(uint64_t id) const;
+
+    // Map point eviction
+    void evictOldMapPoints(uint64_t current_keyframe_id, size_t max_age = 30);
+
+    // Batch operations for optimization
+    std::vector<KeyFramePtr> getBatchForOptimization(size_t max_batch_size = 50) const;
+    void markBatchAsOptimized(const std::vector<uint64_t>& keyframe_ids);
+
+    // NEW: Callback-based write system (replaces continuous sync thread)
+    void swapAndWriteToDisk();
+    
+    // Write worker management
+    void enableWriteWorker();
+    void disableWriteWorker();
+    bool isWriteWorkerEnabled() const { return write_worker_running_.load(); }
+
+    // Map point change tracking
+    void markMapPointDirty(uint32_t id);
+    bool isMapPointDirty(uint32_t id) const;
+
+    void requestSync();
 
 private:
-    proto::Map map_proto_;
-    std::map<uint64_t, size_t> keyframe_index_;  // Maps keyframe ID to index in proto
-    std::map<uint64_t, size_t> factor_index_;    // Maps factor ID to index in proto
+    std::mutex file_operations_mutex_;  // Protect all file operations from concurrent access
+
+    // Cache infrastructure - thread-safe access to in-memory cached data
+    mutable std::shared_mutex cache_mutex_;
+    size_t max_cache_size_ = 10;  // Default cache size (configurable)
+
+    // In-memory cache storage
+    mutable std::unordered_map<uint64_t, KeyFramePtr> keyframe_cache_;
+    mutable std::unordered_map<uint64_t, types::Factor> factor_cache_;
+    mutable std::unordered_map<uint32_t, types::Keypoint> keypoint_cache_;
+
+    // Pending writes - what needs to be written to disk during next sync
+    mutable std::unordered_map<uint64_t, KeyFramePtr> keyframe_pending_writes_;
+    mutable std::unordered_map<uint64_t, types::Factor> factor_pending_writes_;
+    mutable std::unordered_map<uint32_t, types::Keypoint> keypoint_pending_writes_;
+
+    // Dirty flags - atomic to ensure thread safety
+    mutable std::atomic<bool> keyframes_dirty_;
+    mutable std::atomic<bool> factors_dirty_;
+    mutable std::atomic<bool> keypoints_dirty_;
+    mutable std::atomic<bool> metadata_dirty_;
+
+    // ===== THREE-QUEUE SYSTEM CACHES =====
+
+    // Three-queue system with atomic pointer swapping
+    mutable std::shared_mutex unprocessed_cache_mutex_;
+    std::unordered_map<uint64_t, KeyFramePtr> unprocessed_cache_;
+
+    // Regular pointers for efficient queue swapping (atomic unique_ptr doesn't work)
+    std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> processed_non_optimized_queue_;
+    std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> processed_optimized_queue_;
+    mutable std::shared_mutex processed_non_optimized_queue_mutex_;
+    mutable std::shared_mutex processed_optimized_queue_mutex_;
+
+    // NEW: Single-threaded write worker (replaces continuous sync thread)
+    std::unique_ptr<std::thread> write_worker_thread_;
+    std::atomic<bool> write_worker_running_{false};
+    std::atomic<bool> should_stop_write_worker_{false};
+    
+    // Write request queue with size limiting
+    std::queue<std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>>> pending_write_queue_;
+    std::mutex write_queue_mutex_;
+    std::condition_variable write_available_;
+    static constexpr size_t MAX_WRITE_QUEUE_SIZE = 3;  // Allow max 3 pending writes
+    
+    // Write synchronization
+    std::atomic<bool> write_in_progress_{false};
+    std::mutex write_completion_mutex_;
+    std::condition_variable write_completed_;
+
+    // Map point change tracking
+    std::unordered_set<uint32_t> dirty_map_points_;
+    mutable std::shared_mutex dirty_map_points_mutex_;
+
+    // Map point eviction tracking
+    std::unordered_map<uint32_t, uint64_t> map_point_last_seen_;
+    std::mutex map_point_eviction_mutex_;
+
+    // LRU tracking for keyframes (most important for memory management)
+    mutable std::list<uint64_t> keyframe_lru_list_;
+    mutable std::unordered_map<uint64_t, std::list<uint64_t>::iterator> keyframe_lru_map_;
+
+    // DEPRECATED: Background sync thread (will be removed)
+    std::atomic<bool> sync_thread_running_{false};
+    std::atomic<bool> should_stop_sync_{false};
+    std::atomic<bool> sync_requested_{false};
+    std::unique_ptr<std::thread> sync_thread_;
+    std::mutex sync_mutex_;
+    std::condition_variable sync_condition_;
+    std::chrono::seconds sync_interval_{30};
+
+    std::string base_filepath_;
+    std::string data_filepath_;
+    std::string index_filepath_;
+    std::string metadata_filepath_;
+
+    proto::MapDiskMetadata metadata_;
+    std::map<uint64_t, proto::FileLocation> keyframe_locations_;
+    std::map<uint64_t, proto::FileLocation> factor_locations_;
+    std::map<uint32_t, proto::FileLocation> keypoint_locations_;
+
+    std::map<double, std::vector<uint64_t>> timestamp_to_keyframe_ids_;
+    std::vector<proto::KeyFrameIndexEntry> keyframe_spatial_index_entries_;
+
+    // Factor-keyframe association tracking (reverse mapping)
+    std::unordered_map<uint64_t, std::vector<uint64_t>> keyframe_to_factor_ids_;
+
+    // Optimization tracking
+    uint64_t last_optimized_keyframe_id_ = 0;
+
+    bool openDataFileForAppend(std::fstream& file_stream);
+    bool openDataFileForRead(std::fstream& file_stream) const;
+
+    template <typename ProtoType>
+    bool writeProtoMessage(std::fstream& stream, const ProtoType& message,
+                           proto::FileLocation& out_location);
+
+    template <typename ProtoType, typename CppType>
+    std::optional<CppType> readProtoMessage(
+        const proto::FileLocation& location,
+        std::function<CppType(const ProtoType&)> fromProtoConverter) const;
+
+    void updateMetadataBounds(const types::Pose& pose);
+    void rebuildTransientIndices();
+    void updateBounds();
+
+    // Cache management methods
+    void cacheKeyFrame(uint64_t id, const KeyFramePtr& keyframe) const;
+    void cacheKeyFrameInternal(uint64_t id, const KeyFramePtr& keyframe) const;  // Assumes mutex locked
+    void cacheFactor(uint64_t id, const types::Factor& factor) const;
+    void cacheKeyPoint(uint32_t id, const types::Keypoint& keypoint) const;
+    void evictLRUKeyFrame() const;
+
+    // Direct disk access for optimization updates
+    KeyFramePtr getKeyFrameFromDisk(uint64_t id) const;
+    std::optional<types::Keypoint> getKeyPointFromDisk(uint32_t id) const;
+
+    // Background sync thread methods
+    void syncThreadLoop();
+    bool performAtomicSync();
+    bool writePendingDataToDisk();  // Helper method for writing cached data to disk
+
+    // ===== THREE-QUEUE SYSTEM HELPER METHODS =====
+
+    // Helper methods for queue management
+    void moveKeyFrameBetweenCaches(uint64_t keyframe_id,
+                                   std::unordered_map<uint64_t, KeyFramePtr>& from_cache,
+                                   std::shared_mutex& from_mutex,
+                                   std::unordered_map<uint64_t, KeyFramePtr>& to_cache,
+                                   std::shared_mutex& to_mutex);
+
+    void updateMapPointLastSeen(uint64_t keyframe_id);
+    void evictMapPointToDisk(uint32_t map_point_id);
+
+    // Modified background sync to handle processed optimized queue
+    void syncProcessedOptimizedToDisk();
+
+    // NEW: Single-threaded write worker methods
+    void startWriteWorker();
+    void stopWriteWorker();
+    void writeWorkerLoop();
+    void queueWriteRequest(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> batch);
+    void waitForWriteCompletion();
+    
+    // NEW: Complete write process (data + index + metadata)
+    void writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write);
+    void initializeAtomicQueues();
 };
 
 }  // namespace storage

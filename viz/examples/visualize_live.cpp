@@ -13,8 +13,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    core::graph::FactorGraph graph;
-    core::storage::MapStore store;
+    // Only need MapStore - FactorGraph is handled internally by GraphAdapter
+    core::storage::MapStore store("/tmp/live_viz_map_storage");
     ros::Config config;
     config.odom_topic = "/base/odom";
     config.tf_topic = "/tf";
@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
     config.point_cloud_topic = "/camera/pointcloud";
 
     std::cout << "Creating ROS adapter..." << std::endl;
-    auto adapter = std::make_shared<ros::RosAdapter>(config, graph, store, visualizer);
+    auto adapter = std::make_shared<ros::RosAdapter>(config, store, visualizer);
     std::cout << "Initializing adapter..." << std::endl;
     if (!adapter->initialize()) {
         std::cerr << "Failed to initialize adapter" << std::endl;

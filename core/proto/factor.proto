@@ -3,12 +3,31 @@ syntax = "proto3";
 package core.proto;
 
 import "core/proto/geometry.proto";
+import "core/proto/imu.proto";
 
 enum FactorType {
   UNKNOWN = 0;
   PRIOR = 1;
   ODOMETRY = 2;
   LOOP_CLOSURE = 3;
+  IMU_PREINTEGRATED = 4;
+}
+
+message ImuPreintegratedMeasurement {
+  // Preintegrated measurements between two poses
+  Vector3 preintegrated_position = 1;
+  Vector3 preintegrated_velocity = 2;
+  Quaternion preintegrated_rotation = 3;
+
+  // Covariance matrix (9x9 for position, velocity, rotation)
+  repeated double covariance_matrix = 4;
+
+  // Time interval
+  double delta_time = 5;
+
+  // Bias estimates
+  Vector3 accelerometer_bias = 6;
+  Vector3 gyroscope_bias = 7;
 }
 
 message Factor {
@@ -20,11 +39,12 @@ message Factor {
   oneof measurement {
     Pose relative_pose = 4;
     Pose absolute_pose = 5;
+    ImuPreintegratedMeasurement imu_preintegrated = 6;
   }
 
-  repeated double information_matrix = 6; // 6x6 matrix in row-major order
+  repeated double information_matrix = 7; // 6x6 matrix for pose factors, 9x9 for IMU factors
 
   // Metadata
-  double timestamp = 7;
-  string description = 8; // Optional description of the factor
+  double timestamp = 8;
+  string description = 9; // Optional description of the factor
 }

@@ -37,17 +37,26 @@ struct Config {
 
 class RosAdapter : public rclcpp::Node {
 public:
-    RosAdapter(const Config& config, core::graph::FactorGraph& graph,
+    RosAdapter(const Config& config,
                core::storage::MapStore& store,
                std::shared_ptr<viz::RerunVisualizer> visualizer = nullptr);
     ~RosAdapter();
 
     bool initialize();
-
     void printAvailableTopics();
     std::vector<std::string> getAvailableTopics();
 
 private:
+    Config config_;
+
+    // Only store MapStore reference - FactorGraph handled internally by GraphAdapter
+    core::storage::MapStore& store_;
+    std::shared_ptr<viz::RerunVisualizer> visualizer_;
+
+    // GraphAdapter manages both FactorGraph and MapStore coordination
+    core::graph::FactorGraph internal_graph_;  // Internal FactorGraph for GraphAdapter
+    core::graph::GraphAdapter graph_adapter_;
+
     void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
@@ -73,11 +82,6 @@ private:
     // Message queues
     std::deque<std::shared_ptr<sensor_msgs::msg::Image>> color_messages_;
     std::deque<std::shared_ptr<sensor_msgs::msg::CameraInfo>> camera_info_messages_;
-
-    // Configuration and state
-    Config config_;
-    core::graph::GraphAdapter graph_adapter_;
-    std::shared_ptr<viz::RerunVisualizer> visualizer_;
 
     core::types::Pose last_keyframe_pose_;
     uint64_t current_keyframe_id_{0};

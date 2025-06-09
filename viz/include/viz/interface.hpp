@@ -1,8 +1,10 @@
 #pragma once
 
-#include <core/graph/factor_graph.hpp>
 #include <core/types/keyframe.hpp>
+#include <core/types/keypoint.hpp>
 #include <core/types/pose.hpp>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -24,7 +26,6 @@ public:
     virtual void addImage(const cv::Mat& image, const std::string& name = "image") = 0;
 
     // Higher level visualization
-    virtual void visualizeFactorGraph(const core::graph::FactorGraph& graph) = 0;
     virtual void visualizeKeyFrame(const core::types::KeyFrame::ConstPtr& keyframe) = 0;
 
     // Frame management

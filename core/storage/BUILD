@@ -11,6 +11,8 @@ cc_library(
     deps = [
         "//core/types",
         "//core/proto:map_cc_proto",
+        "//core/proto:map_storage_index_cc_proto",
+        "//common:logging",
     ],
     visibility = ["//visibility:public"],
 )
@@ -20,6 +22,7 @@ cc_test(
     srcs = glob(["test/*_test.cpp"]),
     deps = [
         ":storage",
+        "@opencv//:imgcodecs",
         "@com_google_googletest//:gtest_main",
     ],
 )

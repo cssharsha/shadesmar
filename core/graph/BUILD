@@ -16,6 +16,7 @@ cc_library(
         "//common:logging",
         "//utils:message_synchronizer",
         "//utils:stf",
+        "//tracking:tracking",
     ],
     visibility = ["//visibility:public"],
 )

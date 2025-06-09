@@ -9,20 +9,17 @@
 
 namespace ros {
 
-RosAdapter::RosAdapter(const Config& config, core::graph::FactorGraph& graph,
+RosAdapter::RosAdapter(const Config& config,
                        core::storage::MapStore& store,
                        std::shared_ptr<viz::RerunVisualizer> visualizer)
-    : Node("ros_adapter"), config_(config), graph_adapter_(graph, store), visualizer_(visualizer) {
+    : Node("ros_adapter"), config_(config), store_(store), visualizer_(visualizer),
+      graph_adapter_(internal_graph_, store) {
     graph_adapter_.setKeyframeDistanceThreshold(config.keyframe_distance_threshold);
 
-    // Set up graph update callback only
+    // Set up clean storage-based callbacks
     core::graph::GraphCallbacks callbacks;
-    callbacks.on_graph_updated = [this, &graph]() {
-        // RCLCPP_INFO(this->get_logger(), "Graph updated");
-        if (visualizer_ && visualizer_->isConnected()) {
-            visualizer_->visualizeFactorGraph(graph);
-        }
-    };
+    // REMOVED: on_graph_updated callback - deprecated since FactorGraph is stateless
+    // All visualization should use MapStore as single source of truth
 
     graph_adapter_.setCallbacks(callbacks);
 }

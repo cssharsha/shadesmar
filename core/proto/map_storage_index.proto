@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+
+message FileLocation {
+  uint64 offset = 1;
+  uint32 length = 2;
+}
+
+message KeyFrameIndexEntry {
+  uint64 keyframe_id = 1;
+  FileLocation location = 2;
+  double timestamp = 3;
+  Vector3 position = 4;
+}
+
+message FactorIndexEntry {
+  uint64 factor_id = 1;
+  FileLocation location = 2;
+}
+
+message KeyPointIndexEntry {
+  uint32 keypoint_id = 1;
+  FileLocation location = 2;
+}
+
+message MapDiskIndex {
+  repeated KeyFrameIndexEntry keyframe_entries = 1;
+  repeated FactorIndexEntry factor_entries = 2;
+  repeated KeyPointIndexEntry keypoint_entries = 3;
+}
+
+message MapDiskMetadata {
+  string version = 1;
+  string created_by = 2;
+  int64 creation_timestamp_seconds = 3;
+
+  message Bounds {
+    double min_x = 1;
+    double min_y = 2;
+    double min_z = 3;
+    double max_x = 4;
+    double max_y = 5;
+    double max_z = 6;
+  }
+  Bounds bounds = 4;
+}

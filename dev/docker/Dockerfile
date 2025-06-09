@@ -139,7 +139,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 # Source the cargo environment in the same RUN command
 RUN . $HOME/.cargo/env && \
     cargo install cargo-binstall && \
-    cargo binstall rerun-cli
+    cargo binstall rerun-cli@0.17.0
 
 WORKDIR /workspace
 
