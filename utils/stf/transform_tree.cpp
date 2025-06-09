@@ -228,4 +228,22 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
     }
 }
 
+// std::vector<TransformTree::Edge> TransformTree::getAllEdges() const {
+//     std::vector<Edge> all_edges;
+//     std::unordered_set<std::shared_ptr<Edge>> unique_edges; // To avoid duplicates if graph has multiple paths
+
+//     for (const auto& node_pair : nodes_) {
+//         const auto& node = node_pair.second;
+//         for (const auto& child_edge_pair : node->children) {
+//             // Store the actual shared_ptr to the edge to ensure uniqueness
+//             // as edges are shared between node->children and node->parents of another node.
+//             if (unique_edges.find(child_edge_pair.second) == unique_edges.end()) {
+//                 all_edges.push_back(*(child_edge_pair.second));
+//                 unique_edges.insert(child_edge_pair.second);
+//             }
+//         }
+//     }
+//     return all_edges;
+// }
+
 }  // namespace stf

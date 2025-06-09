@@ -64,6 +64,18 @@ struct Pose {
         result.frame_id = frame_id;
         return result;
     }
+
+    Eigen::Isometry3d getEigenIsometry() const {
+        Eigen::Isometry3d isometry;
+        isometry.linear() = orientation.toRotationMatrix();
+        isometry.translation() = position;
+        return isometry;
+    }
+
+    Eigen::Vector3d operator*(const Eigen::Vector3d& point) const {
+        auto isometry = getEigenIsometry();
+        return isometry * point;
+    }
 };
 
 }  // namespace types

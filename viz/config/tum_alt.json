@@ -1,0 +1,34 @@
+{
+    "dataset_name": "tum_alternative",
+    "description": "TUM RGB-D dataset configuration - Visual odometry based poses (debug)",
+    "topics": {
+        "odom_topic": "",
+        "tf_topic": "/tf",
+        "tf_static_topic": "/tf_static",
+        "color_topic": "/camera/rgb/image_color",
+        "camera_info_topic": "/camera/rgb/camera_info",
+        "point_cloud_topic": "",
+        "imu_topic": "/imu",
+        "depth_topic": "/camera/depth/image",
+        "depth_camera_info_topic": "/camera/depth/camera_info"
+    },
+    "frame_ids": {
+        "reference_frame_id": "visual_odom",
+        "base_link_frame_id": "/kinect",
+        "camera_frame_id": "/openni_rgb_optical_frame"
+    },
+    "keyframe_thresholds": {
+        "distance_threshold": 0.01,
+        "rotation_threshold": 2.0,
+        "max_linear_velocity": 5.0,
+        "max_angular_velocity": 2.0,
+        "max_acceleration": 20.0
+    },
+    "processing_options": {
+        "enable_depth_processing": true,
+        "enable_point_cloud_processing": false,
+        "use_tf_for_poses": false,
+        "enable_visual_odometry": true,
+        "enable_imu_integration": true
+    }
+}

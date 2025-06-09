@@ -2,6 +2,7 @@
 
 #include <core/types/keyframe.hpp>
 #include <core/types/pose.hpp>
+#include <core/types/imu.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -26,6 +27,10 @@ sensor_msgs::msg::Image toImageMsg(const cv::Mat& image);
 core::types::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_info_msg);
 core::proto::CameraInfo toCameraInfoProto(const sensor_msgs::msg::CameraInfo& camera_info_msg);
 sensor_msgs::msg::CameraInfo toCameraInfoMsg(const core::proto::CameraInfo& camera_info);
+
+// IMU conversions
+core::types::ImuData toImuData(const sensor_msgs::msg::Imu& imu_msg);
+sensor_msgs::msg::Imu toImuMsg(const core::types::ImuData& imu_data);
 
 // Point cloud conversions from depth image
 core::types::PointCloud toPointCloud(const sensor_msgs::msg::Image& depth_msg,

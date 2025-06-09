@@ -1,6 +1,11 @@
 #include "ros/conversions.hpp"
+#include <cstdint>
+#include <iostream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+
+#include <logging/logging.hpp>
+#include <ostream>
 
 namespace ros {
 namespace conversions {
@@ -45,6 +50,7 @@ geometry_msgs::msg::PoseStamped toPoseMsg(const core::types::Pose& pose) {
 cv::Mat toOpenCVImage(const sensor_msgs::msg::Image& image_msg) {
     // Determine OpenCV type based on ROS2 encoding
     int cv_type;
+    std::cout << "Current encoding: " << image_msg.encoding << std::endl;
     if (image_msg.encoding == "mono8") {
         cv_type = CV_8UC1;
     } else if (image_msg.encoding == "bgr8") {
@@ -63,10 +69,12 @@ cv::Mat toOpenCVImage(const sensor_msgs::msg::Image& image_msg) {
     // Copy data
     memcpy(image.data, image_msg.data.data(), image_msg.data.size());
 
+    // cv::Mat cp_image = image.clone();
+
     // Convert RGB to BGR if necessary
-    if (image_msg.encoding == "rgb8") {
-        cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
-    }
+    // if (image_msg.encoding == "rgb8") {
+    //     cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
+    // }
 
     return image;
 }
@@ -130,6 +138,47 @@ core::proto::CameraInfo toCameraInfoProto(const sensor_msgs::msg::CameraInfo& ca
     return info;
 }
 
+template <typename T>
+void log_vector_as_3x3_matrix_glog(const T& vec) {
+    std::ostringstream oss;
+
+    // Optional: Set precision and format for double values
+    oss << std::fixed << std::setprecision(4);  // Example: 4 decimal places, fixed notation
+
+    if (vec.size() == 9) {
+        // Format as a 3x3 matrix structure within the single line
+        oss << " (3x3 row-major): [";
+        for (int r = 0; r < 3; ++r) {
+            oss << "[";  // Start of a row
+            for (int c = 0; c < 3; ++c) {
+                oss << vec[r * 3 + c];
+                if (c < 2) {  // If not the last element in the current row
+                    oss << ", ";
+                }
+            }
+            oss << "]";       // End of a row
+            if (r < 2) {      // If not the last row
+                oss << ", ";  // Separator between rows
+            }
+        }
+        oss << "]";  // End of the matrix structure
+    } else {
+        // Fallback for vectors not of size 9: log as a simple flat list
+        oss << " (size " << vec.size() << ", not 3x3): [";
+        if (!vec.empty()) {
+            for (size_t i = 0; i < vec.size(); ++i) {
+                oss << vec[i];
+                if (i < vec.size() - 1) {
+                    oss << ", ";
+                }
+            }
+        }
+        oss << "]";
+    }
+
+    LOG(INFO) << oss.str();  // Log the entire formatted string
+}
+
 core::types::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_info_msg) {
     core::types::CameraInfo info;
     info.width = camera_info_msg.width;
@@ -139,6 +188,12 @@ core::types::CameraInfo toCameraInfo(const sensor_msgs::msg::CameraInfo& camera_
 
     // Copy intrinsic matrix K (3x3)
     info.k = std::vector<double>(camera_info_msg.k.begin(), camera_info_msg.k.end());
+
+    LOG(INFO) << "Converted K: \n";
+    log_vector_as_3x3_matrix_glog(info.k);
+
+    LOG(INFO) << "Incoming camera message: \n";
+    log_vector_as_3x3_matrix_glog(camera_info_msg.k);
 
     // Copy distortion parameters
     info.d = std::vector<double>(camera_info_msg.d.begin(), camera_info_msg.d.end());
@@ -171,6 +226,102 @@ core::types::PointCloud toPointCloud(const sensor_msgs::msg::Image& depth_msg,
     }
 
     return cloud;
+}
+
+// IMU conversions
+core::types::ImuData toImuData(const sensor_msgs::msg::Imu& imu_msg) {
+    core::types::ImuData imu_data;
+
+    // Convert linear acceleration
+    imu_data.linear_acceleration = Eigen::Vector3d(
+        imu_msg.linear_acceleration.x,
+        imu_msg.linear_acceleration.y,
+        imu_msg.linear_acceleration.z);
+
+    // Convert linear acceleration covariance (3x3 from row-major 9 elements)
+    if (imu_msg.linear_acceleration_covariance[0] >= 0) {  // Valid covariance
+        imu_data.linear_acceleration_covariance = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(
+            imu_msg.linear_acceleration_covariance.data());
+    } else {
+        imu_data.linear_acceleration_covariance = Eigen::Matrix3d::Identity() * 0.01;  // Default 0.01 m/s² std
+    }
+
+    // Convert angular velocity
+    imu_data.angular_velocity = Eigen::Vector3d(
+        imu_msg.angular_velocity.x,
+        imu_msg.angular_velocity.y,
+        imu_msg.angular_velocity.z);
+
+    // Convert angular velocity covariance (3x3 from row-major 9 elements)
+    if (imu_msg.angular_velocity_covariance[0] >= 0) {  // Valid covariance
+        imu_data.angular_velocity_covariance = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(
+            imu_msg.angular_velocity_covariance.data());
+    } else {
+        imu_data.angular_velocity_covariance = Eigen::Matrix3d::Identity() * 0.001;  // Default 0.001 rad/s std
+    }
+
+    // Convert orientation
+    imu_data.orientation = Eigen::Quaterniond(
+        imu_msg.orientation.w,
+        imu_msg.orientation.x,
+        imu_msg.orientation.y,
+        imu_msg.orientation.z);
+
+    // Convert orientation covariance (3x3 from row-major 9 elements)
+    if (imu_msg.orientation_covariance[0] >= 0) {  // Valid covariance
+        imu_data.orientation_covariance = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(
+            imu_msg.orientation_covariance.data());
+    } else {
+        imu_data.orientation_covariance = Eigen::Matrix3d::Identity() * 0.01;  // Default 0.01 rad std
+    }
+
+    // Convert metadata
+    imu_data.timestamp = imu_msg.header.stamp.sec + imu_msg.header.stamp.nanosec * 1e-9;
+    imu_data.frame_id = imu_msg.header.frame_id;
+    // Note: sensor_msgs::Imu doesn't have sequence field in ROS2
+
+    return imu_data;
+}
+
+sensor_msgs::msg::Imu toImuMsg(const core::types::ImuData& imu_data) {
+    sensor_msgs::msg::Imu imu_msg;
+
+    // Convert linear acceleration
+    imu_msg.linear_acceleration.x = imu_data.linear_acceleration.x();
+    imu_msg.linear_acceleration.y = imu_data.linear_acceleration.y();
+    imu_msg.linear_acceleration.z = imu_data.linear_acceleration.z();
+
+    // Convert linear acceleration covariance (3x3 to row-major 9 elements)
+    Eigen::Map<Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(
+        imu_msg.linear_acceleration_covariance.data()) = imu_data.linear_acceleration_covariance;
+
+    // Convert angular velocity
+    imu_msg.angular_velocity.x = imu_data.angular_velocity.x();
+    imu_msg.angular_velocity.y = imu_data.angular_velocity.y();
+    imu_msg.angular_velocity.z = imu_data.angular_velocity.z();
+
+    // Convert angular velocity covariance (3x3 to row-major 9 elements)
+    Eigen::Map<Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(
+        imu_msg.angular_velocity_covariance.data()) = imu_data.angular_velocity_covariance;
+
+    // Convert orientation
+    imu_msg.orientation.w = imu_data.orientation.w();
+    imu_msg.orientation.x = imu_data.orientation.x();
+    imu_msg.orientation.y = imu_data.orientation.y();
+    imu_msg.orientation.z = imu_data.orientation.z();
+
+    // Convert orientation covariance (3x3 to row-major 9 elements)
+    Eigen::Map<Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(
+        imu_msg.orientation_covariance.data()) = imu_data.orientation_covariance;
+
+    // Convert metadata
+    int64_t sec = static_cast<int64_t>(imu_data.timestamp);
+    uint32_t nanosec = static_cast<uint32_t>((imu_data.timestamp - sec) * 1e9);
+    imu_msg.header.stamp.sec = sec;
+    imu_msg.header.stamp.nanosec = nanosec;
+    imu_msg.header.frame_id = imu_data.frame_id;
+
+    return imu_msg;
 }
 
 }  // namespace conversions

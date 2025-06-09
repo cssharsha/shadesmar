@@ -11,6 +11,7 @@ services:
       - /mnt/remote-storage:/mnt/remote-storage
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ~/.Xauthority:/home/developer/.Xauthority
+      - /data:/data
       # - /run/user/$(id -u):/tmp/runtime-developer
     environment:
       - DISPLAY=${DISPLAY}
