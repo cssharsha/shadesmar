@@ -86,6 +86,7 @@ private:
 
     // Batch management
     uint32_t next_batch_id_{1};
+    uint32_t next_splat_id_{1};
     std::vector<core::types::GaussianSplatBatch> splat_batches_in_memory_;
 
     // Main processing methods

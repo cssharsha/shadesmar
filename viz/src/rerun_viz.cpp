@@ -500,6 +500,14 @@ void RerunVisualizer::visualizeFromStorage(
             rerun::Points3D({map_points}).with_colors({rerun::components::Color(255, 0, 255)}));  // Magenta
     }
 
+    // ===== VISUALIZE GAUSSIAN SPLATS =====
+    // NOTE: This section is designed to be easily extracted into a separate visualization process
+    try {
+        visualizeGaussianSplatsFromStorage(map_store, "gaussian_splats");
+    } catch (const std::exception& e) {
+        LOG(WARNING) << "Failed to visualize Gaussian splats: " << e.what();
+    }
+
     LOG(INFO) << "Three-queue visualization complete - Cameras: " << numCameras
               << ", Non-optimized KFs: " << non_optimized_points.size()
               << ", Optimized KFs: " << optimized_points.size()
@@ -548,6 +556,112 @@ rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cl
     }
 
     return rerun::Points3D(points).with_colors(colors);
+}
+
+void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianSplat>& splats,
+                                       const std::string& entity_path, double timestamp) {
+    if (!is_connected_ || splats.empty()) {
+        return;
+    }
+
+    // Extract positions and colors from splats
+    std::vector<rerun::datatypes::Vec3D> positions;
+    std::vector<rerun::components::Color> colors;
+    std::vector<float> radii;
+    
+    positions.reserve(splats.size());
+    colors.reserve(splats.size());
+    radii.reserve(splats.size());
+
+    for (const auto& splat : splats) {
+        // Add position
+        positions.emplace_back(rerun::datatypes::Vec3D{
+            static_cast<float>(splat.position.x()),
+            static_cast<float>(splat.position.y()),
+            static_cast<float>(splat.position.z())
+        });
+
+        // Add color with opacity (convert from [0,1] to [0,255])
+        colors.emplace_back(rerun::components::Color{
+            static_cast<uint8_t>(splat.color.x() * 255.0f),
+            static_cast<uint8_t>(splat.color.y() * 255.0f), 
+            static_cast<uint8_t>(splat.color.z() * 255.0f),
+            static_cast<uint8_t>(splat.opacity * 255.0f)
+        });
+
+        // Calculate average radius from covariance eigenvalues
+        Eigen::Vector3d scales;
+        Eigen::Matrix3d rotation;
+        splat.getEllipsoidParameters(scales, rotation);
+        float avg_radius = static_cast<float>(scales.mean() * 2.0); // 2-sigma radius
+        radii.push_back(std::max(avg_radius, 0.001f)); // Minimum size for visibility
+    }
+
+    // Create Points3D with colors and radii
+    auto points3d = rerun::Points3D(positions)
+                        .with_colors(colors)
+                        .with_radii(radii);
+
+    rec_.set_time_sequence("gaussian_splats", timestamp);
+    rec_.log(entity_path, points3d);
+    
+    LOG(INFO) << "Visualized " << splats.size() << " Gaussian splats at " << entity_path;
+}
+
+void RerunVisualizer::addGaussianSplatBatch(const core::types::GaussianSplatBatch& batch,
+                                           const std::string& entity_path, double timestamp) {
+    if (!is_connected_ || batch.empty()) {
+        return;
+    }
+
+    // Use batch timestamp if provided, otherwise use parameter timestamp
+    double batch_timestamp = (batch.timestamp > 0) ? batch.timestamp : timestamp;
+    
+    // Create entity path for this batch
+    std::string batch_entity_path = entity_path + "/batch_" + std::to_string(batch.batch_id);
+    
+    addGaussianSplats(batch.splats, batch_entity_path, batch_timestamp);
+    
+    LOG(INFO) << "Visualized Gaussian splat batch " << batch.batch_id 
+              << " with " << batch.size() << " splats";
+}
+
+void RerunVisualizer::visualizeGaussianSplatsFromStorage(const core::storage::MapStore& map_store,
+                                                        const std::string& entity_path) {
+    if (!is_connected_) {
+        return;
+    }
+
+    try {
+        // Get all splat batches from storage
+        auto splat_batches = map_store.getAllGaussianSplatBatches();
+        
+        if (splat_batches.empty()) {
+            LOG(INFO) << "No Gaussian splat batches found in storage";
+            return;
+        }
+
+        LOG(INFO) << "Visualizing " << splat_batches.size() << " Gaussian splat batches from storage";
+
+        // Visualize each batch
+        for (const auto& batch : splat_batches) {
+            addGaussianSplatBatch(batch, entity_path, batch.timestamp);
+        }
+
+        // Also create a combined view of all recent splats
+        std::vector<core::types::GaussianSplat> all_splats;
+        for (const auto& batch : splat_batches) {
+            all_splats.insert(all_splats.end(), batch.splats.begin(), batch.splats.end());
+        }
+
+        if (!all_splats.empty()) {
+            addGaussianSplats(all_splats, entity_path + "/all_splats", current_timestamp_);
+            LOG(INFO) << "Combined visualization: " << all_splats.size() << " total splats";
+        }
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Exception in visualizeGaussianSplatsFromStorage: " << e.what();
+    }
 }
 
 }  // namespace viz

@@ -11,6 +11,7 @@
 #include "viz/interface.hpp"
 #include "core/storage/map_store.hpp"
 #include "core/types/pose.hpp"
+#include "core/types/gaussian_splat.hpp"
 
 namespace viz {
 
@@ -66,6 +67,14 @@ public:
         uint64_t current_keyframe_id,
         uint64_t previous_keyframe_id,
         size_t trajectory_keyframe_count = 5);
+
+    // Gaussian splat visualization methods
+    void addGaussianSplats(const std::vector<core::types::GaussianSplat>& splats,
+                          const std::string& entity_path, double timestamp);
+    void addGaussianSplatBatch(const core::types::GaussianSplatBatch& batch,
+                              const std::string& entity_path, double timestamp);
+    void visualizeGaussianSplatsFromStorage(const core::storage::MapStore& map_store,
+                                           const std::string& entity_path = "gaussian_splats");
 
 private:
     std::string name_;

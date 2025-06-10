@@ -1,6 +1,37 @@
-# Trajectory Analysis Tools
+# SLAM Analysis and Gaussian Splatting Scripts
 
-This directory contains tools for analyzing and comparing SLAM trajectories from the bundle adjustment system.
+This directory contains tools for SLAM trajectory analysis and Gaussian splatting execution.
+
+## Gaussian Splatting Scripts
+
+### `run_gaussian_splatting_with_viz.sh`
+**Main orchestration script** that runs both Gaussian splat processor and ROS visualization in tandem.
+
+**Usage:**
+```bash
+# Default run with house11 data
+./scripts/run_gaussian_splatting_with_viz.sh
+
+# Custom rosbag and map
+./scripts/run_gaussian_splatting_with_viz.sh -b /data/custom.db3 -m /data/custom_map
+
+# Full custom setup
+./scripts/run_gaussian_splatting_with_viz.sh \
+  --bag /data/robot/bags/office/office_0.db3 \
+  --config default \
+  --map /data/robot/office_map
+```
+
+### `quick_gs_test.sh`
+**Simple test script** for testing just the Gaussian splat processor.
+
+```bash
+./scripts/quick_gs_test.sh
+```
+
+## Trajectory Analysis Tools
+
+This directory also contains tools for analyzing and comparing SLAM trajectories from the bundle adjustment system.
 
 ## Tools Overview
 
