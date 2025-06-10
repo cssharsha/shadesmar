@@ -12,6 +12,8 @@ cc_library(
         "//core/types",
         "//core/proto:map_cc_proto",
         "//core/proto:map_storage_index_cc_proto",
+        "//core/proto:gaussian_splat_cc_proto",
+        "//utils:stf",
         "//common:logging",
     ],
     visibility = ["//visibility:public"],

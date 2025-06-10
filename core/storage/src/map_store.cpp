@@ -24,6 +24,7 @@ MapStore::MapStore(const std::string& map_base_filepath) {
     keyframes_dirty_ = false;
     factors_dirty_ = false;
     keypoints_dirty_ = false;
+    splat_batches_dirty_ = false;
     metadata_dirty_ = false;
 
     // Initialize atomic queue system
@@ -58,7 +59,7 @@ MapStore::~MapStore() {
     }
 
     if (keyframes_dirty_.load() || factors_dirty_.load() || keypoints_dirty_.load() ||
-        metadata_dirty_.load() || has_pending_data) {
+        splat_batches_dirty_.load() || metadata_dirty_.load() || has_pending_data) {
         LOG(INFO) << "Performing final sync before MapStore destruction";
         performAtomicSync();
     }
@@ -71,6 +72,9 @@ bool MapStore::initializeFilePaths(const std::string& map_base_filepath) {
     data_filepath_ = base_filepath_ + ".dat";
     index_filepath_ = base_filepath_ + ".idx";
     metadata_filepath_ = base_filepath_ + ".meta";
+    splat_data_filepath_ = base_filepath_ + ".splats";
+    splat_index_filepath_ = base_filepath_ + ".splat_idx";
+    transform_tree_filepath_ = base_filepath_ + ".tf_tree";
     LOG(INFO) << "MapStore initialized with data file: " << data_filepath_ << std::endl;
     return true;
 }
@@ -2004,6 +2008,73 @@ void MapStore::syncProcessedOptimizedToDisk() {
 
     LOG(INFO) << "Synced processed optimized queue to disk in " << duration.count() << "ms"
               << " (" << queue_to_write->size() << " keyframes)";
+}
+
+// Gaussian splat storage methods
+bool MapStore::addGaussianSplatBatch(const types::GaussianSplatBatch& batch) {
+    // TODO: Implement full splat batch storage
+    LOG(INFO) << "addGaussianSplatBatch placeholder - batch " << batch.batch_id 
+              << " with " << batch.size() << " splats";
+    return true;
+}
+
+std::optional<types::GaussianSplatBatch> MapStore::getGaussianSplatBatch(uint32_t batch_id) const {
+    // TODO: Implement splat batch loading from disk
+    LOG(INFO) << "getGaussianSplatBatch placeholder - batch " << batch_id;
+    return std::nullopt;
+}
+
+bool MapStore::hasGaussianSplatBatch(uint32_t batch_id) const {
+    // TODO: Implement splat batch existence check
+    return false;
+}
+
+std::vector<types::GaussianSplatBatch> MapStore::getAllGaussianSplatBatches() const {
+    // TODO: Implement loading all splat batches
+    LOG(INFO) << "getAllGaussianSplatBatches placeholder";
+    return {};
+}
+
+// Transform tree storage methods
+bool MapStore::setTransformTree(std::shared_ptr<stf::TransformTree> tf_tree) {
+    std::unique_lock<std::shared_mutex> lock(transform_tree_mutex_);
+    transform_tree_ = tf_tree;
+    // TODO: Mark transform tree as dirty for disk write
+    return true;
+}
+
+std::shared_ptr<stf::TransformTree> MapStore::getTransformTree() const {
+    std::shared_lock<std::shared_mutex> lock(transform_tree_mutex_);
+    return transform_tree_;
+}
+
+bool MapStore::saveTransformTreeToDisk() const {
+    std::shared_lock<std::shared_mutex> lock(transform_tree_mutex_);
+    if (!transform_tree_) {
+        return false;
+    }
+    
+    // TODO: Implement transform tree disk storage
+    LOG(INFO) << "saveTransformTreeToDisk placeholder";
+    return transform_tree_->saveToFile(transform_tree_filepath_);
+}
+
+// Splat storage helper methods
+bool MapStore::writeSplatBatchesToDisk() {
+    // TODO: Implement splat batch disk writing
+    LOG(INFO) << "writeSplatBatchesToDisk placeholder";
+    return true;
+}
+
+bool MapStore::loadSplatBatchFromDisk(uint32_t batch_id, types::GaussianSplatBatch& batch) const {
+    // TODO: Implement splat batch loading from disk
+    LOG(INFO) << "loadSplatBatchFromDisk placeholder - batch " << batch_id;
+    return false;
+}
+
+void MapStore::markSplatBatchDirty(uint32_t batch_id) {
+    // TODO: Mark splat batch for disk write
+    splat_batches_dirty_ = true;
 }
 
 }  // namespace storage

@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include "utils/stf/proto/transform_tree.pb.h"
 
 namespace stf {
 
@@ -61,6 +62,34 @@ public:
      * Shows the hierarchy of frames and their connections
      */
     void printTree() const;
+
+    /**
+     * Serializes the transform tree to protobuf format
+     * @param tree_proto Output protobuf message
+     * @return true if serialization was successful
+     */
+    bool serializeToProto(stf::proto::TransformTreeSnapshot& tree_proto) const;
+
+    /**
+     * Deserializes the transform tree from protobuf format
+     * @param tree_proto Input protobuf message
+     * @return true if deserialization was successful
+     */
+    bool deserializeFromProto(const stf::proto::TransformTreeSnapshot& tree_proto);
+
+    /**
+     * Saves the transform tree to a file
+     * @param filepath File path to save to
+     * @return true if save was successful
+     */
+    bool saveToFile(const std::string& filepath) const;
+
+    /**
+     * Loads the transform tree from a file
+     * @param filepath File path to load from
+     * @return true if load was successful
+     */
+    bool loadFromFile(const std::string& filepath);
 
 private:
     std::unordered_map<std::string, std::shared_ptr<Node>> nodes_;

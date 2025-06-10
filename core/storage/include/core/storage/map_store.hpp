@@ -11,6 +11,8 @@
 #include "core/types/factor.hpp"
 #include "core/types/keyframe.hpp"
 #include "core/types/keypoint.hpp"
+#include "core/types/gaussian_splat.hpp"
+#include "stf/transform_tree.hpp"
 
 #include "core/proto/map_storage_index.pb.h"
 
@@ -55,17 +57,26 @@ public:
     bool addKeyFrame(const KeyFramePtr& keyframe);
     bool addFactor(const types::Factor& factor);
     bool addKeyPoint(const types::Keypoint& keypoint);
+    bool addGaussianSplatBatch(const types::GaussianSplatBatch& batch);
 
     KeyFramePtr getKeyFrame(uint64_t id) const;
     std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
     std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
+    std::optional<types::GaussianSplatBatch> getGaussianSplatBatch(uint32_t batch_id) const;
     
     // Check if keypoint exists without loading it
     bool hasKeyPoint(uint32_t id) const;
+    bool hasGaussianSplatBatch(uint32_t batch_id) const;
 
     std::vector<KeyFramePtr> getAllKeyFrames() const;
     std::vector<types::Factor> getAllFactors() const;
     std::vector<types::Keypoint> getAllKeyPoints() const;
+    std::vector<types::GaussianSplatBatch> getAllGaussianSplatBatches() const;
+
+    // Transform tree storage for cross-process access
+    bool setTransformTree(std::shared_ptr<stf::TransformTree> tf_tree);
+    std::shared_ptr<stf::TransformTree> getTransformTree() const;
+    bool saveTransformTreeToDisk() const;
 
     // Memory-efficient pose extraction - only loads pose data, not full keyframes
     std::map<uint64_t, types::Pose> getAllKeyFramePoses() const;
@@ -142,16 +153,19 @@ private:
     mutable std::unordered_map<uint64_t, KeyFramePtr> keyframe_cache_;
     mutable std::unordered_map<uint64_t, types::Factor> factor_cache_;
     mutable std::unordered_map<uint32_t, types::Keypoint> keypoint_cache_;
+    mutable std::unordered_map<uint32_t, types::GaussianSplatBatch> splat_batch_cache_;
 
     // Pending writes - what needs to be written to disk during next sync
     mutable std::unordered_map<uint64_t, KeyFramePtr> keyframe_pending_writes_;
     mutable std::unordered_map<uint64_t, types::Factor> factor_pending_writes_;
     mutable std::unordered_map<uint32_t, types::Keypoint> keypoint_pending_writes_;
+    mutable std::unordered_map<uint32_t, types::GaussianSplatBatch> splat_batch_pending_writes_;
 
     // Dirty flags - atomic to ensure thread safety
     mutable std::atomic<bool> keyframes_dirty_;
     mutable std::atomic<bool> factors_dirty_;
     mutable std::atomic<bool> keypoints_dirty_;
+    mutable std::atomic<bool> splat_batches_dirty_;
     mutable std::atomic<bool> metadata_dirty_;
 
     // ===== THREE-QUEUE SYSTEM CACHES =====
@@ -207,11 +221,19 @@ private:
     std::string data_filepath_;
     std::string index_filepath_;
     std::string metadata_filepath_;
+    std::string splat_data_filepath_;
+    std::string splat_index_filepath_;
+    std::string transform_tree_filepath_;
+
+    // Transform tree for cross-process access
+    std::shared_ptr<stf::TransformTree> transform_tree_;
+    mutable std::shared_mutex transform_tree_mutex_;
 
     proto::MapDiskMetadata metadata_;
     std::map<uint64_t, proto::FileLocation> keyframe_locations_;
     std::map<uint64_t, proto::FileLocation> factor_locations_;
     std::map<uint32_t, proto::FileLocation> keypoint_locations_;
+    std::map<uint32_t, proto::FileLocation> splat_batch_locations_;
 
     std::map<double, std::vector<uint64_t>> timestamp_to_keyframe_ids_;
     std::vector<proto::KeyFrameIndexEntry> keyframe_spatial_index_entries_;
@@ -279,6 +301,11 @@ private:
     // NEW: Complete write process (data + index + metadata)
     void writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write);
     void initializeAtomicQueues();
+    
+    // Gaussian splat storage helper methods
+    bool writeSplatBatchesToDisk();
+    bool loadSplatBatchFromDisk(uint32_t batch_id, types::GaussianSplatBatch& batch) const;
+    void markSplatBatchDirty(uint32_t batch_id);
 };
 
 }  // namespace storage
