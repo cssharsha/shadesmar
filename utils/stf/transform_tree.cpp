@@ -1,6 +1,8 @@
 #include "stf/transform_tree.hpp"
 #include <queue>
 #include <unordered_set>
+#include <fstream>
+#include <iostream>
 
 namespace stf {
 
@@ -245,5 +247,112 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
 //     }
 //     return all_edges;
 // }
+
+bool TransformTree::serializeToProto(stf::proto::TransformTreeSnapshot& tree_proto) const {
+    tree_proto.clear_edges();
+    
+    std::unordered_set<std::shared_ptr<Edge>> unique_edges;
+    
+    for (const auto& [frame_id, node] : nodes_) {
+        for (const auto& [child_id, edge] : node->children) {
+            if (unique_edges.find(edge) == unique_edges.end()) {
+                auto* edge_proto = tree_proto.add_edges();
+                edge_proto->set_parent_frame_id(edge->parent);
+                edge_proto->set_child_frame_id(edge->child);
+                
+                auto* transform_proto = edge_proto->mutable_transform();
+                
+                const auto& translation = edge->transform.translation();
+                transform_proto->mutable_position()->set_x(translation.x());
+                transform_proto->mutable_position()->set_y(translation.y());
+                transform_proto->mutable_position()->set_z(translation.z());
+                
+                const Eigen::Quaterniond quat(edge->transform.rotation());
+                transform_proto->mutable_orientation()->set_x(quat.x());
+                transform_proto->mutable_orientation()->set_y(quat.y());
+                transform_proto->mutable_orientation()->set_z(quat.z());
+                transform_proto->mutable_orientation()->set_w(quat.w());
+                
+                unique_edges.insert(edge);
+            }
+        }
+    }
+    
+    return true;
+}
+
+bool TransformTree::deserializeFromProto(const stf::proto::TransformTreeSnapshot& tree_proto) {
+    nodes_.clear();
+    
+    for (const auto& edge_proto : tree_proto.edges()) {
+        const auto& transform_proto = edge_proto.transform();
+        
+        Eigen::Vector3d translation(
+            transform_proto.position().x(),
+            transform_proto.position().y(),
+            transform_proto.position().z()
+        );
+        
+        Eigen::Quaterniond quaternion(
+            transform_proto.orientation().w(),
+            transform_proto.orientation().x(),
+            transform_proto.orientation().y(),
+            transform_proto.orientation().z()
+        );
+        
+        Transform transform = Transform::Identity();
+        transform.translation() = translation;
+        transform.linear() = quaternion.toRotationMatrix();
+        
+        try {
+            setTransform(edge_proto.parent_frame_id(), edge_proto.child_frame_id(), transform);
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to deserialize transform edge: " << e.what() << std::endl;
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+bool TransformTree::saveToFile(const std::string& filepath) const {
+    stf::proto::TransformTreeSnapshot tree_proto;
+    if (!serializeToProto(tree_proto)) {
+        return false;
+    }
+    
+    std::ofstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    std::string serialized_data;
+    if (!tree_proto.SerializeToString(&serialized_data)) {
+        return false;
+    }
+    
+    file.write(serialized_data.data(), serialized_data.size());
+    file.close();
+    
+    return file.good();
+}
+
+bool TransformTree::loadFromFile(const std::string& filepath) {
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    std::string serialized_data((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    file.close();
+    
+    stf::proto::TransformTreeSnapshot tree_proto;
+    if (!tree_proto.ParseFromString(serialized_data)) {
+        return false;
+    }
+    
+    return deserializeFromProto(tree_proto);
+}
 
 }  // namespace stf

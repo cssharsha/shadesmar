@@ -17,6 +17,7 @@ cc_library(
         "@eigen//:eigen",
         "//core/types",
         "//common:logging",
+        "//utils/stf/proto:stf_cc_proto",
     ],
 )
 

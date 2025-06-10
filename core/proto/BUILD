@@ -98,3 +98,14 @@ cc_proto_library(
     name = "map_cc_proto",
     deps = [":map_proto"],
 )
+
+proto_library(
+    name = "gaussian_splat_proto",
+    srcs = ["gaussian_splat.proto"],
+    deps = [":geometry_proto"],
+)
+
+cc_proto_library(
+    name = "gaussian_splat_cc_proto",
+    deps = [":gaussian_splat_proto"],
+)

@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package core.proto;
+
+import "core/proto/geometry.proto";
+
+message GaussianSplat {
+    // Unique identifier for this splat
+    uint32 id = 1;
+    
+    // 3D position (mean μ)
+    Vector3 position = 2;
+    
+    // 3x3 covariance matrix Σ (stored as 9 elements in row-major order)
+    repeated double covariance = 3;  // Should have exactly 9 elements
+    
+    // RGB color
+    Vector3 color = 4;
+    
+    // Opacity/alpha value [0.0, 1.0]
+    float opacity = 5;
+    
+    // Optional: Link to source keypoint that generated this splat
+    uint32 source_keypoint_id = 6;
+    
+    // Optional: Confidence/quality metric for this splat
+    float confidence = 7;
+    
+    // Timestamp when this splat was created
+    double timestamp = 8;
+}
+
+message GaussianSplatBatch {
+    // Batch identifier
+    uint32 batch_id = 1;
+    
+    // All splats in this batch
+    repeated GaussianSplat splats = 2;
+    
+    // Keyframe range that this batch was generated from
+    uint64 start_keyframe_id = 3;
+    uint64 end_keyframe_id = 4;
+    
+    // Batch creation timestamp
+    double timestamp = 5;
+    
+    // Total number of splats in batch
+    uint32 splat_count = 6;
+}
+
+message ProcessStatus {
+    // Last processed keyframe ID by this process
+    uint64 last_processed_keyframe_id = 1;
+    
+    // Last processed splat batch ID by this process
+    uint32 last_processed_splat_batch_id = 2;
+    
+    // Process timestamp
+    double timestamp = 3;
+    
+    // Process name/identifier
+    string process_name = 4;
+    
+    // Process health status
+    bool is_healthy = 5;
+    
+    // Optional: Additional status information
+    string status_message = 6;
+}
