@@ -10,7 +10,9 @@
 #include <shared_mutex>
 #include <thread>
 #include <vector>
+#include "2d/gtsam_reconstruction.hpp"
 #include "2d/orb_tracker.hpp"
+#include "2d/reconstruction.hpp"
 #include "core/graph/factor_graph.hpp"
 #include "core/graph/keyframe_manager.hpp"
 #include "core/storage/map_store.hpp"
@@ -18,8 +20,6 @@
 #include "core/types/keyframe.hpp"
 #include "stf/transform_tree.hpp"
 #include "utils/message_synchronizer/message_synchronizer.hpp"
-#include "2d/gtsam_reconstruction.hpp"
-#include "2d/reconstruction.hpp"
 
 #include "logging/logging.hpp"
 namespace core {
@@ -223,8 +223,8 @@ struct GraphCallbacks {
     // All callbacks should use MapStore as single source of truth
 
     // Clean storage-based visualization callback - MapStore is single source of truth
-    std::function<void(const core::storage::MapStore&,
-                       uint64_t current_keyframe_id, uint64_t previous_keyframe_id)>
+    std::function<void(const core::storage::MapStore&, uint64_t current_keyframe_id,
+                       uint64_t previous_keyframe_id)>
         on_storage_updated;
 };
 
@@ -352,15 +352,19 @@ public:
     // DEPRECATED: Manual storage methods - MapStore now handles all persistence automatically
     // These methods are kept for compatibility but MapStore background sync replaces them
     bool updateMapKeypointsAfterOptimization(
-        const std::map<uint64_t, types::Pose>& optimized_poses);  // DEPRECATED: Use MapStore.updateOptimizedPoses()
+        const std::map<uint64_t, types::Pose>&
+            optimized_poses);  // DEPRECATED: Use MapStore.updateOptimizedPoses()
     bool updateMapKeypointsFromOptimizedLandmarks(
-        const std::map<uint32_t, Eigen::Vector3d>& optimized_landmarks);  // Still used for MapStore coordination
+        const std::map<uint32_t, Eigen::Vector3d>&
+            optimized_landmarks);       // Still used for MapStore coordination
     bool storeOptimizedMapKeypoints();  // DEPRECATED: MapStore background sync handles this
     std::map<uint32_t, core::types::Keypoint> recomputeMapKeypointsFromOptimizedPoses(
-        const std::map<uint64_t, types::Pose>& optimized_poses);  // DEPRECATED: MapStore handles triangulation
+        const std::map<uint64_t, types::Pose>&
+            optimized_poses);  // DEPRECATED: MapStore handles triangulation
     bool validateMapKeypointConsistency(const std::map<uint32_t, core::types::Keypoint>& keypoints);
     bool exportFinalOptimizedMap(
-        const std::string& export_path = "/data/robot/final_optimized_map.json");  // Still useful for final export
+        const std::string& export_path =
+            "/data/robot/final_optimized_map.json");  // Still useful for final export
 
     // Step 3: Optimization thread configuration
     void setOptimizationInterval(size_t keyframe_interval);
@@ -387,12 +391,12 @@ public:
 
     // Helper method to get keyframe from any queue
     std::shared_ptr<types::KeyFrame> getKeyFrameFromAnyQueue(uint64_t keyframe_id) const;
-    
+
     // NEW: Triangulation phase before batch optimization
     bool triangulateMapKeypoints(std::map<uint32_t, core::types::Keypoint>& map_keypoints);
-    bool triangulateKeypoint(const core::types::Keypoint& keypoint, 
-                            const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
-                            Eigen::Vector3d& triangulated_position);
+    bool triangulateKeypoint(const core::types::Keypoint& keypoint,
+                             const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+                             Eigen::Vector3d& triangulated_position);
 
 private:
     FactorGraph& graph_;
@@ -402,9 +406,11 @@ private:
     tracking::image::OrbTracker orb_tracker_;
     KeyframeManager keyframe_manager_;
     tracking::image::GtsamReconstruct gtsam_reconstructor_;  // GTSAM triangulation
-    tracking::image::Reconstruct reconstructor_;  // New triangulation API
+    tracking::image::Reconstruct reconstructor_;             // New triangulation API
 
     std::atomic<uint64_t> current_keyframe_id_{0};  // Make atomic for thread safety
+    std::atomic<uint64_t> last_disk_persisted_keyframe_id_{
+        0};  // Track highest keyframe ID written to disk
     std::vector<uint64_t> keyframe_ids_with_images_;
     uint64_t last_keyframe_for_orb_ = 0;
 
@@ -412,6 +418,9 @@ private:
 
     void addOdometryFactor(uint64_t from_id, uint64_t to_id, const types::Pose& relative_pose);
     GraphCallbacks callbacks_;
+
+    // Write completion callback for disk persistence tracking
+    void onKeyframesWrittenToDisk(const std::vector<uint64_t>& written_keyframe_ids);
 
     void addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& keyframe);
     void manageInMemoryKeyframes();        // Maintain keyframe limit in factor graph

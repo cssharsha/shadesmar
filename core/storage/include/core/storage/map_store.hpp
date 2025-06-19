@@ -1,19 +1,21 @@
 #pragma once
 
-#include <fstream>
-#include <memory>
-#include <list>
-#include <unordered_map>
-#include <shared_mutex>
-#include <thread>
 #include <atomic>
 #include <condition_variable>
+#include <fstream>
+#include <functional>
+#include <list>
+#include <memory>
+#include <shared_mutex>
+#include <thread>
+#include <unordered_map>
 #include "core/types/factor.hpp"
+#include "core/types/gaussian_splat.hpp"
 #include "core/types/keyframe.hpp"
 #include "core/types/keypoint.hpp"
-#include "core/types/gaussian_splat.hpp"
 #include "stf/transform_tree.hpp"
 
+#include "core/proto/gaussian_splat.pb.h"
 #include "core/proto/map_storage_index.pb.h"
 
 #include <Eigen/Core>
@@ -30,8 +32,12 @@ public:
     bool initializeFilePaths(const std::string& map_base_filepath);
 
     // Cache configuration
-    void setCacheSize(size_t max_keyframes) { max_cache_size_ = max_keyframes; }
-    size_t getCacheSize() const { return max_cache_size_; }
+    void setCacheSize(size_t max_keyframes) {
+        max_cache_size_ = max_keyframes;
+    }
+    size_t getCacheSize() const {
+        return max_cache_size_;
+    }
     size_t getCurrentCacheSize() const;
 
     // Factor-keyframe association queries
@@ -44,15 +50,23 @@ public:
     bool triggerImmediateSync();
 
     // Optimization tracking
-    void setLastOptimizedKeyFrameId(uint64_t keyframe_id) { last_optimized_keyframe_id_ = keyframe_id; }
-    uint64_t getLastOptimizedKeyFrameId() const { return last_optimized_keyframe_id_; }
+    void setLastOptimizedKeyFrameId(uint64_t keyframe_id) {
+        last_optimized_keyframe_id_ = keyframe_id;
+    }
+    uint64_t getLastOptimizedKeyFrameId() const {
+        return last_optimized_keyframe_id_;
+    }
 
     // Background sync thread management
     void enableBackgroundSync(std::chrono::seconds sync_interval = std::chrono::seconds(30));
     void disableBackgroundSync();
-    bool isBackgroundSyncEnabled() const { return sync_thread_running_.load(); }
+    bool isBackgroundSyncEnabled() const {
+        return sync_thread_running_.load();
+    }
     void setSyncInterval(std::chrono::seconds interval);
-    std::chrono::seconds getSyncInterval() const { return sync_interval_; }
+    std::chrono::seconds getSyncInterval() const {
+        return sync_interval_;
+    }
 
     bool addKeyFrame(const KeyFramePtr& keyframe);
     bool addFactor(const types::Factor& factor);
@@ -63,8 +77,7 @@ public:
     std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
     std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
     std::optional<types::GaussianSplatBatch> getGaussianSplatBatch(uint32_t batch_id) const;
-    
-    // Check if keypoint exists without loading it
+
     bool hasKeyPoint(uint32_t id) const;
     bool hasGaussianSplatBatch(uint32_t batch_id) const;
 
@@ -78,7 +91,12 @@ public:
     std::shared_ptr<stf::TransformTree> getTransformTree() const;
     bool saveTransformTreeToDisk() const;
 
-    // Memory-efficient pose extraction - only loads pose data, not full keyframes
+    // VSLAM status for Gaussian splatting coordination
+    bool writeVSLAMStatus(const core::proto::ProcessStatus& status);
+    bool updateVSLAMStatus(uint64_t last_keyframe_id, bool is_healthy = true,
+                           const std::string& message = "Processing normally");
+    bool readVSLAMStatus(core::proto::ProcessStatus& status) const;
+
     std::map<uint64_t, types::Pose> getAllKeyFramePoses() const;
 
     std::vector<KeyFramePtr> getKeyFramesByTimestamp(double timestamp) const;
@@ -95,15 +113,11 @@ public:
     }
     void clearDataAndIndices();
 
-    // ===== THREE-QUEUE SYSTEM METHODS =====
-
-    // Queue management methods
     void addToUnprocessedCache(const KeyFramePtr& keyframe);
     void moveToProcessedNonOptimized(uint64_t keyframe_id);
     void moveToProcessedOptimized(uint64_t keyframe_id);
     void moveBatchToProcessedOptimized(const std::vector<uint64_t>& keyframe_ids);
 
-    // Queue-specific accessors
     std::vector<KeyFramePtr> getUnprocessedKeyFrames() const;
     std::vector<KeyFramePtr> getProcessedNonOptimizedKeyFrames() const;
     std::vector<KeyFramePtr> getProcessedOptimizedKeyFrames() const;
@@ -130,11 +144,13 @@ public:
 
     // NEW: Callback-based write system (replaces continuous sync thread)
     void swapAndWriteToDisk();
-    
+
     // Write worker management
     void enableWriteWorker();
     void disableWriteWorker();
-    bool isWriteWorkerEnabled() const { return write_worker_running_.load(); }
+    bool isWriteWorkerEnabled() const {
+        return write_worker_running_.load();
+    }
 
     // Map point change tracking
     void markMapPointDirty(uint32_t id);
@@ -142,8 +158,13 @@ public:
 
     void requestSync();
 
+    // Write completion callback system
+    using WriteCompletionCallback = std::function<void(const std::vector<uint64_t>&)>;
+    void setWriteCompletionCallback(WriteCompletionCallback callback);
+
 private:
-    std::mutex file_operations_mutex_;  // Protect all file operations from concurrent access
+    std::mutex file_operations_mutex_;         // Protect all file operations from concurrent access
+    std::mutex status_file_operations_mutex_;  // Protect all file operations from concurrent access
 
     // Cache infrastructure - thread-safe access to in-memory cached data
     mutable std::shared_mutex cache_mutex_;
@@ -167,6 +188,7 @@ private:
     mutable std::atomic<bool> keypoints_dirty_;
     mutable std::atomic<bool> splat_batches_dirty_;
     mutable std::atomic<bool> metadata_dirty_;
+    mutable std::atomic<bool> transform_tree_dirty_;
 
     // ===== THREE-QUEUE SYSTEM CACHES =====
 
@@ -184,17 +206,21 @@ private:
     std::unique_ptr<std::thread> write_worker_thread_;
     std::atomic<bool> write_worker_running_{false};
     std::atomic<bool> should_stop_write_worker_{false};
-    
+
     // Write request queue with size limiting
     std::queue<std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>>> pending_write_queue_;
     std::mutex write_queue_mutex_;
     std::condition_variable write_available_;
     static constexpr size_t MAX_WRITE_QUEUE_SIZE = 3;  // Allow max 3 pending writes
-    
+
     // Write synchronization
     std::atomic<bool> write_in_progress_{false};
     std::mutex write_completion_mutex_;
     std::condition_variable write_completed_;
+
+    // Write completion callback
+    WriteCompletionCallback write_completion_callback_;
+    std::mutex callback_mutex_;
 
     // Map point change tracking
     std::unordered_set<uint32_t> dirty_map_points_;
@@ -224,6 +250,7 @@ private:
     std::string splat_data_filepath_;
     std::string splat_index_filepath_;
     std::string transform_tree_filepath_;
+    std::string vslam_status_filepath_;
 
     // Transform tree for cross-process access
     std::shared_ptr<stf::TransformTree> transform_tree_;
@@ -262,7 +289,8 @@ private:
 
     // Cache management methods
     void cacheKeyFrame(uint64_t id, const KeyFramePtr& keyframe) const;
-    void cacheKeyFrameInternal(uint64_t id, const KeyFramePtr& keyframe) const;  // Assumes mutex locked
+    void cacheKeyFrameInternal(uint64_t id,
+                               const KeyFramePtr& keyframe) const;  // Assumes mutex locked
     void cacheFactor(uint64_t id, const types::Factor& factor) const;
     void cacheKeyPoint(uint32_t id, const types::Keypoint& keypoint) const;
     void evictLRUKeyFrame() const;
@@ -297,11 +325,12 @@ private:
     void writeWorkerLoop();
     void queueWriteRequest(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> batch);
     void waitForWriteCompletion();
-    
+
     // NEW: Complete write process (data + index + metadata)
-    void writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write);
+    void writeBatchToDiskComplete(
+        std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write);
     void initializeAtomicQueues();
-    
+
     // Gaussian splat storage helper methods
     bool writeSplatBatchesToDisk();
     bool loadSplatBatchFromDisk(uint32_t batch_id, types::GaussianSplatBatch& batch) const;

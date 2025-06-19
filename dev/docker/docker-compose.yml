@@ -6,12 +6,13 @@ services:
       context: ../..
       dockerfile: dev/docker/Dockerfile
     volumes:
-      - ../..:/workspace:cached
+      - ../..:/workspace
       - ~/.gitconfig:/home/developer/.gitconfig:ro
       - /mnt/remote-storage:/mnt/remote-storage
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - ~/.Xauthority:/home/developer/.Xauthority
+      - $XAUTHORITY:/home/developer/.Xauthority
       - /data:/data
+      - ./logs:/logs
       # - /run/user/$(id -u):/tmp/runtime-developer
     environment:
       - DISPLAY=${DISPLAY}

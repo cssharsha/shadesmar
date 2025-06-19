@@ -16,8 +16,7 @@
 namespace ros {
 
 RosbagReader::RosbagReader(const std::string& bagfile, core::storage::MapStore& store,
-                           const Config& config,
-                           std::shared_ptr<viz::RerunVisualizer> visualizer)
+                           const Config& config, std::shared_ptr<viz::RerunVisualizer> visualizer)
     : bagfile_(bagfile),
       config_(config),
       store_(store),
@@ -57,14 +56,13 @@ RosbagReader::RosbagReader(const std::string& bagfile, core::storage::MapStore& 
     core::graph::GraphCallbacks callbacks;
 
     // Clean storage-based visualization callback - gets keypoints from MapStore directly
-    callbacks.on_storage_updated =
-        [this](const core::storage::MapStore& map_store,
-               uint64_t current_keyframe_id, uint64_t previous_keyframe_id) {
-            if (visualizer_ && visualizer_->isConnected()) {
-                visualizer_->visualizeFromStorage(map_store, current_keyframe_id,
-                                                  previous_keyframe_id);
-            }
-        };
+    callbacks.on_storage_updated = [this](const core::storage::MapStore& map_store,
+                                          uint64_t current_keyframe_id,
+                                          uint64_t previous_keyframe_id) {
+        if (visualizer_ && visualizer_->isConnected()) {
+            visualizer_->visualizeFromStorage(map_store, current_keyframe_id, previous_keyframe_id);
+        }
+    };
 
     graph_adapter_.setCallbacks(callbacks);
 }
@@ -285,6 +283,13 @@ void RosbagReader::processStaticTransform(const std::shared_ptr<tf2_msgs::msg::T
                     tf_tree_built_ = true;
                     LOG(INFO) << "TF tree successfully built! Required transform found.";
                     tf_tree_->printTree();
+                    store_.setTransformTree(tf_tree_);
+                    if (store_.saveTransformTreeToDisk()) {
+                        LOG(INFO) << "Transform tree saved to disk";
+                    } else {
+                        LOG(ERROR) << "Unable to save the transform tree";
+                        exit(1);
+                    }
                 } catch (const std::runtime_error& e) {
                     LOG(INFO) << "Still missing required transforms: " << e.what();
                     LOG(INFO) << "Looking for: [" << config_.base_link_frame_id << "] -> ["

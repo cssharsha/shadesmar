@@ -6,7 +6,16 @@
 set -e
 
 CONTAINER_NAME="docker-dev-1"
-MAP_BASE_PATH="/data/robot/house11_map"
+
+# Auto-detect map path from common bag locations
+if [[ -f "/data/robot/bags/house11/house11_0.db3" ]]; then
+    MAP_BASE_PATH="/data/robot/house11_map"
+elif [[ -f "/data/robot/bags/office/office_0.db3" ]]; then
+    MAP_BASE_PATH="/data/robot/office_map"
+else
+    MAP_BASE_PATH="/data/robot/test_map"
+    echo "Warning: Using default test map path. Adjust if needed."
+fi
 
 echo "=== Quick Gaussian Splatting Test ==="
 

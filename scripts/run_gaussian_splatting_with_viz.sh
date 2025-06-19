@@ -8,7 +8,7 @@ set -e
 # Default parameters
 ROSBAG_PATH="/data/robot/bags/house11/house11_0.db3"
 CONFIG="default"
-MAP_BASE_PATH="/data/robot/house11_map"
+MAP_BASE_PATH=""  # Will be derived from bagfile path
 CONTAINER_NAME="docker-dev-1"
 
 # Color codes for output
@@ -74,7 +74,7 @@ check_container() {
 build_targets() {
     echo -e "${BLUE}Building Gaussian splat processor and visualization...${NC}"
     
-    if ! docker exec "$CONTAINER_NAME" bash -c "cd /workspace && bazel build //gaussian_splatting:gs_processor //viz:visualize_rosbag"; then
+    if ! docker exec "$CONTAINER_NAME" bash -c "cd /workspace && bazel build //gaussian_splatting:gs_processor //viz:visualize_rosbag 2>&1 | tee gs_log"; then
         echo -e "${RED}Build failed!${NC}"
         exit 1
     fi
@@ -104,13 +104,42 @@ cleanup() {
 # Set up signal handlers
 trap cleanup EXIT INT TERM
 
+# Function to derive map path from bagfile path
+derive_map_path() {
+    local bagfile_path="$1"
+    
+    # If MAP_BASE_PATH is already set via command line, use it
+    if [[ -n "$MAP_BASE_PATH" ]]; then
+        return
+    fi
+    
+    # Extract directory and filename
+    local bag_dir=$(dirname "$bagfile_path")
+    local bagfile_name=$(basename "$bagfile_path" .db3)
+    
+    # Check if path contains "/bags/" and derive accordingly
+    if [[ "$bag_dir" == *"/bags/"* ]]; then
+        # Extract base directory and dataset name
+        local base_dir="${bag_dir%/bags/*}"
+        local dataset_name="${bagfile_name%_*}"  # Remove suffix after underscore
+        MAP_BASE_PATH="${base_dir}/${dataset_name}_map"
+    else
+        # Fallback: use same directory as bagfile
+        MAP_BASE_PATH="${bag_dir}/${bagfile_name}_map"
+    fi
+}
+
 # Main execution
 main() {
     echo -e "${GREEN}=== Gaussian Splatting + Visualization Runner ===${NC}"
+    
+    # Derive map path from bagfile path
+    derive_map_path "$ROSBAG_PATH"
+    
     echo -e "${BLUE}Configuration:${NC}"
     echo "  Rosbag: $ROSBAG_PATH"
     echo "  Config: $CONFIG"
-    echo "  Map path: $MAP_BASE_PATH"
+    echo "  Map path: $MAP_BASE_PATH (derived from bagfile path)"
     echo "  Container: $CONTAINER_NAME"
     echo ""
     
@@ -153,7 +182,7 @@ main() {
     echo ""
     
     # Run visualization in foreground - this will show all output
-    docker exec -it "$CONTAINER_NAME" bash -c "cd /workspace && bazel run //viz:visualize_rosbag -- '$ROSBAG_PATH' '$CONFIG'" &
+    docker exec "$CONTAINER_NAME" bash -c "cd /workspace && bazel run //viz:visualize_rosbag -- '$ROSBAG_PATH' '$CONFIG'" &
     VIZ_PID=$!
     
     # Monitor both processes

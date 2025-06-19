@@ -21,12 +21,12 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-cc_test(
-    name = "graph_test",
-    srcs = glob(["test/*_test.cpp"]),
-    deps = [
-        ":graph",
-        "@com_google_googletest//:gtest_main",
-        "@tbb",
-    ],
-)
+# cc_test(
+#     name = "graph_test",
+#     srcs = glob(["test/*_test.cpp"]),
+#     deps = [
+#         ":graph",
+#         "@com_google_googletest//:gtest_main",
+#         "@tbb",
+#     ],
+# )

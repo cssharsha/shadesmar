@@ -153,7 +153,8 @@ std::optional<core::types::Pose> OrbTracker::operator()(
     LOG(INFO) << "dev: Finished detecting orb features from prev img";
 
     if (previous_img_keypoints.empty() || current_img_keypoints.empty()) {
-        LOG(ERROR) << "No keypoints detected in keyframe";
+        LOG(ERROR) << "No keypoints detected in keyframe " << previous_img_keypoints.size() << " "
+                   << current_img_keypoints.size();
         return std::nullopt;
     }
 
@@ -172,11 +173,12 @@ std::optional<core::types::Pose> OrbTracker::operator()(
     }
     cv::Mat K(cam_info->second.k);
     K = K.reshape(1, 3);
-    
+
     // Call feature matching only (no triangulation)
-    auto transform = matchFeaturesOnly(untracked_cur_img_keypoints, untracked_cur_img_descriptors,
-                                      previous_img_keypoints, previous_img_descriptors, current_kf,
-                                      previous_kf, K, current_img_to_map_keypoint_idx, map_keypoints);
+    auto transform =
+        matchFeaturesOnly(untracked_cur_img_keypoints, untracked_cur_img_descriptors,
+                          previous_img_keypoints, previous_img_descriptors, current_kf, previous_kf,
+                          K, current_img_to_map_keypoint_idx, map_keypoints);
 
     return transform;
 }
@@ -458,19 +460,18 @@ std::optional<core::types::Pose> OrbTracker::matchAndTriangulate(
     return tf;
 }
 
-// NEW ARCHITECTURE: Feature matching only (no triangulation) - defer triangulation to graph_adapter.cpp
 std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
     const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
     const std::vector<cv::KeyPoint>& prev_img_kps, const cv::Mat& prev_img_desc,
     const core::types::KeyFrame& cur_frame, const core::types::KeyFrame& prev_frame,
     const cv::Mat& K, const std::map<uint32_t, uint32_t>& current_img_to_map_keypoint_idx,
     std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
-    
     std::vector<cv::DMatch> matches;
     std::vector<std::vector<cv::DMatch>> knn_matches;
 
-    LOG(INFO) << "Performing matchFeaturesOnly (no triangulation) with: " << "\n\tCurrent image keypoints: "
-              << cur_img_kps.size() << " descs: " << cur_img_desc.size()
+    LOG(INFO) << "Performing matchFeaturesOnly (no triangulation) with: "
+              << "\n\tCurrent image keypoints: " << cur_img_kps.size()
+              << " descs: " << cur_img_desc.size()
               << "\n\tPrevious image keypoints: " << prev_img_kps.size()
               << " descs: " << prev_img_desc.size();
     matcher_->knnMatch(prev_img_desc, cur_img_desc, knn_matches, 2);
@@ -484,8 +485,10 @@ std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
         }
     }
 
+    LOG(INFO) << "Curent number of mathes: " << knn_matches.size() << " " << good_matches.size();
     if (good_matches.size() < min_matches_for_matching_) {
-        LOG(ERROR) << "Not enough matches available for feature creation";
+        LOG(ERROR) << "Not enough matches available for feature creation " << good_matches.size()
+                   << "/" << min_matches_for_matching_;
         return std::nullopt;
     }
 
@@ -524,7 +527,7 @@ std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
             inlier_matches_for_keypoint_creation.push_back(good_matches[i]);
         }
     }
-    
+
     LOG(INFO) << "Inlier matches used for keypoint creation: "
               << inlier_matches_for_keypoint_creation.size();
 
@@ -532,16 +535,16 @@ std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
     for (uint64_t i = 0; i < inlier_matches_for_keypoint_creation.size(); ++i) {
         auto prevImgIdx = inlier_matches_for_keypoint_creation[i].queryIdx;
         auto curImgIdx = inlier_matches_for_keypoint_creation[i].trainIdx;
-        
+
         // Only create new map keypoints for unmatched features
         if (current_img_to_map_keypoint_idx.find(curImgIdx) ==
             current_img_to_map_keypoint_idx.end()) {
-            
             core::types::Keypoint keypoint(map_keypoints.size());
             keypoint.position = Eigen::Vector3d::Zero();  // No 3D position yet
-            keypoint.needs_triangulation = true;  // Mark for triangulation during batch optimization
+            keypoint.needs_triangulation =
+                true;  // Mark for triangulation during batch optimization
             keypoint.descriptor = prev_img_desc.row(prevImgIdx).clone();
-            
+
             // Add observations from both keyframes
             addOrUpdateObservation(keypoint, cur_frame.id, cur_frame.color_data.value().frame_id,
                                    cur_img_kps[curImgIdx].pt.x, cur_img_kps[curImgIdx].pt.y,
@@ -549,10 +552,10 @@ std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
             addOrUpdateObservation(keypoint, prev_frame.id, prev_frame.color_data.value().frame_id,
                                    prev_img_kps[prevImgIdx].pt.x, prev_img_kps[prevImgIdx].pt.y,
                                    "deferred_matching");
-            
+
             map_keypoints.insert(std::make_pair(keypoint.id(), keypoint));
-            
-            LOG(INFO) << "Created map keypoint " << keypoint.id() 
+
+            LOG(INFO) << "Created map keypoint " << keypoint.id()
                       << " without 3D position (marked for deferred triangulation)";
         }
     }
@@ -569,10 +572,11 @@ std::optional<core::types::Pose> OrbTracker::matchFeaturesOnly(
         R.at<double>(2, 2);
     tf.orientation = Eigen::Quaterniond(R_eigen);
     tf.frame_id = "relative_tf";
-    
-    LOG(INFO) << "Feature matching completed - created " << inlier_matches_for_keypoint_creation.size() 
+
+    LOG(INFO) << "Feature matching completed - created "
+              << inlier_matches_for_keypoint_creation.size()
               << " new map keypoints (triangulation deferred to graph_adapter.cpp)";
-    
+
     return tf;
 }
 
@@ -997,10 +1001,12 @@ void OrbTracker::performDirectTriangulation(
     LOG(INFO) << "Features for triangulation: " << unmatched_prev_pts.size() << " (out of "
               << last_vo_data_.curr_matched_points.size() << " total matches)";
 
-    // PHASE 3: Create map keypoints for unmatched features (defer triangulation to batch optimization)
+    // PHASE 3: Create map keypoints for unmatched features (defer triangulation to batch
+    // optimization)
     if (!unmatched_prev_pts.empty()) {
-        LOG(INFO) << "Creating " << unmatched_prev_pts.size() 
-                  << " new map keypoints without 3D position (deferred triangulation to graph_adapter.cpp)";
+        LOG(INFO) << "Creating " << unmatched_prev_pts.size()
+                  << " new map keypoints without 3D position (deferred triangulation to "
+                     "graph_adapter.cpp)";
 
         // Create new map keypoints WITHOUT 3D position (defer triangulation to batch optimization)
         size_t points_added = 0;
@@ -1012,7 +1018,8 @@ void OrbTracker::performDirectTriangulation(
                 // Create new map keypoint WITHOUT 3D position - NEW ARCHITECTURE
                 core::types::Keypoint keypoint(map_keypoints.size());
                 keypoint.position = Eigen::Vector3d::Zero();  // No 3D position yet
-                keypoint.needs_triangulation = true;  // Mark for triangulation during batch optimization
+                keypoint.needs_triangulation =
+                    true;  // Mark for triangulation during batch optimization
                 keypoint.descriptor = last_vo_data_.curr_descriptors.row(curr_kp_idx).clone();
 
                 // Add observations from both keyframes
@@ -1028,7 +1035,9 @@ void OrbTracker::performDirectTriangulation(
             }
         }
 
-        LOG(INFO) << "Visual odometry: Added " << points_added << " new map keypoints (without 3D position, triangulation deferred to graph_adapter.cpp)";
+        LOG(INFO) << "Visual odometry: Added " << points_added
+                  << " new map keypoints (without 3D position, triangulation deferred to "
+                     "graph_adapter.cpp)";
         LOG(INFO) << "Map size: " << initial_map_size << " → " << map_keypoints.size() << " (+"
                   << (map_keypoints.size() - initial_map_size) << ")";
     } else {

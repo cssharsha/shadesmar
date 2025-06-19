@@ -1,13 +1,43 @@
 #include "gs_processor.hpp"
 #include <chrono>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <logging/logging.hpp>
+#include <sstream>
 #include <thread>
 
 namespace gaussian_splatting {
 
+void GaussianSplatProcessor::initializeLogging() {
+    // Initialize glog for this specific processor
+    google::InitGoogleLogging("gs_processor");
+
+    // Create logs directory if it doesn't exist
+    std::filesystem::create_directories("/logs");
+
+    // Set log file path with timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << "/logs/gs_processor_" << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S")
+       << ".log";
+
+    // Configure glog to write to separate files
+    FLAGS_log_dir = "/workspace/logs";
+    FLAGS_alsologtostderr = true;  // Also log to stderr
+    FLAGS_logbufsecs = 0;          // Flush logs immediately
+
+    // Set log file prefix for this processor
+    google::SetLogDestination(google::GLOG_INFO, ss.str().c_str());
+    google::SetLogDestination(google::GLOG_WARNING, ss.str().c_str());
+    google::SetLogDestination(google::GLOG_ERROR, ss.str().c_str());
+    google::SetLogDestination(google::GLOG_FATAL, ss.str().c_str());
+}
+
 GaussianSplatProcessor::GaussianSplatProcessor(const ProcessorConfig& config) : config_(config) {
+    initializeLogging();
     LOG(INFO) << "GaussianSplatProcessor initialized with map path: " << config_.map_base_path;
 }
 
@@ -32,6 +62,7 @@ bool GaussianSplatProcessor::initialize() {
         if (!transform_tree_) {
             LOG(WARNING) << "No transform tree found in map data, will create empty one";
             transform_tree_ = std::make_shared<stf::TransformTree>();
+            return false;
         }
 
         // Reset statistics
@@ -152,9 +183,17 @@ bool GaussianSplatProcessor::checkForNewMapData() {
     uint64_t last_vslam_keyframe = vslam_status.last_processed_keyframe_id();
     uint64_t last_gs_keyframe = stats_.last_processed_keyframe_id.load();
 
+    // DEBUG: Log detailed information about available keyframes and their poses
+    LOG(INFO) << "VSLAM Status - Last keyframe ID: " << last_vslam_keyframe
+              << ", GS last processed: " << last_gs_keyframe;
+
     if (last_vslam_keyframe > last_gs_keyframe) {
-        LOG(INFO) << "New keyframes available: " << last_gs_keyframe + 1 << " to "
+        LOG(INFO) << "New keyframes available for processing: " << last_gs_keyframe + 1 << " to "
                   << last_vslam_keyframe;
+
+        // DEBUG: Read and log poses of available keyframes from MapStore
+        logKeyframePosesDebug(last_gs_keyframe + 1, last_vslam_keyframe);
+
         return processNewKeyframes(last_gs_keyframe + 1, last_vslam_keyframe);
     }
 
@@ -554,6 +593,58 @@ bool GaussianSplatProcessor::extractColorFromObservations(const core::types::Key
               << color.y() << ", " << color.z() << ")";
 
     return true;
+}
+
+void GaussianSplatProcessor::logKeyframePosesDebug(uint64_t start_keyframe_id,
+                                                   uint64_t end_keyframe_id) const {
+    LOG(INFO) << "DEBUG: Reading keyframe poses from MapStore for keyframes " << start_keyframe_id
+              << " to " << end_keyframe_id;
+
+    // Get all keyframe poses efficiently
+    auto all_poses = map_store_->getAllKeyFramePoses();
+    LOG(INFO) << "DEBUG: Total keyframes in MapStore: " << all_poses.size();
+
+    // Log poses for the specific range
+    size_t found_keyframes = 0;
+    for (uint64_t kf_id = start_keyframe_id; kf_id <= end_keyframe_id; ++kf_id) {
+        auto pose_it = all_poses.find(kf_id);
+        if (pose_it != all_poses.end()) {
+            const auto& pose = pose_it->second;
+            LOG(INFO) << "DEBUG: Keyframe " << kf_id << " pose - Position: [" << pose.position.x()
+                      << ", " << pose.position.y() << ", " << pose.position.z()
+                      << "], Orientation: [" << pose.orientation.w() << ", " << pose.orientation.x()
+                      << ", " << pose.orientation.y() << ", " << pose.orientation.z() << "]";
+            found_keyframes++;
+        } else {
+            LOG(WARNING) << "DEBUG: Keyframe " << kf_id << " not found in MapStore poses";
+        }
+    }
+
+    LOG(INFO) << "DEBUG: Found " << found_keyframes << " keyframes out of "
+              << (end_keyframe_id - start_keyframe_id + 1) << " requested";
+
+    // Also try to read individual keyframes to compare
+    for (uint64_t kf_id = start_keyframe_id;
+         kf_id <= std::min(end_keyframe_id, start_keyframe_id + 2); ++kf_id) {
+        auto keyframe = map_store_->getKeyFrame(kf_id);
+        if (keyframe) {
+            LOG(INFO) << "DEBUG: Direct keyframe " << kf_id << " read - ID: " << keyframe->id
+                      << ", Timestamp: " << keyframe->pose.timestamp << ", Position: ["
+                      << keyframe->pose.position.x() << ", " << keyframe->pose.position.y() << ", "
+                      << keyframe->pose.position.z() << "]";
+        } else {
+            LOG(WARNING) << "DEBUG: Direct read of keyframe " << kf_id << " failed";
+        }
+    }
+
+    // Log queue status for debugging
+    LOG(INFO) << "DEBUG: MapStore queue status - Unprocessed: " << map_store_->getUnprocessedCount()
+              << ", Non-optimized: " << map_store_->getProcessedNonOptimizedCount()
+              << ", Optimized: " << map_store_->getProcessedOptimizedCount();
+
+    // Check latest optimization status
+    uint64_t last_optimized_id = map_store_->getLastOptimizedKeyFrameId();
+    LOG(INFO) << "DEBUG: Last optimized keyframe ID: " << last_optimized_id;
 }
 
 }  // namespace gaussian_splatting

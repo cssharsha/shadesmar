@@ -37,8 +37,15 @@ GraphAdapter::GraphAdapter(FactorGraph& graph, storage::MapStore& store)
       bias_estimation_window_(100),
       optimization_keyframe_interval_(10) {  // Set to 10 keyframes as specified
 
-    LOG(INFO) << "GraphAdapter initialized with callback-based MapStore write system (optimization every "
-              << optimization_keyframe_interval_ << " keyframes)";
+    LOG(INFO)
+        << "GraphAdapter initialized with callback-based MapStore write system (optimization every "
+        << optimization_keyframe_interval_ << " keyframes)";
+
+    // Register write completion callback to track disk-persisted keyframes
+    store_.setWriteCompletionCallback([this](const std::vector<uint64_t>& written_keyframe_ids) {
+        this->onKeyframesWrittenToDisk(written_keyframe_ids);
+    });
+    LOG(INFO) << "Registered write completion callback for VSLAM status synchronization";
 }
 
 // Destructor - ensure optimization thread is properly stopped
@@ -194,8 +201,8 @@ void GraphAdapter::maybeDumpGraph(bool force) {
     if (cumulative_distance_ >= next_dump_distance_ || force) {
         LOG(INFO) << "Dumping factor graph at distance " << cumulative_distance_ << "m";
 
-        std::string filename_prefix = "factor_graph_" + 
-                                     std::to_string(static_cast<int>(cumulative_distance_)) + "m";
+        std::string filename_prefix =
+            "factor_graph_" + std::to_string(static_cast<int>(cumulative_distance_)) + "m";
 
         try {
             util::dumpFactorGraphWithAutoPath(store_, filename_prefix);
@@ -203,14 +210,14 @@ void GraphAdapter::maybeDumpGraph(bool force) {
         } catch (const std::exception& e) {
             LOG(WARNING) << "Failed to dump factor graph: " << e.what();
         }
-        
+
         next_dump_distance_ = cumulative_distance_ + DUMP_INTERVAL;
         LOG(INFO) << "Next graph dump at " << next_dump_distance_ << "m";
     }
 }
 
 void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& keyframe) {
-    LOG(INFO) << "Adding keyframe to three-queue processing pipeline at pose: "
+    LOG(INFO) << "Adding keyframe to unprocessed cache at pose: "
               << keyframe->pose.position.transpose()
               << " with timestamp: " << keyframe->pose.timestamp;
 
@@ -263,19 +270,19 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
             }
         }
 
-        // ===== ORB PROCESSING WITH 2-FRAME DELAY =====
-
         // Check if we can process ORB features (need current frame N and previous frame N-1)
-        if (current_keyframe_id_ >= 2) {
+        if (keyframe_ids_with_images_.size() >= 2 &&
+            keyframe_ids_with_images_.back() == current_keyframe_id_) {
+            auto previous_kf_id =
+                keyframe_ids_with_images_.at(keyframe_ids_with_images_.size() - 2);
             auto current_frame_for_orb = getKeyFrameFromAnyQueue(current_keyframe_id_);  // Frame N
-            auto previous_frame_for_orb =
-                getKeyFrameFromAnyQueue(current_keyframe_id_ - 1);  // Frame N-1
+            auto previous_frame_for_orb = getKeyFrameFromAnyQueue(previous_kf_id);
 
             if (current_frame_for_orb && previous_frame_for_orb &&
                 current_frame_for_orb->hasColorImage() && previous_frame_for_orb->hasColorImage()) {
                 try {
-                    LOG(INFO) << "Processing ORB features for frames " << (current_keyframe_id_ - 1)
-                              << " → " << current_keyframe_id_;
+                    LOG(INFO) << "Processing ORB features for frames " << previous_kf_id << " → "
+                              << current_keyframe_id_;
 
                     // Get current map keypoints from MapStore
                     auto current_map_keypoints = getMapPointsCopy();
@@ -288,7 +295,7 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                     updateMapPoints(current_map_keypoints);
 
                     LOG(INFO) << "ORB processing completed successfully for frames "
-                              << (current_keyframe_id_ - 1) << " → " << current_keyframe_id_;
+                              << previous_kf_id << " → " << current_keyframe_id_;
 
                 } catch (const std::exception& e) {
                     LOG(WARNING) << "ORB processing failed for frames "
@@ -320,6 +327,9 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
 
     // Debug: Dump map keypoints after each keyframe addition
     dumpMapKeypointsToJson();
+
+    // NOTE: VSLAM status is now updated only after keyframes are written to disk
+    // via the write completion callback to ensure GS processor only sees persisted data
 
     keyframes_since_last_optimization_++;
 
@@ -627,9 +637,9 @@ bool GraphAdapter::performOptimization() {
 
     // VISUALIZATION: Dump factor graph before optimization for debugging
     if (!batch_keyframe_ids.empty()) {
-        std::string filename_prefix = "pre_optimization_kf" + 
-                                     std::to_string(batch_keyframe_ids.front()) + "_to_" +
-                                     std::to_string(batch_keyframe_ids.back());
+        std::string filename_prefix = "pre_optimization_kf" +
+                                      std::to_string(batch_keyframe_ids.front()) + "_to_" +
+                                      std::to_string(batch_keyframe_ids.back());
         try {
             util::dumpFactorGraphWithAutoPath(store_, filename_prefix);
             LOG(INFO) << "Dumped factor graph before optimization with prefix: " << filename_prefix;
@@ -647,20 +657,16 @@ bool GraphAdapter::performOptimization() {
         return true;
     }
 
-    // NEW: Triangulation phase - triangulate keypoints that need 3D positions
     LOG(INFO) << "Starting triangulation phase before batch optimization";
     bool triangulation_success = triangulateMapKeypoints(current_map_keypoints);
-    
+
     if (triangulation_success) {
-        // Update MapStore with newly triangulated keypoints
         updateMapPoints(current_map_keypoints);
         LOG(INFO) << "Updated MapStore with newly triangulated keypoints";
-        
-        // Refresh map keypoints after triangulation
+
         current_map_keypoints = getMapPointsCopy();
     }
 
-    // Count landmarks that have valid 3D positions for optimization
     size_t valid_landmarks = 0;
     for (const auto& [id, keypoint] : current_map_keypoints) {
         if (!keypoint.needs_triangulation && keypoint.position.norm() > 1e-6) {
@@ -672,7 +678,6 @@ bool GraphAdapter::performOptimization() {
               << batch_factors.size() << " factors, " << current_map_keypoints.size()
               << " total keypoints (" << valid_landmarks << " with valid 3D positions)";
 
-    // Variables to track optimization results
     bool optimization_succeeded = false;
     bool poses_success = false;
     bool landmarks_success = false;
@@ -815,6 +820,8 @@ void GraphAdapter::triggerOptimization() {
 }
 
 bool GraphAdapter::shouldTriggerOptimization() const {
+    LOG(INFO) << "Last optimization check: " << keyframes_since_last_optimization_.load() << " ("
+              << optimization_keyframe_interval_ << ")";
     return keyframes_since_last_optimization_.load() >= optimization_keyframe_interval_;
 }
 
@@ -1177,127 +1184,128 @@ bool GraphAdapter::updateMapKeypointsFromOptimizedLandmarks(
 
 // ===== NEW TRIANGULATION PHASE =====
 
-bool GraphAdapter::triangulateMapKeypoints(std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
+bool GraphAdapter::triangulateMapKeypoints(
+    std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
     auto start_time = std::chrono::high_resolution_clock::now();
-    
+
     size_t keypoints_needing_triangulation = 0;
     size_t keypoints_triangulated = 0;
     size_t keypoints_insufficient_observations = 0;
-    
+
     // Count keypoints needing triangulation
     for (const auto& [id, keypoint] : map_keypoints) {
         if (keypoint.needs_triangulation) {
             keypoints_needing_triangulation++;
         }
     }
-    
-    LOG(INFO) << "Triangulation phase: " << keypoints_needing_triangulation 
+
+    LOG(INFO) << "Triangulation phase: " << keypoints_needing_triangulation
               << " keypoints need triangulation";
-    
+
     if (keypoints_needing_triangulation == 0) {
         return true;  // Nothing to triangulate
     }
-    
+
     // Triangulate keypoints that need it
     for (auto& [id, keypoint] : map_keypoints) {
         if (!keypoint.needs_triangulation) {
             continue;  // Skip keypoints that already have 3D position
         }
-        
+
         // Check minimum observations (need at least 2, recommend 3+ for robustness)
         if (keypoint.locations.size() < 2) {
             keypoints_insufficient_observations++;
-            LOG(INFO) << "Keypoint " << id << " has only " << keypoint.locations.size() 
+            LOG(INFO) << "Keypoint " << id << " has only " << keypoint.locations.size()
                       << " observations (need minimum 2), keeping for future triangulation";
             continue;  // Keep for future attempts
         }
-        
+
         Eigen::Vector3d triangulated_position;
         if (triangulateKeypoint(keypoint, map_keypoints, triangulated_position)) {
             // Successfully triangulated
             keypoint.position = triangulated_position;
             keypoint.needs_triangulation = false;
             keypoints_triangulated++;
-            
-            LOG(INFO) << "Triangulated keypoint " << id << " at position: " 
-                      << triangulated_position.transpose() 
-                      << " from " << keypoint.locations.size() << " observations";
+
+            LOG(INFO) << "Triangulated keypoint " << id
+                      << " at position: " << triangulated_position.transpose() << " from "
+                      << keypoint.locations.size() << " observations";
         } else {
-            LOG(WARNING) << "Failed to triangulate keypoint " << id 
-                        << " with " << keypoint.locations.size() << " observations";
+            LOG(WARNING) << "Failed to triangulate keypoint " << id << " with "
+                         << keypoint.locations.size() << " observations";
             // Keep needs_triangulation=true for future attempts
         }
     }
-    
+
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    
+
     LOG(INFO) << "Triangulation phase completed in " << duration.count() << "ms:";
     LOG(INFO) << "    Total needing triangulation: " << keypoints_needing_triangulation;
     LOG(INFO) << "    Successfully triangulated: " << keypoints_triangulated;
     LOG(INFO) << "    Insufficient observations: " << keypoints_insufficient_observations;
-    LOG(INFO) << "    Still pending: " << (keypoints_needing_triangulation - keypoints_triangulated);
-    
+    LOG(INFO) << "    Still pending: "
+              << (keypoints_needing_triangulation - keypoints_triangulated);
+
     return keypoints_triangulated > 0;
 }
 
-bool GraphAdapter::triangulateKeypoint(const core::types::Keypoint& keypoint, 
-                                       const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
-                                       Eigen::Vector3d& triangulated_position) {
+bool GraphAdapter::triangulateKeypoint(
+    const core::types::Keypoint& keypoint,
+    const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+    Eigen::Vector3d& triangulated_position) {
     if (keypoint.locations.size() < 2) {
         return false;  // Need at least 2 observations
     }
-    
+
     if (!transform_tree_) {
         LOG(ERROR) << "Transform tree not available for triangulation";
         return false;
     }
-    
+
     try {
         // Use GTSAM triangulation API that handles multiple observations automatically
         bool success = gtsam_reconstructor_.triangulateFromMapKeypoint(
             keypoint, store_, *transform_tree_, triangulated_position, base_link_frame_id_);
-        
+
         if (success) {
             // Validate triangulated point
             if (!triangulated_position.allFinite()) {
                 LOG(WARNING) << "Triangulated position is not finite";
                 return false;
             }
-            
+
             if (triangulated_position.norm() > 1000.0) {
-                LOG(WARNING) << "Triangulated position too far: " << triangulated_position.norm() << "m";
+                LOG(WARNING) << "Triangulated position too far: " << triangulated_position.norm()
+                             << "m";
                 return false;
             }
-            
-            LOG(INFO) << "Successfully triangulated keypoint " << keypoint.id() 
-                      << " at position: " << triangulated_position.transpose()
-                      << " from " << keypoint.locations.size() << " observations";
+
+            LOG(INFO) << "Successfully triangulated keypoint " << keypoint.id()
+                      << " at position: " << triangulated_position.transpose() << " from "
+                      << keypoint.locations.size() << " observations";
             return true;
         }
-        
+
     } catch (const std::exception& e) {
         LOG(WARNING) << "Triangulation failed with exception: " << e.what();
     }
-    
+
     return false;
 }
 
 // Helper method to get keyframe from any queue
 std::shared_ptr<types::KeyFrame> GraphAdapter::getKeyFrameFromAnyQueue(uint64_t keyframe_id) const {
-    // Try unprocessed cache first
     auto keyframe = store_.getUnprocessedKeyFrame(keyframe_id);
     if (keyframe) {
         return keyframe;
     }
 
-    // Try processed non-optimized cache
     keyframe = store_.getProcessedNonOptimizedKeyFrame(keyframe_id);
     if (keyframe) {
         return keyframe;
     }
 
-    // Try processed optimized cache
     keyframe = store_.getProcessedOptimizedKeyFrame(keyframe_id);
     if (keyframe) {
         return keyframe;
@@ -1307,10 +1315,12 @@ std::shared_ptr<types::KeyFrame> GraphAdapter::getKeyFrameFromAnyQueue(uint64_t 
     return store_.getKeyFrame(keyframe_id);
 }
 
-void GraphAdapter::updateMapPoints(const std::map<uint32_t, core::types::Keypoint>& updated_map_keypoints) {
+void GraphAdapter::updateMapPoints(
+    const std::map<uint32_t, core::types::Keypoint>& updated_map_keypoints) {
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    LOG(INFO) << "Updating map keypoints with " << updated_map_keypoints.size() << " ORB-processed points";
+    LOG(INFO) << "Updating map keypoints with " << updated_map_keypoints.size()
+              << " ORB-processed points";
 
     size_t new_points = 0;
     size_t updated_points = 0;
@@ -1320,8 +1330,8 @@ void GraphAdapter::updateMapPoints(const std::map<uint32_t, core::types::Keypoin
 
         if (is_new) {
             new_points++;
-            LOG(INFO) << "Adding new map point " << id << " at position: "
-                      << keypoint.position.transpose();
+            LOG(INFO) << "Adding new map point " << id
+                      << " at position: " << keypoint.position.transpose();
         } else {
             updated_points++;
         }
@@ -1337,6 +1347,36 @@ void GraphAdapter::updateMapPoints(const std::map<uint32_t, core::types::Keypoin
     LOG(INFO) << "Updated map keypoints from ORB processing in " << duration.count() << "ms"
               << " (" << new_points << " new, " << updated_points << " updated)"
               << " - all marked dirty for disk write";
+}
+
+void GraphAdapter::onKeyframesWrittenToDisk(const std::vector<uint64_t>& written_keyframe_ids) {
+    if (written_keyframe_ids.empty()) {
+        return;
+    }
+
+    // Find the highest keyframe ID that was written to disk
+    uint64_t highest_written_id =
+        *std::max_element(written_keyframe_ids.begin(), written_keyframe_ids.end());
+
+    // Update our tracking of the highest disk-persisted keyframe
+    uint64_t previous_persisted_id = last_disk_persisted_keyframe_id_.load();
+    last_disk_persisted_keyframe_id_.store(std::max(previous_persisted_id, highest_written_id));
+
+    LOG(INFO) << "Write completion callback: " << written_keyframe_ids.size()
+              << " keyframes written to disk"
+              << ", highest ID: " << highest_written_id
+              << ", updated last_disk_persisted_keyframe_id: "
+              << last_disk_persisted_keyframe_id_.load();
+
+    // Update VSLAM status with the new disk-persisted keyframe ID
+    uint64_t disk_persisted_id = last_disk_persisted_keyframe_id_.load();
+    if (!store_.updateVSLAMStatus(disk_persisted_id, true,
+                                  "Keyframes written to disk successfully")) {
+        LOG(WARNING) << "Failed to update VSLAM status after disk write completion for keyframe "
+                     << disk_persisted_id;
+    } else {
+        LOG(INFO) << "Updated VSLAM status with disk-persisted keyframe ID: " << disk_persisted_id;
+    }
 }
 
 }  // namespace graph

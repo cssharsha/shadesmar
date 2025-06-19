@@ -21,6 +21,8 @@ struct ProcessorConfig {
     size_t max_splat_batches_in_memory = 50;     // Memory management limit
     bool enable_gpu_acceleration = true;         // Use GPU for splat generation
     double min_keypoint_confidence = 0.5;        // Minimum confidence for splat generation
+    bool offline_mode = false;                   // If true, process all available data then visualize
+    bool enable_visualization = false;           // If true, launch built-in Rerun visualizer
     
     ProcessorConfig() = default;
     ProcessorConfig(const std::string& map_path) : map_base_path(map_path) {
@@ -121,8 +123,10 @@ private:
     bool isVSLAMProcessHealthy() const;
     
     // Utility methods
+    void initializeLogging();
     double getCurrentTimestamp() const;
     void logProcessingStats() const;
+    void logKeyframePosesDebug(uint64_t start_keyframe_id, uint64_t end_keyframe_id) const;
 };
 
 }  // namespace gaussian_splatting

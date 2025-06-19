@@ -1,5 +1,5 @@
-#include <core/storage/map_store.hpp>
 #include <chrono>
+#include <core/storage/map_store.hpp>
 #include <iomanip>
 #include <logging/logging.hpp>
 
@@ -29,7 +29,7 @@ MapStore::MapStore(const std::string& map_base_filepath) {
 
     // Initialize atomic queue system
     initializeAtomicQueues();
-    
+
     // Start write worker thread
     startWriteWorker();
 
@@ -39,7 +39,7 @@ MapStore::MapStore(const std::string& map_base_filepath) {
 MapStore::~MapStore() {
     // Stop write worker first
     stopWriteWorker();
-    
+
     // Wait for any in-progress write operation to complete
     if (write_in_progress_.load()) {
         LOG(INFO) << "Waiting for final write operation to complete before MapStore destruction";
@@ -54,8 +54,8 @@ MapStore::~MapStore() {
         std::shared_lock<std::shared_mutex> opt_lock(processed_optimized_queue_mutex_);
 
         has_pending_data = !unprocessed_cache_.empty() ||
-                          !processed_non_optimized_queue_->empty() ||
-                          !processed_optimized_queue_->empty();
+                           !processed_non_optimized_queue_->empty() ||
+                           !processed_optimized_queue_->empty();
     }
 
     if (keyframes_dirty_.load() || factors_dirty_.load() || keypoints_dirty_.load() ||
@@ -75,6 +75,7 @@ bool MapStore::initializeFilePaths(const std::string& map_base_filepath) {
     splat_data_filepath_ = base_filepath_ + ".splats";
     splat_index_filepath_ = base_filepath_ + ".splat_idx";
     transform_tree_filepath_ = base_filepath_ + ".tf_tree";
+    vslam_status_filepath_ = base_filepath_ + "_vslam_status";
     LOG(INFO) << "MapStore initialized with data file: " << data_filepath_ << std::endl;
     return true;
 }
@@ -191,11 +192,9 @@ bool MapStore::addKeyFrame(const KeyFramePtr& keyframe) {
                      keyframe_locations_.count(keyframe->id) > 0;
 
     if (is_update) {
-        LOG(INFO) << "KeyFrame ID " << keyframe->id
-                  << " marked for update with optimized pose";
+        LOG(INFO) << "KeyFrame ID " << keyframe->id << " marked for update with optimized pose";
     } else {
-        LOG(INFO) << "KeyFrame ID " << keyframe->id
-                  << " added to cache, pending disk write";
+        LOG(INFO) << "KeyFrame ID " << keyframe->id << " added to cache, pending disk write";
     }
 
     // Add to pending writes (will be written during next sync)
@@ -354,7 +353,8 @@ std::optional<types::Factor> MapStore::getFactor(uint64_t id) const {
     if (it == factor_locations_.end()) {
         return std::nullopt;
     }
-    auto factor_opt = readProtoMessage<proto::Factor, types::Factor>(it->second, types::Factor::fromProto);
+    auto factor_opt =
+        readProtoMessage<proto::Factor, types::Factor>(it->second, types::Factor::fromProto);
     if (factor_opt) {
         cacheFactor(id, factor_opt.value());
     }
@@ -376,8 +376,8 @@ std::optional<types::Keypoint> MapStore::getKeyPoint(uint32_t id) const {
     if (it == keypoint_locations_.end()) {
         return std::nullopt;
     }
-    auto keypoint_opt = readProtoMessage<proto::Keypoint, types::Keypoint>(it->second,
-                                                              types::Keypoint::fromProto);
+    auto keypoint_opt =
+        readProtoMessage<proto::Keypoint, types::Keypoint>(it->second, types::Keypoint::fromProto);
     if (keypoint_opt) {
         cacheKeyPoint(id, keypoint_opt.value());
     }
@@ -395,7 +395,7 @@ bool MapStore::hasKeyPoint(uint32_t id) const {
             return true;
         }
     }
-    
+
     // Check disk locations
     return keypoint_locations_.find(id) != keypoint_locations_.end();
 }
@@ -416,6 +416,12 @@ std::vector<KeyFramePtr> MapStore::getAllKeyFrames() const {
 
 std::vector<types::Factor> MapStore::getAllFactors() const {
     std::vector<types::Factor> all_factors;
+    {
+        std::shared_lock<std::shared_mutex> lock(cache_mutex_);
+        for (const auto& pair : factor_cache_) {
+            all_factors.push_back(pair.second);
+        }
+    }
     for (const auto& pair : factor_locations_) {
         auto factor = getFactor(pair.first);
         if (factor) {
@@ -662,8 +668,8 @@ bool MapStore::performAtomicSync() {
         has_processed_optimized = !processed_optimized_queue_->empty();
     }
 
-    if (!keyframes_dirty_.load() && !factors_dirty_.load() &&
-        !keypoints_dirty_.load() && !metadata_dirty_.load() && !has_processed_optimized) {
+    if (!keyframes_dirty_.load() && !factors_dirty_.load() && !keypoints_dirty_.load() &&
+        !metadata_dirty_.load() && !has_processed_optimized) {
         LOG(INFO) << "No dirty data or processed optimized keyframes found, skipping sync";
         return true;
     }
@@ -689,8 +695,8 @@ bool MapStore::performAtomicSync() {
     }
 
     // Then perform the regular save operation for pending writes
-    if (success && (keyframes_dirty_.load() || factors_dirty_.load() ||
-                   keypoints_dirty_.load() || metadata_dirty_.load())) {
+    if (success && (keyframes_dirty_.load() || factors_dirty_.load() || keypoints_dirty_.load() ||
+                    metadata_dirty_.load())) {
         success = saveChanges();
     }
 
@@ -738,7 +744,8 @@ void MapStore::cacheKeyFrameInternal(uint64_t id, const KeyFramePtr& keyframe) c
     keyframe_lru_list_.push_front(id);
     keyframe_lru_map_[id] = keyframe_lru_list_.begin();
 
-    LOG(INFO) << "Cached keyframe " << id << " (cache size: " << keyframe_cache_.size() << "/" << max_cache_size_ << ")";
+    LOG(INFO) << "Cached keyframe " << id << " (cache size: " << keyframe_cache_.size() << "/"
+              << max_cache_size_ << ")";
 }
 
 void MapStore::cacheFactor(uint64_t id, const types::Factor& factor) const {
@@ -784,7 +791,8 @@ std::vector<types::Factor> MapStore::getFactorsForKeyFrame(uint64_t keyframe_id)
         if (factor_opt) {
             factors.push_back(factor_opt.value());
         } else {
-            LOG(WARNING) << "Failed to load factor " << factor_id << " for keyframe " << keyframe_id;
+            LOG(WARNING) << "Failed to load factor " << factor_id << " for keyframe "
+                         << keyframe_id;
         }
     }
 
@@ -814,7 +822,8 @@ bool MapStore::updateOptimizedPoses(const std::map<uint64_t, types::Pose>& optim
             // Update in-memory cache if present
             auto cache_it = keyframe_cache_.find(keyframe_id);
             if (cache_it != keyframe_cache_.end()) {
-                position_change = (cache_it->second->pose.position - optimized_pose.position).norm();
+                position_change =
+                    (cache_it->second->pose.position - optimized_pose.position).norm();
                 cache_it->second->pose = optimized_pose;
                 found = true;
             }
@@ -823,7 +832,8 @@ bool MapStore::updateOptimizedPoses(const std::map<uint64_t, types::Pose>& optim
             auto pending_it = keyframe_pending_writes_.find(keyframe_id);
             if (pending_it != keyframe_pending_writes_.end()) {
                 if (!found) {
-                    position_change = (pending_it->second->pose.position - optimized_pose.position).norm();
+                    position_change =
+                        (pending_it->second->pose.position - optimized_pose.position).norm();
                 }
                 pending_it->second->pose = optimized_pose;
                 found = true;
@@ -849,7 +859,8 @@ bool MapStore::updateOptimizedPoses(const std::map<uint64_t, types::Pose>& optim
 
                 if (position_change > 0.01) {
                     LOG(INFO) << "Updated pose for keyframe " << keyframe_id
-                              << ": Δpos=" << std::fixed << std::setprecision(3) << position_change << "m";
+                              << ": Δpos=" << std::fixed << std::setprecision(3) << position_change
+                              << "m";
                 }
             } else {
                 LOG(WARNING) << "Keyframe " << keyframe_id << " not found for pose update";
@@ -867,7 +878,8 @@ bool MapStore::updateOptimizedPoses(const std::map<uint64_t, types::Pose>& optim
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    double avg_position_change = (poses_updated > 0) ? (total_position_change / poses_updated) : 0.0;
+    double avg_position_change =
+        (poses_updated > 0) ? (total_position_change / poses_updated) : 0.0;
 
     LOG(INFO) << "Optimized pose update summary:";
     LOG(INFO) << "    Total poses: " << optimized_poses.size();
@@ -888,7 +900,8 @@ bool MapStore::updateOptimizedPoses(const std::map<uint64_t, types::Pose>& optim
     return poses_not_found == 0;
 }
 
-bool MapStore::updateOptimizedLandmarks(const std::map<uint32_t, Eigen::Vector3d>& optimized_landmarks) {
+bool MapStore::updateOptimizedLandmarks(
+    const std::map<uint32_t, Eigen::Vector3d>& optimized_landmarks) {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     LOG(INFO) << "Updating " << optimized_landmarks.size() << " optimized landmarks in MapStore";
@@ -931,7 +944,8 @@ bool MapStore::updateOptimizedLandmarks(const std::map<uint32_t, Eigen::Vector3d
                     position_change = (keypoint.position - optimized_position).norm();
                     keypoint.position = optimized_position;
                     keypoint_pending_writes_[landmark_id] = keypoint;
-                    keypoint_cache_[landmark_id] = keypoint; // Inline caching to avoid recursive lock
+                    keypoint_cache_[landmark_id] =
+                        keypoint;  // Inline caching to avoid recursive lock
                     found = true;
                 }
             }
@@ -945,7 +959,8 @@ bool MapStore::updateOptimizedLandmarks(const std::map<uint32_t, Eigen::Vector3d
 
                 if (position_change > 0.05) {
                     LOG(INFO) << "Updated position for landmark " << landmark_id
-                              << ": Δpos=" << std::fixed << std::setprecision(3) << position_change << "m";
+                              << ": Δpos=" << std::fixed << std::setprecision(3) << position_change
+                              << "m";
                 }
             } else {
                 LOG(WARNING) << "Landmark " << landmark_id << " not found for position update";
@@ -962,7 +977,8 @@ bool MapStore::updateOptimizedLandmarks(const std::map<uint32_t, Eigen::Vector3d
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    double avg_position_change = (landmarks_updated > 0) ? (total_position_change / landmarks_updated) : 0.0;
+    double avg_position_change =
+        (landmarks_updated > 0) ? (total_position_change / landmarks_updated) : 0.0;
 
     LOG(INFO) << "Optimized landmark update summary:";
     LOG(INFO) << "    Total landmarks: " << optimized_landmarks.size();
@@ -1078,7 +1094,8 @@ void MapStore::syncThreadLoop() {
                 successful_syncs++;
 
                 auto sync_end = std::chrono::steady_clock::now();
-                auto sync_duration = std::chrono::duration_cast<std::chrono::milliseconds>(sync_end - sync_start);
+                auto sync_duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(sync_end - sync_start);
 
                 std::string sync_type = sync_requested ? "requested" : "periodic";
                 LOG(INFO) << "Background sync #" << sync_attempts << " (" << sync_type
@@ -1087,10 +1104,13 @@ void MapStore::syncThreadLoop() {
                 // Log periodic statistics
                 if (successful_syncs % 10 == 0) {
                     auto current_time = std::chrono::steady_clock::now();
-                    auto total_runtime = std::chrono::duration_cast<std::chrono::minutes>(current_time - thread_start);
-                    double success_rate = (sync_attempts > 0) ? (100.0 * successful_syncs / sync_attempts) : 0.0;
+                    auto total_runtime = std::chrono::duration_cast<std::chrono::minutes>(
+                        current_time - thread_start);
+                    double success_rate =
+                        (sync_attempts > 0) ? (100.0 * successful_syncs / sync_attempts) : 0.0;
 
-                    LOG(INFO) << "Background sync stats (runtime: " << total_runtime.count() << " min):";
+                    LOG(INFO) << "Background sync stats (runtime: " << total_runtime.count()
+                              << " min):";
                     LOG(INFO) << "    Total syncs: " << sync_attempts;
                     LOG(INFO) << "    Successful: " << successful_syncs << " (" << std::fixed
                               << std::setprecision(1) << success_rate << "%)";
@@ -1114,10 +1134,12 @@ void MapStore::syncThreadLoop() {
     }
 
     auto thread_end = std::chrono::steady_clock::now();
-    auto total_runtime = std::chrono::duration_cast<std::chrono::minutes>(thread_end - thread_start);
+    auto total_runtime =
+        std::chrono::duration_cast<std::chrono::minutes>(thread_end - thread_start);
 
     LOG(INFO) << "Background sync thread ended after " << total_runtime.count() << " minutes";
-    LOG(INFO) << "Final sync stats: " << successful_syncs << "/" << sync_attempts << " successful syncs";
+    LOG(INFO) << "Final sync stats: " << successful_syncs << "/" << sync_attempts
+              << " successful syncs";
 }
 
 void MapStore::requestSync() {
@@ -1133,6 +1155,12 @@ void MapStore::requestSync() {
     sync_condition_.notify_one();
 
     LOG(INFO) << "Background sync requested";
+}
+
+void MapStore::setWriteCompletionCallback(WriteCompletionCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    write_completion_callback_ = std::move(callback);
+    LOG(INFO) << "Write completion callback registered";
 }
 
 std::map<uint64_t, types::Pose> MapStore::getAllKeyFramePoses() const {
@@ -1192,7 +1220,8 @@ std::optional<types::Keypoint> MapStore::getKeyPointFromDisk(uint32_t id) const 
     if (it == keypoint_locations_.end()) {
         return std::nullopt;
     }
-    return readProtoMessage<proto::Keypoint, types::Keypoint>(it->second, types::Keypoint::fromProto);
+    return readProtoMessage<proto::Keypoint, types::Keypoint>(it->second,
+                                                              types::Keypoint::fromProto);
 }
 
 bool MapStore::loadMap() {
@@ -1255,9 +1284,11 @@ void MapStore::rebuildTransientIndices() {
     }
 
     // Rebuild factor-keyframe associations by loading all factors
-    LOG(INFO) << "Rebuilding factor-keyframe associations from " << factor_locations_.size() << " factors";
+    LOG(INFO) << "Rebuilding factor-keyframe associations from " << factor_locations_.size()
+              << " factors";
     for (const auto& [factor_id, location] : factor_locations_) {
-        auto factor_opt = readProtoMessage<proto::Factor, types::Factor>(location, types::Factor::fromProto);
+        auto factor_opt =
+            readProtoMessage<proto::Factor, types::Factor>(location, types::Factor::fromProto);
         if (factor_opt) {
             const auto& factor = factor_opt.value();
             for (uint64_t keyframe_id : factor.connected_nodes) {
@@ -1303,6 +1334,7 @@ void MapStore::clearDataAndIndices() {
     factors_dirty_ = false;
     keypoints_dirty_ = false;
     metadata_dirty_ = false;
+    transform_tree_dirty_ = false;
 
     metadata_.Clear();
     metadata_.set_version("1.0-disk");
@@ -1335,10 +1367,10 @@ void MapStore::startWriteWorker() {
         LOG(WARNING) << "Write worker already running";
         return;
     }
-    
+
     should_stop_write_worker_ = false;
     write_worker_running_ = true;
-    
+
     write_worker_thread_ = std::make_unique<std::thread>(&MapStore::writeWorkerLoop, this);
     LOG(INFO) << "Write worker thread started";
 }
@@ -1347,20 +1379,20 @@ void MapStore::stopWriteWorker() {
     if (!write_worker_running_.load()) {
         return;
     }
-    
+
     should_stop_write_worker_ = true;
     write_worker_running_ = false;
-    
+
     // Signal worker to wake up and exit
     {
         std::lock_guard<std::mutex> lock(write_queue_mutex_);
         write_available_.notify_all();
     }
-    
+
     if (write_worker_thread_ && write_worker_thread_->joinable()) {
         write_worker_thread_->join();
     }
-    
+
     write_worker_thread_.reset();
     LOG(INFO) << "Write worker thread stopped";
 }
@@ -1375,125 +1407,124 @@ void MapStore::disableWriteWorker() {
 
 void MapStore::writeWorkerLoop() {
     LOG(INFO) << "Write worker loop started";
-    
+
     size_t write_attempts = 0;
     size_t successful_writes = 0;
     size_t failed_writes = 0;
     auto thread_start = std::chrono::steady_clock::now();
-    
+
     while (write_worker_running_.load() && !should_stop_write_worker_.load()) {
         std::unique_lock<std::mutex> lock(write_queue_mutex_);
-        
+
         // Wait for write requests
         write_available_.wait(lock, [this]() {
             return !pending_write_queue_.empty() || should_stop_write_worker_.load();
         });
-        
+
         if (should_stop_write_worker_.load()) {
             break;
         }
-        
+
         if (!pending_write_queue_.empty()) {
             auto batch = std::move(pending_write_queue_.front());
             pending_write_queue_.pop();
             lock.unlock();
-            
+
             write_attempts++;
             write_in_progress_ = true;
-            
-            LOG(INFO) << "Write worker processing batch #" << write_attempts 
-                      << " with " << batch->size() << " keyframes";
-            
+
+            LOG(INFO) << "Write worker processing batch #" << write_attempts << " with "
+                      << batch->size() << " keyframes";
+
             auto write_start = std::chrono::high_resolution_clock::now();
-            
+
             try {
                 writeBatchToDiskComplete(std::move(batch));
                 successful_writes++;
-                
+
                 auto write_end = std::chrono::high_resolution_clock::now();
-                auto write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    write_end - write_start);
-                
-                LOG(INFO) << "Write worker batch #" << write_attempts 
+                auto write_duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(write_end - write_start);
+
+                LOG(INFO) << "Write worker batch #" << write_attempts
                           << " completed successfully in " << write_duration.count() << "ms";
-                
+
             } catch (const std::exception& e) {
                 failed_writes++;
                 write_in_progress_ = false;
-                
+
                 // Signal any waiting threads
                 {
                     std::lock_guard<std::mutex> completion_lock(write_completion_mutex_);
                     write_completed_.notify_all();
                 }
-                
+
                 // Terminate as requested - no graceful handling
                 LOG(ERROR) << "Write worker batch #" << write_attempts << " failed: " << e.what();
                 throw std::runtime_error("Disk write operation failed: " + std::string(e.what()));
             }
-            
+
             write_in_progress_ = false;
-            
+
             // Signal completion to any waiting threads
             {
                 std::lock_guard<std::mutex> completion_lock(write_completion_mutex_);
                 write_completed_.notify_all();
             }
-            
+
             // Log periodic statistics
             if (write_attempts % 5 == 0) {
                 auto current_time = std::chrono::steady_clock::now();
-                auto total_runtime = std::chrono::duration_cast<std::chrono::minutes>(
-                    current_time - thread_start);
-                double success_rate = (write_attempts > 0) ? 
-                    (100.0 * successful_writes / write_attempts) : 0.0;
-                
+                auto total_runtime =
+                    std::chrono::duration_cast<std::chrono::minutes>(current_time - thread_start);
+                double success_rate =
+                    (write_attempts > 0) ? (100.0 * successful_writes / write_attempts) : 0.0;
+
                 LOG(INFO) << "Write worker stats (runtime: " << total_runtime.count() << " min):";
                 LOG(INFO) << "    Total writes: " << write_attempts;
-                LOG(INFO) << "    Successful: " << successful_writes << " (" << std::fixed 
+                LOG(INFO) << "    Successful: " << successful_writes << " (" << std::fixed
                           << std::setprecision(1) << success_rate << "%)";
                 LOG(INFO) << "    Failed: " << failed_writes;
             }
         }
     }
-    
+
     auto thread_end = std::chrono::steady_clock::now();
-    auto total_runtime = std::chrono::duration_cast<std::chrono::minutes>(thread_end - thread_start);
-    
+    auto total_runtime =
+        std::chrono::duration_cast<std::chrono::minutes>(thread_end - thread_start);
+
     LOG(INFO) << "Write worker loop ended after " << total_runtime.count() << " minutes";
-    LOG(INFO) << "Final write stats: " << successful_writes << "/" << write_attempts 
+    LOG(INFO) << "Final write stats: " << successful_writes << "/" << write_attempts
               << " successful writes";
 }
 
 void MapStore::queueWriteRequest(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> batch) {
     std::lock_guard<std::mutex> lock(write_queue_mutex_);
-    
+
     // Check queue size limit
     if (pending_write_queue_.size() >= MAX_WRITE_QUEUE_SIZE) {
-        LOG(WARNING) << "Write queue is full (" << pending_write_queue_.size() 
-                     << "/" << MAX_WRITE_QUEUE_SIZE << "), dropping oldest request";
+        LOG(WARNING) << "Write queue is full (" << pending_write_queue_.size() << "/"
+                     << MAX_WRITE_QUEUE_SIZE << "), dropping oldest request";
         pending_write_queue_.pop();  // Drop oldest request
     }
-    
+
     pending_write_queue_.push(std::move(batch));
     write_available_.notify_one();
-    
-    LOG(INFO) << "Queued write request (queue size: " << pending_write_queue_.size() 
-              << "/" << MAX_WRITE_QUEUE_SIZE << ")";
+
+    LOG(INFO) << "Queued write request (queue size: " << pending_write_queue_.size() << "/"
+              << MAX_WRITE_QUEUE_SIZE << ")";
 }
 
 void MapStore::waitForWriteCompletion() {
     if (!write_in_progress_.load()) {
         return;  // No write in progress
     }
-    
+
     LOG(INFO) << "Waiting for write operation to complete (write slower than frame collection)";
-    
+
     std::unique_lock<std::mutex> lock(write_completion_mutex_);
-    write_completed_.wait(lock, [this]() {
-        return !write_in_progress_.load();
-    });
-    
+    write_completed_.wait(lock, [this]() { return !write_in_progress_.load(); });
+
     LOG(INFO) << "Write operation completed, continuing processing";
 }
 
@@ -1513,43 +1544,40 @@ void MapStore::swapAndWriteToDisk() {
         return;
     }
 
-    LOG(INFO) << "Swapped " << queue_to_write->size() 
+    LOG(INFO) << "Swapped " << queue_to_write->size()
               << " keyframes from processed optimized queue for background write";
 
-    // Queue the write request for the background worker
     queueWriteRequest(std::move(queue_to_write));
-    
-    // If write queue is getting backed up, wait for completion
+
+    // Write the current one held in queue before moving to the next batch
     {
         std::lock_guard<std::mutex> lock(write_queue_mutex_);
         if (pending_write_queue_.size() >= MAX_WRITE_QUEUE_SIZE - 1) {
             LOG(INFO) << "Write queue is nearly full, waiting for write completion";
         }
     }
-    
+
     // Wait if we're at the limit to prevent overwhelming the write worker
     if (write_in_progress_.load()) {
         waitForWriteCompletion();
     }
 }
 
-void MapStore::writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write) {
+void MapStore::writeBatchToDiskComplete(
+    std::unique_ptr<std::unordered_map<uint64_t, KeyFramePtr>> keyframes_to_write) {
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    LOG(INFO) << "Writing complete batch of " << keyframes_to_write->size() 
+    LOG(INFO) << "Writing complete batch of " << keyframes_to_write->size()
               << " keyframes to disk (data + index + metadata)";
 
-    // Step 1: Add all keyframes to pending writes
     {
         std::unique_lock<std::shared_mutex> cache_lock(cache_mutex_);
 
         for (const auto& [id, keyframe] : *keyframes_to_write) {
             keyframe_pending_writes_[id] = keyframe;
 
-            // Also update the cache
             cacheKeyFrameInternal(id, keyframe);
 
-            // Update bounds
             updateMetadataBounds(keyframe->pose);
         }
 
@@ -1557,7 +1585,6 @@ void MapStore::writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint6
         metadata_dirty_ = true;
     }
 
-    // Step 2: Write all dirty map points (only changed ones) - as requested
     size_t dirty_map_points_count = 0;
     {
         std::shared_lock<std::shared_mutex> dirty_lock(dirty_map_points_mutex_);
@@ -1577,15 +1604,12 @@ void MapStore::writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint6
         }
     }
 
-    // Step 3: Write data file (keyframes, factors, keypoints)
     std::lock_guard<std::mutex> file_lock(file_operations_mutex_);
-    
     bool data_write_success = writePendingDataToDisk();
     if (!data_write_success) {
         throw std::runtime_error("Failed to write pending data to disk");
     }
 
-    // Step 4: Write index file (.idx) - FIXED: This was missing in original implementation
     if (index_filepath_.empty()) {
         throw std::runtime_error("Index filepath not initialized");
     }
@@ -1623,18 +1647,18 @@ void MapStore::writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint6
     }
     index_stream.close();
 
-    // Step 5: Write metadata file (.meta) - as requested for every batch
     metadata_.set_creation_timestamp_seconds(
         std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
 
-    std::fstream meta_stream(metadata_filepath_, std::ios::out | std::ios::trunc | std::ios::binary);
+    std::fstream meta_stream(metadata_filepath_,
+                             std::ios::out | std::ios::trunc | std::ios::binary);
     if (!meta_stream.is_open() || !metadata_.SerializeToOstream(&meta_stream)) {
         throw std::runtime_error("Failed to write metadata file: " + metadata_filepath_);
     }
     meta_stream.close();
 
-    // Step 6: Clear dirty flags and dirty map points after successful write
     keyframes_dirty_ = false;
     factors_dirty_ = false;
     keypoints_dirty_ = false;
@@ -1645,8 +1669,22 @@ void MapStore::writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint6
         dirty_map_points_.clear();
     }
 
-    // Clear the batch queue
+    std::vector<uint64_t> written_keyframe_ids;
+    written_keyframe_ids.reserve(keyframes_to_write->size());
+    for (const auto& [id, keyframe] : *keyframes_to_write) {
+        written_keyframe_ids.push_back(id);
+    }
+
     keyframes_to_write->clear();
+
+    {
+        std::lock_guard<std::mutex> callback_lock(callback_mutex_);
+        if (write_completion_callback_ && !written_keyframe_ids.empty()) {
+            LOG(INFO) << "Invoking write completion callback for " << written_keyframe_ids.size()
+                      << " keyframes";
+            write_completion_callback_(written_keyframe_ids);
+        }
+    }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -1655,7 +1693,6 @@ void MapStore::writeBatchToDiskComplete(std::unique_ptr<std::unordered_map<uint6
               << " (keyframes + " << dirty_map_points_count << " map points + index + metadata)";
 }
 
-// Map point dirty tracking
 void MapStore::markMapPointDirty(uint32_t id) {
     std::unique_lock<std::shared_mutex> lock(dirty_map_points_mutex_);
     dirty_map_points_.insert(id);
@@ -1666,14 +1703,12 @@ bool MapStore::isMapPointDirty(uint32_t id) const {
     return dirty_map_points_.count(id) > 0;
 }
 
-// ===== THREE-QUEUE SYSTEM IMPLEMENTATION (Updated for atomic pointers) =====
-
 void MapStore::addToUnprocessedCache(const KeyFramePtr& keyframe) {
     std::unique_lock<std::shared_mutex> lock(unprocessed_cache_mutex_);
     unprocessed_cache_[keyframe->id] = keyframe;
 
-    LOG(INFO) << "Added keyframe " << keyframe->id << " to unprocessed cache (size: "
-              << unprocessed_cache_.size() << ")";
+    LOG(INFO) << "Added keyframe " << keyframe->id
+              << " to unprocessed cache (size: " << unprocessed_cache_.size() << ")";
 }
 
 void MapStore::moveToProcessedNonOptimized(uint64_t keyframe_id) {
@@ -1828,8 +1863,8 @@ void MapStore::evictOldMapPoints(uint64_t current_keyframe_id, size_t max_age) {
 
     cache_lock.unlock();  // Release cache lock before disk operations
 
-    LOG(INFO) << "Evicting " << points_to_evict.size() << " old map points (max age: "
-              << max_age << " keyframes)";
+    LOG(INFO) << "Evicting " << points_to_evict.size() << " old map points (max age: " << max_age
+              << " keyframes)";
 
     for (uint32_t map_point_id : points_to_evict) {
         evictMapPointToDisk(map_point_id);
@@ -1860,25 +1895,22 @@ std::vector<KeyFramePtr> MapStore::getBatchForOptimization(size_t max_batch_size
 }
 
 void MapStore::markBatchAsOptimized(const std::vector<uint64_t>& keyframe_ids) {
-    // Move batch to processed optimized queue
     moveBatchToProcessedOptimized(keyframe_ids);
 
-    // Mark all current map points as dirty for writing after optimization
     {
         std::shared_lock<std::shared_mutex> cache_lock(cache_mutex_);
         std::unique_lock<std::shared_mutex> dirty_lock(dirty_map_points_mutex_);
 
-        // Mark all map points as dirty so they get written to disk
         for (const auto& [id, keypoint] : keypoint_cache_) {
             dirty_map_points_.insert(id);
         }
 
         if (!keypoint_cache_.empty()) {
-            LOG(INFO) << "Marked " << keypoint_cache_.size() << " map points as dirty for disk write";
+            LOG(INFO) << "Marked " << keypoint_cache_.size()
+                      << " map points as dirty for disk write";
         }
     }
 
-    // Trigger callback-based write to disk
     swapAndWriteToDisk();
 
     LOG(INFO) << "Marked batch as optimized and triggered write to disk";
@@ -1903,8 +1935,9 @@ void MapStore::updateMapPointLastSeen(uint64_t keyframe_id) {
 }
 
 void MapStore::evictMapPointToDisk(uint32_t map_point_id) {
-    // Note: This method is called from updateMapPointLastSeen which already holds map_point_eviction_mutex_
-    // and may be called while cache_lock is held, so we need to be careful about lock ordering
+    // Note: This method is called from updateMapPointLastSeen which already holds
+    // map_point_eviction_mutex_ and may be called while cache_lock is held, so we need to be
+    // careful about lock ordering
 
     std::unique_lock<std::shared_mutex> cache_lock(cache_mutex_);
 
@@ -1946,7 +1979,8 @@ void MapStore::syncProcessedOptimizedToDisk() {
         processed_optimized_queue_ = std::make_unique<std::unordered_map<uint64_t, KeyFramePtr>>();
     }
 
-    LOG(INFO) << "Swapped " << queue_to_write->size() << " keyframes from processed optimized queue";
+    LOG(INFO) << "Swapped " << queue_to_write->size()
+              << " keyframes from processed optimized queue";
 
     // Add all keyframes to pending writes
     {
@@ -1954,10 +1988,10 @@ void MapStore::syncProcessedOptimizedToDisk() {
 
         for (const auto& [id, keyframe] : *queue_to_write) {
             keyframe_pending_writes_[id] = keyframe;
-            
+
             // Update cache
             cacheKeyFrameInternal(id, keyframe);
-            
+
             // Update bounds
             updateMetadataBounds(keyframe->pose);
         }
@@ -1966,7 +2000,6 @@ void MapStore::syncProcessedOptimizedToDisk() {
         metadata_dirty_ = true;
     }
 
-    // Write all dirty map points
     {
         std::shared_lock<std::shared_mutex> dirty_lock(dirty_map_points_mutex_);
         std::unique_lock<std::shared_mutex> cache_lock(cache_mutex_);
@@ -1997,7 +2030,6 @@ void MapStore::syncProcessedOptimizedToDisk() {
         LOG(ERROR) << "Failed to update metadata and index after writing processed optimized queue";
     }
 
-    // Clear dirty map points after successful write
     {
         std::unique_lock<std::shared_mutex> dirty_lock(dirty_map_points_mutex_);
         dirty_map_points_.clear();
@@ -2013,8 +2045,8 @@ void MapStore::syncProcessedOptimizedToDisk() {
 // Gaussian splat storage methods
 bool MapStore::addGaussianSplatBatch(const types::GaussianSplatBatch& batch) {
     // TODO: Implement full splat batch storage
-    LOG(INFO) << "addGaussianSplatBatch placeholder - batch " << batch.batch_id 
-              << " with " << batch.size() << " splats";
+    LOG(INFO) << "addGaussianSplatBatch placeholder - batch " << batch.batch_id << " with "
+              << batch.size() << " splats";
     return true;
 }
 
@@ -2039,7 +2071,8 @@ std::vector<types::GaussianSplatBatch> MapStore::getAllGaussianSplatBatches() co
 bool MapStore::setTransformTree(std::shared_ptr<stf::TransformTree> tf_tree) {
     std::unique_lock<std::shared_mutex> lock(transform_tree_mutex_);
     transform_tree_ = tf_tree;
-    // TODO: Mark transform tree as dirty for disk write
+    transform_tree_dirty_ = true;
+    LOG(INFO) << "Transform tree set and marked for disk write";
     return true;
 }
 
@@ -2051,12 +2084,20 @@ std::shared_ptr<stf::TransformTree> MapStore::getTransformTree() const {
 bool MapStore::saveTransformTreeToDisk() const {
     std::shared_lock<std::shared_mutex> lock(transform_tree_mutex_);
     if (!transform_tree_) {
+        LOG(WARNING) << "Cannot save transform tree - no transform tree set";
         return false;
     }
-    
-    // TODO: Implement transform tree disk storage
-    LOG(INFO) << "saveTransformTreeToDisk placeholder";
-    return transform_tree_->saveToFile(transform_tree_filepath_);
+
+    LOG(INFO) << "Saving transform tree to disk: " << transform_tree_filepath_;
+    bool success = transform_tree_->saveToFile(transform_tree_filepath_);
+
+    if (success) {
+        LOG(INFO) << "Transform tree successfully saved to: " << transform_tree_filepath_;
+    } else {
+        LOG(ERROR) << "Failed to save transform tree to: " << transform_tree_filepath_;
+    }
+
+    return success;
 }
 
 // Splat storage helper methods
@@ -2077,6 +2118,70 @@ void MapStore::markSplatBatchDirty(uint32_t batch_id) {
     splat_batches_dirty_ = true;
 }
 
+// VSLAM status methods for Gaussian splatting coordination
+bool MapStore::writeVSLAMStatus(const core::proto::ProcessStatus& status) {
+    std::lock_guard<std::mutex> lock(status_file_operations_mutex_);
+
+    std::ofstream file(vslam_status_filepath_, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        LOG(ERROR) << "Failed to open VSLAM status file for writing: " << vslam_status_filepath_;
+        return false;
+    }
+
+    std::string serialized_data;
+    if (!status.SerializeToString(&serialized_data)) {
+        LOG(ERROR) << "Failed to serialize VSLAM status";
+        return false;
+    }
+
+    file.write(serialized_data.data(), serialized_data.size());
+    file.close();
+
+    if (!file.good()) {
+        LOG(ERROR) << "Failed to write VSLAM status to file";
+        return false;
+    }
+
+    LOG(INFO) << "Written VSLAM status: keyframe_id=" << status.last_processed_keyframe_id()
+              << ", healthy=" << status.is_healthy() << ", msg=" << status.status_message();
+
+    return true;
+}
+
+bool MapStore::updateVSLAMStatus(uint64_t last_keyframe_id, bool is_healthy,
+                                 const std::string& message) {
+    core::proto::ProcessStatus status;
+    status.set_last_processed_keyframe_id(last_keyframe_id);
+    status.set_last_processed_splat_batch_id(0);  // Not used by VSLAM
+    status.set_timestamp(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count() /
+                         1000.0);
+    status.set_process_name("vslam_processor");
+    status.set_is_healthy(is_healthy);
+    status.set_status_message(message);
+
+    return writeVSLAMStatus(status);
+}
+
+bool MapStore::readVSLAMStatus(core::proto::ProcessStatus& status) const {
+    // No need to lock for reading since we're just reading a single file
+
+    std::ifstream file(vslam_status_filepath_, std::ios::binary);
+    if (!file.is_open()) {
+        return false;  // File doesn't exist yet
+    }
+
+    std::string serialized_data((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+    file.close();
+
+    if (serialized_data.empty()) {
+        return false;
+    }
+
+    return status.ParseFromString(serialized_data);
+}
+
 }  // namespace storage
 }  // namespace core
-
