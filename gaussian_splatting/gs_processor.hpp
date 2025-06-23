@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 #include "core/storage/map_store.hpp"
+#include "core/storage/shared_memory_wrapper.hpp"
 #include "core/types/gaussian_splat.hpp"
 #include "core/types/keyframe.hpp"
 #include "core/types/keypoint.hpp"
@@ -85,6 +86,7 @@ private:
     // Storage and data access
     std::unique_ptr<core::storage::MapStore> map_store_;
     std::shared_ptr<stf::TransformTree> transform_tree_;
+    std::unique_ptr<core::storage::SharedMemoryWrapper> shared_memory_;
 
     // Batch management
     uint32_t next_batch_id_{1};
@@ -121,6 +123,9 @@ private:
     // Status and health monitoring  
     bool updateProcessStatus();
     bool isVSLAMProcessHealthy() const;
+    
+    // Map data waiting (transform tree, keyframes, keypoints)
+    bool waitForMapData();
     
     // Utility methods
     void initializeLogging();

@@ -68,7 +68,6 @@ core::types::Factor createFactor(uint64_t id, proto::FactorType type,
     factor.type = type;
     factor.connected_nodes = connected_nodes;
 
-    // ✅ FIX: Use correct variant indices based on factor type
     if (type == proto::FactorType::PRIOR) {
         factor.measurement.emplace<0>(measurement_pose);  // Index 0 for absolute poses
     } else if (type == proto::FactorType::ODOMETRY || type == proto::FactorType::LOOP_CLOSURE) {
@@ -83,7 +82,6 @@ core::types::Factor createFactor(uint64_t id, proto::FactorType type,
     return factor;
 }
 
-// Helper function to create a Keypoint for testing
 core::types::Keypoint createKeypoint(uint32_t id, const Eigen::Vector3d& position,
                                      const std::vector<core::types::Location>& locations = {}) {
     core::types::Keypoint keypoint(id);
@@ -476,9 +474,12 @@ TEST_F(MapStoreTest, FactorKeyframeAssociations) {
     relative_pose.position = Eigen::Vector3d(1.0, 0.0, 0.0);
     relative_pose.orientation = Eigen::Quaterniond::Identity();
 
-    auto odometry_factor1 = createFactor(101, proto::FactorType::ODOMETRY, {1, 2}, relative_pose, 10.0);
-    auto odometry_factor2 = createFactor(102, proto::FactorType::ODOMETRY, {2, 3}, relative_pose, 20.0);
-    auto loop_factor = createFactor(201, proto::FactorType::LOOP_CLOSURE, {1, 3}, relative_pose, 30.0);
+    auto odometry_factor1 =
+        createFactor(101, proto::FactorType::ODOMETRY, {1, 2}, relative_pose, 10.0);
+    auto odometry_factor2 =
+        createFactor(102, proto::FactorType::ODOMETRY, {2, 3}, relative_pose, 20.0);
+    auto loop_factor =
+        createFactor(201, proto::FactorType::LOOP_CLOSURE, {1, 3}, relative_pose, 30.0);
 
     // Add factors to store
     EXPECT_TRUE(store_->addFactor(odometry_factor1));
@@ -492,18 +493,24 @@ TEST_F(MapStoreTest, FactorKeyframeAssociations) {
 
     // Keyframe 1 should be connected to factors 101 (odometry) and 201 (loop closure)
     EXPECT_EQ(kf1_factor_ids.size(), 2);
-    EXPECT_TRUE(std::find(kf1_factor_ids.begin(), kf1_factor_ids.end(), 101) != kf1_factor_ids.end());
-    EXPECT_TRUE(std::find(kf1_factor_ids.begin(), kf1_factor_ids.end(), 201) != kf1_factor_ids.end());
+    EXPECT_TRUE(std::find(kf1_factor_ids.begin(), kf1_factor_ids.end(), 101) !=
+                kf1_factor_ids.end());
+    EXPECT_TRUE(std::find(kf1_factor_ids.begin(), kf1_factor_ids.end(), 201) !=
+                kf1_factor_ids.end());
 
     // Keyframe 2 should be connected to factors 101 and 102 (both odometry)
     EXPECT_EQ(kf2_factor_ids.size(), 2);
-    EXPECT_TRUE(std::find(kf2_factor_ids.begin(), kf2_factor_ids.end(), 101) != kf2_factor_ids.end());
-    EXPECT_TRUE(std::find(kf2_factor_ids.begin(), kf2_factor_ids.end(), 102) != kf2_factor_ids.end());
+    EXPECT_TRUE(std::find(kf2_factor_ids.begin(), kf2_factor_ids.end(), 101) !=
+                kf2_factor_ids.end());
+    EXPECT_TRUE(std::find(kf2_factor_ids.begin(), kf2_factor_ids.end(), 102) !=
+                kf2_factor_ids.end());
 
     // Keyframe 3 should be connected to factors 102 (odometry) and 201 (loop closure)
     EXPECT_EQ(kf3_factor_ids.size(), 2);
-    EXPECT_TRUE(std::find(kf3_factor_ids.begin(), kf3_factor_ids.end(), 102) != kf3_factor_ids.end());
-    EXPECT_TRUE(std::find(kf3_factor_ids.begin(), kf3_factor_ids.end(), 201) != kf3_factor_ids.end());
+    EXPECT_TRUE(std::find(kf3_factor_ids.begin(), kf3_factor_ids.end(), 102) !=
+                kf3_factor_ids.end());
+    EXPECT_TRUE(std::find(kf3_factor_ids.begin(), kf3_factor_ids.end(), 201) !=
+                kf3_factor_ids.end());
 
     // Test full factor object retrieval
     auto kf1_factors = store_->getFactorsForKeyFrame(1);
@@ -537,8 +544,10 @@ TEST_F(MapStoreTest, FactorKeyframeAssociations) {
     // Verify associations after reload
     auto kf2_factor_ids_reloaded = new_store->getFactorIdsForKeyFrame(2);
     EXPECT_EQ(kf2_factor_ids_reloaded.size(), 2);
-    EXPECT_TRUE(std::find(kf2_factor_ids_reloaded.begin(), kf2_factor_ids_reloaded.end(), 101) != kf2_factor_ids_reloaded.end());
-    EXPECT_TRUE(std::find(kf2_factor_ids_reloaded.begin(), kf2_factor_ids_reloaded.end(), 102) != kf2_factor_ids_reloaded.end());
+    EXPECT_TRUE(std::find(kf2_factor_ids_reloaded.begin(), kf2_factor_ids_reloaded.end(), 101) !=
+                kf2_factor_ids_reloaded.end());
+    EXPECT_TRUE(std::find(kf2_factor_ids_reloaded.begin(), kf2_factor_ids_reloaded.end(), 102) !=
+                kf2_factor_ids_reloaded.end());
 
     auto kf3_factors_reloaded = new_store->getFactorsForKeyFrame(3);
     EXPECT_EQ(kf3_factors_reloaded.size(), 2);
@@ -560,11 +569,13 @@ TEST_F(MapStoreTest, OptimizationResultHandling) {
     // Create test landmarks
     std::vector<core::types::Location> locations1, locations2;
     core::types::Location loc1{1, "camera_frame"};
-    loc1.x = 100.0f; loc1.y = 200.0f;
+    loc1.x = 100.0f;
+    loc1.y = 200.0f;
     locations1.push_back(loc1);
 
     core::types::Location loc2{2, "camera_frame"};
-    loc2.x = 150.0f; loc2.y = 250.0f;
+    loc2.x = 150.0f;
+    loc2.y = 250.0f;
     locations2.push_back(loc2);
 
     auto landmark1 = createKeypoint(101, Eigen::Vector3d(1.0, 0.5, 2.0), locations1);
@@ -613,8 +624,10 @@ TEST_F(MapStoreTest, OptimizationResultHandling) {
 
     // Simulate optimization results for landmarks
     std::map<uint32_t, Eigen::Vector3d> optimized_landmarks;
-    optimized_landmarks[101] = Eigen::Vector3d(1.05, 0.55, 2.1);  // Small change from (1.0, 0.5, 2.0)
-    optimized_landmarks[102] = Eigen::Vector3d(1.48, 0.82, 2.45); // Small change from (1.5, 0.8, 2.5)
+    optimized_landmarks[101] =
+        Eigen::Vector3d(1.05, 0.55, 2.1);  // Small change from (1.0, 0.5, 2.0)
+    optimized_landmarks[102] =
+        Eigen::Vector3d(1.48, 0.82, 2.45);  // Small change from (1.5, 0.8, 2.5)
 
     // Test optimized landmark updates
     EXPECT_TRUE(store_->updateOptimizedLandmarks(optimized_landmarks));
@@ -658,7 +671,8 @@ TEST_F(MapStoreTest, OptimizationResultHandling) {
     std::map<uint32_t, Eigen::Vector3d> nonexistent_landmarks;
     nonexistent_landmarks[999] = Eigen::Vector3d(10, 10, 10);
 
-    EXPECT_FALSE(store_->updateOptimizedLandmarks(nonexistent_landmarks));  // Should fail for non-existent
+    EXPECT_FALSE(
+        store_->updateOptimizedLandmarks(nonexistent_landmarks));  // Should fail for non-existent
 }
 
 TEST_F(MapStoreTest, BackgroundSyncThread) {

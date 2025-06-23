@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Map store path: " << map_store_path << std::endl;
-    core::storage::MapStore store(map_store_path);
+    core::storage::MapStore store(map_store_path, core::storage::ProcessRole::WRITER);
 
     // Create and initialize rosbag reader with LOADED configuration
     std::cout << "Processing rosbag: " << argv[1] << std::endl;

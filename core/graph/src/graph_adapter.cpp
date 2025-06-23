@@ -284,15 +284,19 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                     LOG(INFO) << "Processing ORB features for frames " << previous_kf_id << " → "
                               << current_keyframe_id_;
 
-                    // Get current map keypoints from MapStore
+                    // Get current map keypoints (includes both local and MapStore keypoints)
                     auto current_map_keypoints = getMapPointsCopy();
+                    size_t keypoints_before_orb = current_map_keypoints.size();
 
-                    // Process ORB features
+                    // Process ORB features - this will add new keypoints and update existing ones
                     orb_tracker_(*current_frame_for_orb, *previous_frame_for_orb,
                                  current_map_keypoints);
 
-                    // Update MapStore with new/updated map keypoints
-                    updateMapPoints(current_map_keypoints);
+                    LOG(INFO) << "ORB tracking updated keypoints: " << keypoints_before_orb << " → "
+                              << current_map_keypoints.size() << " (added "
+                              << (current_map_keypoints.size() - keypoints_before_orb) << ")";
+
+                    storeKeypointsLocallyOnly(current_map_keypoints);
 
                     LOG(INFO) << "ORB processing completed successfully for frames "
                               << previous_kf_id << " → " << current_keyframe_id_;
@@ -313,8 +317,8 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                           << " to processed non-optimized queue";
 
                 // Update map point eviction tracking
-                store_.evictOldMapPoints(current_keyframe_id_,
-                                         30);  // Evict points older than 30 keyframes
+                // store_.evictOldMapPoints(current_keyframe_id_,
+                //                          30);  // Evict points older than 30 keyframes
             }
         }
     }
@@ -605,7 +609,6 @@ bool GraphAdapter::performOptimization() {
         return true;
     }
 
-    // Extract keyframe IDs from batch
     std::vector<uint64_t> batch_keyframe_ids;
     for (const auto& kf : optimization_batch) {
         batch_keyframe_ids.push_back(kf->id);
@@ -614,7 +617,6 @@ bool GraphAdapter::performOptimization() {
     LOG(INFO) << "Optimizing batch of " << optimization_batch.size() << " keyframes: ["
               << batch_keyframe_ids.front() << " to " << batch_keyframe_ids.back() << "]";
 
-    // Get factors relevant to this batch
     auto all_factors = store_.getAllFactors();
     std::vector<types::Factor> batch_factors;
 
@@ -635,7 +637,6 @@ bool GraphAdapter::performOptimization() {
 
     LOG(INFO) << "Using " << batch_factors.size() << " factors for batch optimization";
 
-    // VISUALIZATION: Dump factor graph before optimization for debugging
     if (!batch_keyframe_ids.empty()) {
         std::string filename_prefix = "pre_optimization_kf" +
                                       std::to_string(batch_keyframe_ids.front()) + "_to_" +
@@ -659,12 +660,22 @@ bool GraphAdapter::performOptimization() {
 
     LOG(INFO) << "Starting triangulation phase before batch optimization";
     bool triangulation_success = triangulateMapKeypoints(current_map_keypoints);
+    // LOG(INFO) << "Just pringint the keypoints once more";
+    // for (const auto& keypoint : current_map_keypoints) {
+    //     auto cur_kp = keypoint.second;
+    //     LOG(INFO) << "Keypoint " << cur_kp.id() << ": " << cur_kp.position.transpose();
+    // }
 
     if (triangulation_success) {
-        updateMapPoints(current_map_keypoints);
-        LOG(INFO) << "Updated MapStore with newly triangulated keypoints";
+        LOG(INFO) << "Publishing triangulated keypoints to MapStore and disk";
+        publishKeypointsToMapStore(current_map_keypoints, "triangulated");
 
-        current_map_keypoints = getMapPointsCopy();
+        // Trigger immediate sync to ensure triangulated keypoints are written to disk
+        // store_.triggerImmediateSync();
+        LOG(INFO) << "Triggered immediate disk sync for triangulated keypoints";
+
+        // Update VSLAM status and shared memory after triangulation is complete and on disk
+        // updateVSLAMStatusAfterTriangulation(batch_keyframe_ids);
     }
 
     size_t valid_landmarks = 0;
@@ -720,7 +731,34 @@ bool GraphAdapter::performOptimization() {
             }
 
             optimization_succeeded = poses_success && landmarks_success;
+
+            // Publish optimized keypoints to disk and notify cross-process consumers
+            if (optimization_succeeded) {
+                LOG(INFO) << "Publishing optimized keypoints to MapStore and disk";
+                publishKeypointsToMapStore(current_map_keypoints, "optimized");
+
+                // Clear published keypoints from local storage
+                clearPublishedLocalKeypoints(current_map_keypoints);
+
+                // Trigger sync to ensure optimized keypoints reach disk
+                store_.triggerImmediateSync();
+                LOG(INFO) << "Triggered immediate disk sync for optimized keypoints";
+            }
         }
+    }
+
+    // If optimization failed but triangulation succeeded, still publish triangulated keypoints
+    if (!optimization_succeeded && triangulation_success) {
+        LOG(INFO) << "Optimization failed but triangulation succeeded - publishing triangulated "
+                     "keypoints";
+        publishKeypointsToMapStore(current_map_keypoints, "triangulated-fallback");
+
+        // Clear published keypoints from local storage
+        clearPublishedLocalKeypoints(current_map_keypoints);
+
+        // Trigger sync to ensure triangulated keypoints reach disk
+        store_.triggerImmediateSync();
+        LOG(INFO) << "Triggered immediate disk sync for fallback triangulated keypoints";
     }
 
     // ALWAYS move batch to processed optimized queue and sync to disk
@@ -1182,8 +1220,6 @@ bool GraphAdapter::updateMapKeypointsFromOptimizedLandmarks(
     return success;
 }
 
-// ===== NEW TRIANGULATION PHASE =====
-
 bool GraphAdapter::triangulateMapKeypoints(
     std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -1230,6 +1266,8 @@ bool GraphAdapter::triangulateMapKeypoints(
             LOG(INFO) << "Triangulated keypoint " << id
                       << " at position: " << triangulated_position.transpose() << " from "
                       << keypoint.locations.size() << " observations";
+            LOG(INFO) << map_keypoints[id].needs_triangulation << " "
+                      << map_keypoints[id].position.transpose();
         } else {
             LOG(WARNING) << "Failed to triangulate keypoint " << id << " with "
                          << keypoint.locations.size() << " observations";
@@ -1292,6 +1330,84 @@ bool GraphAdapter::triangulateKeypoint(
     }
 
     return false;
+}
+
+void GraphAdapter::markTriangulatedKeypointsForDiskSync(
+    const std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    size_t triangulated_keypoints_marked = 0;
+
+    // Mark all successfully triangulated keypoints as dirty for disk persistence
+    for (const auto& [id, keypoint] : map_keypoints) {
+        if (!keypoint.needs_triangulation && keypoint.position.norm() > 1e-6) {
+            // This keypoint was successfully triangulated - ensure it gets written to disk
+            store_.markMapPointDirty(id);
+            triangulated_keypoints_marked++;
+        }
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+    LOG(INFO) << "Marked " << triangulated_keypoints_marked
+              << " triangulated keypoints for disk sync in " << duration.count() << "ms";
+}
+
+void GraphAdapter::updateVSLAMStatusAfterTriangulation(
+    const std::vector<uint64_t>& batch_keyframe_ids) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    if (batch_keyframe_ids.empty()) {
+        LOG(WARNING) << "Cannot update VSLAM status: empty batch_keyframe_ids";
+        return;
+    }
+
+    // Use the highest keyframe ID from the current batch as the reference
+    uint64_t highest_batch_id =
+        *std::max_element(batch_keyframe_ids.begin(), batch_keyframe_ids.end());
+
+    // Update our internal tracking to reflect triangulation completion
+    uint64_t current_persisted_id = last_disk_persisted_keyframe_id_.load();
+    uint64_t new_persisted_id = std::max(current_persisted_id, highest_batch_id);
+    last_disk_persisted_keyframe_id_.store(new_persisted_id);
+
+    // Update VSLAM status with triangulation completion information
+    std::string status_message =
+        "Keyframes and triangulated keypoints written to disk successfully";
+    bool update_success = store_.updateVSLAMStatus(new_persisted_id, true, status_message);
+
+    // Also update shared memory to notify cross-process consumers about triangulated keypoints
+    updateSharedMemoryAfterTriangulation();
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+    if (update_success) {
+        LOG(INFO) << "Updated VSLAM status after triangulation completion in " << duration.count()
+                  << "ms";
+        LOG(INFO) << "  - Latest keyframe ID: " << new_persisted_id;
+        LOG(INFO) << "  - Status: " << status_message;
+        LOG(INFO) << "  - Cross-process notification: triangulated keypoints now available for "
+                     "gs_processor";
+    } else {
+        LOG(ERROR) << "Failed to update VSLAM status after triangulation completion";
+    }
+}
+
+void GraphAdapter::updateSharedMemoryAfterTriangulation() {
+    // Request MapStore to update shared memory notifications for triangulated keypoints
+    // This ensures cross-process consumers (like gs_processor) are notified that
+    // new triangulated keypoints are available on disk
+
+    // Since we don't have direct access to MapStore's shared memory from GraphAdapter,
+    // we'll use the sync request mechanism which will trigger the appropriate notifications
+    store_.requestSync();
+
+    LOG(INFO) << "Requested MapStore sync to update shared memory notifications for triangulated "
+                 "keypoints";
+    LOG(INFO) << "Cross-process consumers (gs_processor) will be notified of triangulated keypoint "
+                 "availability";
 }
 
 // Helper method to get keyframe from any queue
@@ -1377,6 +1493,104 @@ void GraphAdapter::onKeyframesWrittenToDisk(const std::vector<uint64_t>& written
     } else {
         LOG(INFO) << "Updated VSLAM status with disk-persisted keyframe ID: " << disk_persisted_id;
     }
+}
+
+std::map<uint32_t, core::types::Keypoint> GraphAdapter::getMapPointsCopy() const {
+    // Copy local keypoints first (minimize lock time)
+    std::map<uint32_t, core::types::Keypoint> keypoint_map;
+    size_t local_count = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(local_keypoints_mutex_);
+        keypoint_map = local_map_keypoints_;
+        local_count = local_map_keypoints_.size();
+    }  // Release local lock before calling MapStore
+
+    // Merge with MapStore keypoints (triangulated/optimized ones) - no local lock held
+    auto all_keypoints = store_.getAllKeyPoints();
+    for (const auto& kp : all_keypoints) {
+        // Only use MapStore keypoint if it's more processed (triangulated) than local version
+        auto local_it = keypoint_map.find(kp.id());
+        if (local_it == keypoint_map.end() ||
+            (!kp.needs_triangulation && local_it->second.needs_triangulation)) {
+            keypoint_map[kp.id()] = kp;
+        }
+    }
+
+    LOG(INFO) << "Retrieved " << keypoint_map.size() << " keypoints (" << local_count << " local, "
+              << all_keypoints.size() << " from MapStore)";
+
+    return keypoint_map;
+}
+
+void GraphAdapter::storeKeypointsLocallyOnly(
+    const std::map<uint32_t, core::types::Keypoint>& keypoints) {
+    std::unique_lock<std::shared_mutex> lock(local_keypoints_mutex_);
+
+    size_t old_size = local_map_keypoints_.size();
+    local_map_keypoints_.clear();
+    local_map_keypoints_ = std::move(keypoints);
+
+    LOG(INFO) << "Updated the local_map_keypoints_: Earlier had " << old_size
+              << " updated to contain " << local_map_keypoints_.size();
+}
+
+void GraphAdapter::publishKeypointsToMapStore(
+    const std::map<uint32_t, core::types::Keypoint>& keypoints, const std::string& stage) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    size_t published_keypoints = 0;
+    size_t triangulated_keypoints = 0;
+
+    for (const auto& [id, keypoint] : keypoints) {
+        // Only publish keypoints that have been triangulated or optimized
+        if (!keypoint.needs_triangulation && keypoint.position.norm() > 1e-6) {
+            store_.addKeyPoint(keypoint);
+            store_.markMapPointDirty(id);
+            published_keypoints++;
+            triangulated_keypoints++;
+
+            LOG(INFO) << "Published " << stage << " keypoint " << id
+                      << " at position: " << keypoint.position.transpose();
+            {
+                std::unique_lock<std::shared_mutex> lock(local_keypoints_mutex_);
+                auto it = local_map_keypoints_.find(id);
+                if (it != local_map_keypoints_.end())
+                    local_map_keypoints_.erase(it);
+            }
+        } else {
+            LOG(INFO) << "Skipping keypoint " << id
+                      << " (needs_triangulation=" << keypoint.needs_triangulation
+                      << ", norm=" << keypoint.position.norm() << ")";
+        }
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+    LOG(INFO) << "Published " << published_keypoints << " " << stage << " keypoints to MapStore in "
+              << duration.count() << "ms (" << triangulated_keypoints << " were triangulated)";
+}
+
+// Should not use this method as we clear the map points as and when we publish it into the map
+// store
+void GraphAdapter::clearPublishedLocalKeypoints(
+    const std::map<uint32_t, core::types::Keypoint>& published_keypoints) {
+    std::unique_lock<std::shared_mutex> lock(local_keypoints_mutex_);
+
+    size_t cleared_count = 0;
+    for (const auto& [id, keypoint] : published_keypoints) {
+        // Only clear if the keypoint was successfully triangulated/optimized (published)
+        if (!keypoint.needs_triangulation && keypoint.position.norm() > 1e-6) {
+            auto it = local_map_keypoints_.find(id);
+            if (it != local_map_keypoints_.end()) {
+                local_map_keypoints_.erase(it);
+                cleared_count++;
+            }
+        }
+    }
+
+    LOG(INFO) << "Cleared " << cleared_count << " published keypoints from local storage"
+              << " (remaining: " << local_map_keypoints_.size() << ")";
 }
 
 }  // namespace graph

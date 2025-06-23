@@ -1,8 +1,8 @@
 #include "stf/transform_tree.hpp"
+#include <fstream>
 #include <queue>
 #include <unordered_set>
-#include <fstream>
-#include <iostream>
+#include <logging/logging.hpp>
 
 namespace stf {
 
@@ -170,7 +170,7 @@ TransformTree::Transform TransformTree::computeTransform(
 
 void TransformTree::printTree() const {
     if (nodes_.empty()) {
-        std::cout << "Empty transform tree" << std::endl;
+        LOG(INFO) << "Empty transform tree";
         return;
     }
 
@@ -197,14 +197,14 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
                                        std::unordered_set<std::string>& visited,
                                        const std::string& indent, bool is_last) const {
     if (visited.find(frame_id) != visited.end()) {
-        std::cout << indent << (is_last ? "└── " : "├── ") << frame_id << " (cycle)" << std::endl;
+        LOG(INFO) << indent << (is_last ? "└── " : "├── ") << frame_id << " (cycle)";
         return;
     }
 
     visited.insert(frame_id);
 
     // Print current node
-    std::cout << indent << (is_last ? "└── " : "├── ") << frame_id << std::endl;
+    LOG(INFO) << indent << (is_last ? "└── " : "├── ") << frame_id;
 
     // Get all connected frames (both children and parents)
     auto node = nodes_.at(frame_id);
@@ -232,7 +232,8 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
 
 // std::vector<TransformTree::Edge> TransformTree::getAllEdges() const {
 //     std::vector<Edge> all_edges;
-//     std::unordered_set<std::shared_ptr<Edge>> unique_edges; // To avoid duplicates if graph has multiple paths
+//     std::unordered_set<std::shared_ptr<Edge>> unique_edges; // To avoid duplicates if graph has
+//     multiple paths
 
 //     for (const auto& node_pair : nodes_) {
 //         const auto& node = node_pair.second;
@@ -250,68 +251,62 @@ void TransformTree::printTreeRecursive(const std::string& frame_id,
 
 bool TransformTree::serializeToProto(stf::proto::TransformTreeSnapshot& tree_proto) const {
     tree_proto.clear_edges();
-    
+
     std::unordered_set<std::shared_ptr<Edge>> unique_edges;
-    
+
     for (const auto& [frame_id, node] : nodes_) {
         for (const auto& [child_id, edge] : node->children) {
             if (unique_edges.find(edge) == unique_edges.end()) {
                 auto* edge_proto = tree_proto.add_edges();
                 edge_proto->set_parent_frame_id(edge->parent);
                 edge_proto->set_child_frame_id(edge->child);
-                
+
                 auto* transform_proto = edge_proto->mutable_transform();
-                
+
                 const auto& translation = edge->transform.translation();
                 transform_proto->mutable_position()->set_x(translation.x());
                 transform_proto->mutable_position()->set_y(translation.y());
                 transform_proto->mutable_position()->set_z(translation.z());
-                
+
                 const Eigen::Quaterniond quat(edge->transform.rotation());
                 transform_proto->mutable_orientation()->set_x(quat.x());
                 transform_proto->mutable_orientation()->set_y(quat.y());
                 transform_proto->mutable_orientation()->set_z(quat.z());
                 transform_proto->mutable_orientation()->set_w(quat.w());
-                
+
                 unique_edges.insert(edge);
             }
         }
     }
-    
+
     return true;
 }
 
 bool TransformTree::deserializeFromProto(const stf::proto::TransformTreeSnapshot& tree_proto) {
     nodes_.clear();
-    
+
     for (const auto& edge_proto : tree_proto.edges()) {
         const auto& transform_proto = edge_proto.transform();
-        
-        Eigen::Vector3d translation(
-            transform_proto.position().x(),
-            transform_proto.position().y(),
-            transform_proto.position().z()
-        );
-        
+
+        Eigen::Vector3d translation(transform_proto.position().x(), transform_proto.position().y(),
+                                    transform_proto.position().z());
+
         Eigen::Quaterniond quaternion(
-            transform_proto.orientation().w(),
-            transform_proto.orientation().x(),
-            transform_proto.orientation().y(),
-            transform_proto.orientation().z()
-        );
-        
+            transform_proto.orientation().w(), transform_proto.orientation().x(),
+            transform_proto.orientation().y(), transform_proto.orientation().z());
+
         Transform transform = Transform::Identity();
         transform.translation() = translation;
         transform.linear() = quaternion.toRotationMatrix();
-        
+
         try {
             setTransform(edge_proto.parent_frame_id(), edge_proto.child_frame_id(), transform);
         } catch (const std::exception& e) {
-            std::cerr << "Failed to deserialize transform edge: " << e.what() << std::endl;
+            LOG(ERROR) << "Failed to deserialize transform edge: " << e.what();
             return false;
         }
     }
-    
+
     return true;
 }
 
@@ -320,20 +315,20 @@ bool TransformTree::saveToFile(const std::string& filepath) const {
     if (!serializeToProto(tree_proto)) {
         return false;
     }
-    
+
     std::ofstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         return false;
     }
-    
+
     std::string serialized_data;
     if (!tree_proto.SerializeToString(&serialized_data)) {
         return false;
     }
-    
+
     file.write(serialized_data.data(), serialized_data.size());
     file.close();
-    
+
     return file.good();
 }
 
@@ -342,16 +337,16 @@ bool TransformTree::loadFromFile(const std::string& filepath) {
     if (!file.is_open()) {
         return false;
     }
-    
+
     std::string serialized_data((std::istreambuf_iterator<char>(file)),
-                               std::istreambuf_iterator<char>());
+                                std::istreambuf_iterator<char>());
     file.close();
-    
+
     stf::proto::TransformTreeSnapshot tree_proto;
     if (!tree_proto.ParseFromString(serialized_data)) {
         return false;
     }
-    
+
     return deserializeFromProto(tree_proto);
 }
 

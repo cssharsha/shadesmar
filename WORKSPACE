@@ -29,6 +29,7 @@ load("//tools/workspace:opencv.bzl", "opencv_repository")
 load("//tools/workspace:boost.bzl", "boost_repository")
 load("//tools/workspace:tbb.bzl", "tbb_repository")
 load("//tools/workspace:arrow.bzl", "arrow_repository")
+load("//tools/workspace:libtorch.bzl", "libtorch_repository")
 
 eigen_repository()
 gtsam_repository()
@@ -36,6 +37,7 @@ opencv_repository()
 boost_repository()
 tbb_repository()
 arrow_repository()
+libtorch_repository()
 
 http_archive(
     name = "bazel_skylib",

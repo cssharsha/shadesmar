@@ -16,6 +16,7 @@ cc_library(
         "//utils:stf",
         "//common:logging",
     ],
+    linkopts = ["-lrt"],  # POSIX shared memory
     visibility = ["//visibility:public"],
 )
 

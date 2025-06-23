@@ -1,12 +1,16 @@
+#include <unistd.h>  // for getpid()
+#include <algorithm>
 #include <chrono>
 #include <core/storage/map_store.hpp>
+#include <filesystem>
 #include <iomanip>
 #include <logging/logging.hpp>
 
 namespace core {
 namespace storage {
 
-MapStore::MapStore(const std::string& map_base_filepath) {
+MapStore::MapStore(const std::string& map_base_filepath, ProcessRole role)
+    : process_role_(role), process_id_(getpid()) {
     if (!map_base_filepath.empty()) {
         initializeFilePaths(map_base_filepath);
     }
@@ -32,6 +36,9 @@ MapStore::MapStore(const std::string& map_base_filepath) {
 
     // Start write worker thread
     startWriteWorker();
+
+    // Initialize shared memory for inter-process coordination
+    initializeSharedMemory();
 
     LOG(INFO) << "MapStore initialized with callback-based write system and single write worker";
 }
@@ -269,7 +276,7 @@ bool MapStore::addFactor(const types::Factor& factor) {
     return true;
 }
 
-bool MapStore::addKeyPoint(const types::Keypoint& keypoint) {
+bool MapStore::addKeyPoint(const types::Keypoint keypoint) {
     // Only update in-memory structures - no disk I/O
     std::unique_lock<std::shared_mutex> cache_lock(cache_mutex_);
 
@@ -277,7 +284,8 @@ bool MapStore::addKeyPoint(const types::Keypoint& keypoint) {
         LOG(INFO) << "KeyPoint ID " << keypoint.id() << " already exists, marking for update";
     }
 
-    LOG(INFO) << "Adding keypoint " << keypoint.id() << " to cache, pending disk write";
+    LOG(INFO) << "Adding keypoint " << keypoint.id() << " " << keypoint.needs_triangulation
+              << " to cache, pending disk write";
 
     // Add to pending writes (will be written during next sync)
     keypoint_pending_writes_[keypoint.id()] = keypoint;
@@ -324,7 +332,21 @@ KeyFramePtr MapStore::getKeyFrame(uint64_t id) const {
     // Cache miss - load from disk
     auto it = keyframe_locations_.find(id);
     if (it == keyframe_locations_.end()) {
-        return nullptr;
+        // Apply conditional auto-sync based on process role to avoid intra-process races
+        if (shouldAutoSync()) {
+            LOG(INFO) << "Cross-process read: syncing index for keyframe " << id;
+            const_cast<MapStore*>(this)->syncIndexFromDisk();
+
+            // Try again after sync
+            it = keyframe_locations_.find(id);
+        } else if (hasUncommittedKeyFrame(id)) {
+            // Keyframe exists but not yet written to disk (intra-process race)
+            LOG(INFO) << "Keyframe " << id << " exists in memory but not yet committed to disk";
+        }
+
+        if (it == keyframe_locations_.end()) {
+            return nullptr;
+        }
     }
     auto opt_kf_proto = readProtoMessage<proto::KeyFrame, proto::KeyFrame>(
         it->second, [](const proto::KeyFrame& p) { return p; });
@@ -374,12 +396,26 @@ std::optional<types::Keypoint> MapStore::getKeyPoint(uint32_t id) const {
     // Cache miss - load from disk
     auto it = keypoint_locations_.find(id);
     if (it == keypoint_locations_.end()) {
-        return std::nullopt;
+        // If keypoint not found, try syncing index from disk in case it was written by another
+        // process
+        LOG(INFO) << "Keypoint " << id << " not found in index, attempting to sync from disk";
+        const_cast<MapStore*>(this)->syncIndexFromDisk();
+
+        // Try again after sync
+        it = keypoint_locations_.find(id);
+        if (it == keypoint_locations_.end()) {
+            return std::nullopt;
+        }
     }
+
+    LOG(INFO) << "Reading keypoint " << id << " from location: " << it->second.offset();
     auto keypoint_opt =
         readProtoMessage<proto::Keypoint, types::Keypoint>(it->second, types::Keypoint::fromProto);
     if (keypoint_opt) {
         cacheKeyPoint(id, keypoint_opt.value());
+        auto kp_proto = keypoint_opt.value();
+        LOG(INFO) << "Keypoint: " << kp_proto.needs_triangulation
+                  << " Position: " << kp_proto.position.transpose();
     }
     return keypoint_opt;
 }
@@ -607,12 +643,28 @@ bool MapStore::writePendingDataToDisk() {
                         break;
                     }
                 }
+
+                // Update shared memory index (keyframes are optimized when written to disk)
+                updateSharedMemoryKeyFrameIndex(keyframe_id, location.offset(), location.length(),
+                                                true);
+
                 keyframes_written++;
             } else {
                 LOG(ERROR) << "Failed to write keyframe " << keyframe_id << " to disk";
             }
         }
         keyframe_pending_writes_.clear();
+
+        // Notify via shared memory that keyframes are now available
+        if (keyframes_written > 0 && shared_memory_ && shared_memory_->isValid()) {
+            auto* region = shared_memory_->getRegion();
+            if (region) {
+                region->header.keyframes_available.store(true);
+                region->header.data_version.fetch_add(1);
+                LOG(INFO) << "Notified via shared memory that " << keyframes_written
+                          << " keyframes are available";
+            }
+        }
     }
 
     // Write pending factors
@@ -639,12 +691,37 @@ bool MapStore::writePendingDataToDisk() {
             proto::FileLocation location;
             if (writeProtoMessage(data_file, kp_proto, location)) {
                 keypoint_locations_[keypoint_id] = location;
+                LOG(INFO) << "Wrote keypoint " << keypoint_id << " at "
+                          << " location: " << location.offset()
+                          << "Needs triangulation: " << kp_proto.needs_triangulation()
+                          << "Position: " << kp_proto.position().x() << ","
+                          << kp_proto.position().y() << "," << kp_proto.position().z();
+
+                // Update shared memory index (use first location's keyframe_id if available)
+                uint64_t associated_keyframe_id = 0;
+                if (!keypoint.locations.empty()) {
+                    associated_keyframe_id = keypoint.locations[0].keyframe_id;
+                }
+                updateSharedMemoryKeyPointIndex(keypoint_id, associated_keyframe_id,
+                                                location.offset(), location.length(), 1);
+
                 keypoints_written++;
             } else {
                 LOG(ERROR) << "Failed to write keypoint " << keypoint_id << " to disk";
             }
         }
         keypoint_pending_writes_.clear();
+
+        // Notify via shared memory that keypoints are now available
+        if (keypoints_written > 0 && shared_memory_ && shared_memory_->isValid()) {
+            auto* region = shared_memory_->getRegion();
+            if (region) {
+                region->header.keypoints_available.store(true);
+                region->header.data_version.fetch_add(1);
+                LOG(INFO) << "Notified via shared memory that " << keypoints_written
+                          << " keypoints are available";
+            }
+        }
     }
 
     data_file.close();
@@ -1267,6 +1344,55 @@ bool MapStore::loadMap() {
     rebuildTransientIndices();
     LOG(INFO) << "Index loaded from " << index_filepath_
               << ". KF entries: " << keyframe_locations_.size() << std::endl;
+    return true;
+}
+
+bool MapStore::syncIndexFromDisk() {
+    if (index_filepath_.empty()) {
+        LOG(ERROR) << "Index filepath not initialized. Cannot sync index." << std::endl;
+        return false;
+    }
+
+    // Load only the index file to update location maps
+    proto::MapDiskIndex disk_index;
+    std::fstream index_stream(index_filepath_, std::ios::in | std::ios::binary);
+    if (!index_stream.is_open() || !disk_index.ParseFromIstream(&index_stream)) {
+        LOG(WARNING) << "Failed to sync index from " << index_filepath_
+                     << ". Index may not exist yet or be corrupted.";
+        if (index_stream.is_open())
+            index_stream.close();
+        return false;
+    }
+    index_stream.close();
+
+    // Update location maps with new entries (don't clear existing ones)
+    size_t new_keyframes = 0, new_factors = 0, new_keypoints = 0;
+
+    for (const auto& entry : disk_index.keyframe_entries()) {
+        if (keyframe_locations_.find(entry.keyframe_id()) == keyframe_locations_.end()) {
+            keyframe_locations_[entry.keyframe_id()] = entry.location();
+            keyframe_spatial_index_entries_.push_back(entry);
+            new_keyframes++;
+        }
+    }
+    for (const auto& entry : disk_index.factor_entries()) {
+        if (factor_locations_.find(entry.factor_id()) == factor_locations_.end()) {
+            factor_locations_[entry.factor_id()] = entry.location();
+            new_factors++;
+        }
+    }
+    for (const auto& entry : disk_index.keypoint_entries()) {
+        if (keypoint_locations_.find(entry.keypoint_id()) == keypoint_locations_.end()) {
+            keypoint_locations_[entry.keypoint_id()] = entry.location();
+            new_keypoints++;
+        }
+    }
+
+    // Rebuild transient indices to include new data
+    rebuildTransientIndices();
+
+    LOG(INFO) << "Index synced from " << index_filepath_ << ". Added " << new_keyframes
+              << " keyframes, " << new_factors << " factors, " << new_keypoints << " keypoints";
     return true;
 }
 
@@ -2078,6 +2204,42 @@ bool MapStore::setTransformTree(std::shared_ptr<stf::TransformTree> tf_tree) {
 
 std::shared_ptr<stf::TransformTree> MapStore::getTransformTree() const {
     std::shared_lock<std::shared_mutex> lock(transform_tree_mutex_);
+
+    // If transform tree is not in memory, try to load it from disk
+    if (!transform_tree_) {
+        // Check if transform tree file exists on disk
+        if (std::filesystem::exists(transform_tree_filepath_)) {
+            LOG(INFO) << "Transform tree not in memory, loading from disk: "
+                      << transform_tree_filepath_;
+
+            // Release shared lock and acquire unique lock for modification
+            lock.unlock();
+            std::unique_lock<std::shared_mutex> write_lock(transform_tree_mutex_);
+
+            // Double-check after acquiring write lock (another thread might have loaded it)
+            if (!transform_tree_) {
+                try {
+                    // Need to cast away const to modify transform_tree_ from const method
+                    auto& mutable_tree =
+                        const_cast<std::shared_ptr<stf::TransformTree>&>(transform_tree_);
+                    mutable_tree = std::make_shared<stf::TransformTree>();
+                    if (mutable_tree->loadFromFile(transform_tree_filepath_)) {
+                        LOG(INFO) << "Successfully loaded transform tree from disk";
+                    } else {
+                        LOG(ERROR) << "Failed to load transform tree from file: "
+                                   << transform_tree_filepath_;
+                        mutable_tree.reset();
+                    }
+                } catch (const std::exception& e) {
+                    LOG(ERROR) << "Exception loading transform tree from disk: " << e.what();
+                    const_cast<std::shared_ptr<stf::TransformTree>&>(transform_tree_).reset();
+                }
+            }
+        } else {
+            LOG(INFO) << "Transform tree file does not exist: " << transform_tree_filepath_;
+        }
+    }
+
     return transform_tree_;
 }
 
@@ -2093,6 +2255,15 @@ bool MapStore::saveTransformTreeToDisk() const {
 
     if (success) {
         LOG(INFO) << "Transform tree successfully saved to: " << transform_tree_filepath_;
+
+        // Notify via shared memory that transform tree is now available on disk
+        if (shared_memory_ && shared_memory_->isValid()) {
+            auto* region = shared_memory_->getRegion();
+            if (region) {
+                region->header.tf_tree_available.store(true);
+                LOG(INFO) << "Notified via shared memory that transform tree is available on disk";
+            }
+        }
     } else {
         LOG(ERROR) << "Failed to save transform tree to: " << transform_tree_filepath_;
     }
@@ -2181,6 +2352,222 @@ bool MapStore::readVSLAMStatus(core::proto::ProcessStatus& status) const {
     }
 
     return status.ParseFromString(serialized_data);
+}
+
+// ===== SHARED MEMORY METHODS =====
+
+void MapStore::initializeSharedMemory() {
+    if (base_filepath_.empty()) {
+        LOG(WARNING) << "Cannot initialize shared memory without base filepath";
+        return;
+    }
+
+    // Create shared memory name from base filepath
+    std::string shared_memory_name = base_filepath_;
+    // Replace path separators with underscores to make valid shared memory name
+    std::replace(shared_memory_name.begin(), shared_memory_name.end(), '/', '_');
+    std::replace(shared_memory_name.begin(), shared_memory_name.end(), '.', '_');
+
+    try {
+        shared_memory_ = std::make_unique<SharedMemoryWrapper>(shared_memory_name);
+
+        // Initialize with reasonable defaults
+        if (shared_memory_->initialize(10000, 1000, 100)) {
+            shared_memory_enabled_ = true;
+            LOG(INFO) << "Shared memory initialized: " << shared_memory_name;
+
+            // Initialize process health
+            auto* region = shared_memory_->getRegion();
+            region->header.vslam_process_healthy.store(true);
+            region->header.last_vslam_update_ns.store(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+
+        } else {
+            LOG(WARNING) << "Failed to initialize shared memory, continuing without it";
+            shared_memory_enabled_ = false;
+        }
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Exception during shared memory initialization: " << e.what();
+        shared_memory_enabled_ = false;
+    }
+}
+
+void MapStore::updateSharedMemoryKeyFrameIndex(uint64_t keyframe_id, uint64_t disk_offset,
+                                               uint32_t data_size, bool is_optimized) {
+    if (!shared_memory_enabled_ || !shared_memory_) {
+        return;
+    }
+
+    try {
+        auto* region = shared_memory_->getRegion();
+        auto* kf_indices = shared_memory_->getKeyFrameIndices();
+
+        // Find empty slot or existing entry
+        uint32_t max_keyframes = region->header.max_keyframes;
+        uint32_t slot = keyframe_id % max_keyframes;  // Simple hash for now
+
+        // Linear probing for collision resolution
+        for (uint32_t i = 0; i < max_keyframes; ++i) {
+            uint32_t idx = (slot + i) % max_keyframes;
+
+            if (!kf_indices[idx].is_valid || kf_indices[idx].id == keyframe_id) {
+                kf_indices[idx].id = keyframe_id;
+                kf_indices[idx].disk_offset = disk_offset;
+                kf_indices[idx].data_size = data_size;
+                kf_indices[idx].timestamp_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+                kf_indices[idx].is_optimized = is_optimized;
+                kf_indices[idx].is_valid = true;
+
+                // Update version counter
+                region->header.keyframe_index_version.fetch_add(1);
+                break;
+            }
+        }
+
+        updateSharedMemoryCounters();
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Exception updating shared memory keyframe index: " << e.what();
+    }
+}
+
+void MapStore::updateSharedMemoryKeyPointIndex(uint64_t batch_id, uint64_t keyframe_id,
+                                               uint64_t disk_offset, uint32_t data_size,
+                                               uint32_t num_keypoints) {
+    if (!shared_memory_enabled_ || !shared_memory_) {
+        return;
+    }
+
+    try {
+        auto* region = shared_memory_->getRegion();
+        auto* kp_indices = shared_memory_->getKeyPointIndices();
+
+        uint32_t max_keypoints = region->header.max_keypoints_per_batch;
+        uint32_t slot = batch_id % max_keypoints;
+
+        for (uint32_t i = 0; i < max_keypoints; ++i) {
+            uint32_t idx = (slot + i) % max_keypoints;
+
+            if (!kp_indices[idx].is_valid || kp_indices[idx].batch_id == batch_id) {
+                kp_indices[idx].batch_id = batch_id;
+                kp_indices[idx].keyframe_id = keyframe_id;
+                kp_indices[idx].disk_offset = disk_offset;
+                kp_indices[idx].data_size = data_size;
+                kp_indices[idx].num_keypoints = num_keypoints;
+                kp_indices[idx].is_valid = true;
+
+                region->header.keypoint_index_version.fetch_add(1);
+                break;
+            }
+        }
+
+        updateSharedMemoryCounters();
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Exception updating shared memory keypoint index: " << e.what();
+    }
+}
+
+void MapStore::updateSharedMemorySplatIndex(uint64_t batch_id, uint64_t disk_offset,
+                                            uint32_t data_size, uint32_t num_gaussians) {
+    if (!shared_memory_enabled_ || !shared_memory_) {
+        return;
+    }
+
+    try {
+        auto* region = shared_memory_->getRegion();
+        auto* splat_indices = shared_memory_->getSplatIndices();
+
+        uint32_t max_splats = region->header.max_splat_batches;
+        uint32_t slot = batch_id % max_splats;
+
+        for (uint32_t i = 0; i < max_splats; ++i) {
+            uint32_t idx = (slot + i) % max_splats;
+
+            if (!splat_indices[idx].is_valid || splat_indices[idx].batch_id == batch_id) {
+                splat_indices[idx].batch_id = batch_id;
+                splat_indices[idx].disk_offset = disk_offset;
+                splat_indices[idx].data_size = data_size;
+                splat_indices[idx].num_gaussians = num_gaussians;
+                splat_indices[idx].timestamp_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+                splat_indices[idx].is_valid = true;
+
+                region->header.splat_index_version.fetch_add(1);
+                break;
+            }
+        }
+
+        updateSharedMemoryCounters();
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Exception updating shared memory splat index: " << e.what();
+    }
+}
+
+void MapStore::updateSharedMemoryCounters() {
+    if (!shared_memory_enabled_ || !shared_memory_) {
+        return;
+    }
+
+    try {
+        auto* region = shared_memory_->getRegion();
+
+        // Update total counts (these could be more precise by actually counting valid entries)
+        region->header.total_keyframes.store(keyframe_locations_.size());
+        region->header.total_keypoints.store(keypoint_locations_.size());
+        region->header.total_splats.store(splat_batch_locations_.size());
+
+        // Update health and timestamp
+        region->header.vslam_process_healthy.store(true);
+        region->header.last_vslam_update_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Exception updating shared memory counters: " << e.what();
+    }
+}
+
+bool MapStore::shouldAutoSync() const {
+    // Only auto-sync for cross-process reads (READER role)
+    if (process_role_ == ProcessRole::READER) {
+        return true;
+    }
+
+    // For DUAL role, auto-sync only if no write is in progress
+    if (process_role_ == ProcessRole::DUAL && !write_in_progress_.load()) {
+        return true;
+    }
+
+    // For WRITER role, never auto-sync (intra-process race)
+    return false;
+}
+
+bool MapStore::hasUncommittedKeyFrame(uint64_t id) const {
+    std::shared_lock<std::shared_mutex> cache_lock(cache_mutex_);
+
+    // Check if keyframe is in pending writes
+    if (keyframe_pending_writes_.find(id) != keyframe_pending_writes_.end()) {
+        return true;
+    }
+    cache_lock.unlock();
+
+    // Check if keyframe is in non-optimized queue
+    std::shared_lock<std::shared_mutex> queue_lock(processed_non_optimized_queue_mutex_);
+    if (processed_non_optimized_queue_->find(id) != processed_non_optimized_queue_->end()) {
+        return true;
+    }
+
+    return false;
 }
 
 }  // namespace storage

@@ -262,15 +262,8 @@ public:
         return empty_map;
     }
 
-    // Thread-safe access to map keypoints via MapStore
-    std::map<uint32_t, core::types::Keypoint> getMapPointsCopy() const {
-        auto all_keypoints = store_.getAllKeyPoints();
-        std::map<uint32_t, core::types::Keypoint> keypoint_map;
-        for (const auto& kp : all_keypoints) {
-            keypoint_map[kp.id()] = kp;
-        }
-        return keypoint_map;
-    }
+    // Thread-safe access to map keypoints via local storage first, then MapStore
+    std::map<uint32_t, core::types::Keypoint> getMapPointsCopy() const;
 
     // Thread-safe access to specific map keypoint via MapStore
     std::optional<core::types::Keypoint> getMapPoint(uint32_t id) const {
@@ -397,6 +390,14 @@ public:
     bool triangulateKeypoint(const core::types::Keypoint& keypoint,
                              const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
                              Eigen::Vector3d& triangulated_position);
+    void markTriangulatedKeypointsForDiskSync(const std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+    void updateVSLAMStatusAfterTriangulation(const std::vector<uint64_t>& batch_keyframe_ids);
+    void updateSharedMemoryAfterTriangulation();
+    
+    // Local keypoint management to avoid premature disk publishing
+    void storeKeypointsLocallyOnly(const std::map<uint32_t, core::types::Keypoint>& keypoints);
+    void publishKeypointsToMapStore(const std::map<uint32_t, core::types::Keypoint>& keypoints, const std::string& stage);
+    void clearPublishedLocalKeypoints(const std::map<uint32_t, core::types::Keypoint>& published_keypoints);
 
 private:
     FactorGraph& graph_;
@@ -482,6 +483,10 @@ private:
     std::atomic<size_t> keyframes_since_last_optimization_{0};
     std::atomic<bool> optimization_pending_{false};
     std::atomic<bool> optimization_in_progress_{false};
+    
+    // Local keypoint storage to avoid premature disk publishing
+    std::map<uint32_t, core::types::Keypoint> local_map_keypoints_;
+    mutable std::shared_mutex local_keypoints_mutex_;
 };
 
 }  // namespace graph

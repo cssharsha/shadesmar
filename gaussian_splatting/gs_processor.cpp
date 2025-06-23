@@ -1,4 +1,5 @@
 #include "gs_processor.hpp"
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +44,21 @@ GaussianSplatProcessor::GaussianSplatProcessor(const ProcessorConfig& config) : 
 
 GaussianSplatProcessor::~GaussianSplatProcessor() {
     stop();
+
+    // Clean up shared memory - let SharedMemoryWrapper handle cleanup based on is_creator_
+    if (shared_memory_) {
+        // Update process health status before disconnecting
+        if (shared_memory_->isValid()) {
+            auto* region = shared_memory_->getRegion();
+            if (region) {
+                region->header.gs_process_healthy.store(false);
+                LOG(INFO) << "Marked GS process as unhealthy in shared memory before exit";
+            }
+        }
+        // SharedMemoryWrapper destructor will call shm_unlink() only if is_creator_ is true
+        shared_memory_.reset();
+    }
+
     LOG(INFO) << "GaussianSplatProcessor destroyed";
 }
 
@@ -50,20 +66,31 @@ bool GaussianSplatProcessor::initialize() {
     LOG(INFO) << "Initializing Gaussian splat processor...";
 
     try {
-        // Initialize MapStore for reading VSLAM data
-        map_store_ = std::make_unique<core::storage::MapStore>(config_.map_base_path);
+        // Initialize MapStore for reading VSLAM data (cross-process reader)
+        map_store_ = std::make_unique<core::storage::MapStore>(config_.map_base_path,
+                                                               core::storage::ProcessRole::READER);
         if (!map_store_) {
             LOG(ERROR) << "Failed to create MapStore for path: " << config_.map_base_path;
+            return false;
+        }
+
+        // Wait for map data (transform tree, keyframes, keypoints) to be available
+        if (!waitForMapData()) {
+            LOG(ERROR) << "Failed to wait for map data availability";
             return false;
         }
 
         // Load transform tree from map data
         transform_tree_ = map_store_->getTransformTree();
         if (!transform_tree_) {
-            LOG(WARNING) << "No transform tree found in map data, will create empty one";
-            transform_tree_ = std::make_shared<stf::TransformTree>();
+            LOG(ERROR) << "Transform tree should be available but failed to load";
             return false;
         }
+
+        // Print transform tree contents for debugging
+        LOG(INFO) << "Successfully loaded transform tree";
+        LOG(INFO) << "Transform tree contents:";
+        transform_tree_->printTree();
 
         // Reset statistics
         stats_.reset();
@@ -222,6 +249,8 @@ bool GaussianSplatProcessor::processNewKeyframes(uint64_t start_keyframe_id,
             //     }
             // }
 
+            LOG(INFO) << "Keypoint positon: " << keypoint.position.transpose() << " "
+                      << keypoint.needs_triangulation;
             if (is_relevant && !keypoint.needs_triangulation) {
                 relevant_keypoints.push_back(keypoint);
             }
@@ -593,6 +622,74 @@ bool GaussianSplatProcessor::extractColorFromObservations(const core::types::Key
               << color.y() << ", " << color.z() << ")";
 
     return true;
+}
+
+bool GaussianSplatProcessor::waitForMapData() {
+    LOG(INFO) << "Waiting for map data (transform tree, keyframes, keypoints) to become available "
+                 "via shared memory...";
+
+    // Initialize shared memory for monitoring - use same naming scheme as MapStore
+    std::string shared_memory_name = config_.map_base_path;
+    std::replace(shared_memory_name.begin(), shared_memory_name.end(), '/', '_');
+    std::replace(shared_memory_name.begin(), shared_memory_name.end(), '.', '_');
+
+    shared_memory_ = std::make_unique<core::storage::SharedMemoryWrapper>(shared_memory_name);
+    LOG(INFO) << "Connecting to shared memory: " << shared_memory_name;
+
+    if (!shared_memory_->initialize()) {
+        LOG(ERROR) << "Failed to initialize shared memory for transform tree monitoring: "
+                   << shared_memory_name;
+        return false;
+    }
+
+    const auto* region = shared_memory_->getRegion();
+    if (!region) {
+        LOG(ERROR) << "Shared memory region is null";
+        return false;
+    }
+
+    // Event-driven waiting using data_version counter for efficient notifications
+    const int max_wait_seconds = 300;   // 5 minutes timeout
+    const int poll_interval_ms = 1000;  // Check every 1 second (much less frequent)
+
+    uint64_t last_data_version = region->header.data_version.load();
+
+    for (int elapsed_ms = 0; elapsed_ms < max_wait_seconds * 1000; elapsed_ms += poll_interval_ms) {
+        // Check current data version - if it changed, new data might be available
+        uint64_t current_data_version = region->header.data_version.load();
+        if (current_data_version != last_data_version) {
+            LOG(INFO) << "Data version changed from " << last_data_version << " to "
+                      << current_data_version << ", checking for new map data";
+            last_data_version = current_data_version;
+
+            // Sync MapStore index to get latest data locations
+            map_store_->syncIndexFromDisk();
+        }
+
+        // Check if all required data types are available
+        bool tf_tree_ready = region->header.tf_tree_available.load();
+        bool keyframes_ready = region->header.keyframes_available.load();
+        bool keypoints_ready = region->header.keypoints_available.load();
+
+        if (tf_tree_ready && keyframes_ready && keypoints_ready) {
+            LOG(INFO) << "All map data types are available (tf_tree: " << tf_tree_ready
+                      << ", keyframes: " << keyframes_ready << ", keypoints: " << keypoints_ready
+                      << ")";
+            return true;
+        }
+
+        // Log progress periodically
+        if (elapsed_ms % 10000 == 0) {  // Every 10 seconds
+            LOG(INFO) << "Still waiting for map data... (" << elapsed_ms / 1000 << "s elapsed) "
+                      << "tf_tree: " << tf_tree_ready << ", keyframes: " << keyframes_ready
+                      << ", keypoints: " << keypoints_ready;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+    }
+
+    LOG(ERROR) << "Timeout waiting for map data after " << max_wait_seconds << " seconds";
+    return false;
 }
 
 void GaussianSplatProcessor::logKeyframePosesDebug(uint64_t start_keyframe_id,

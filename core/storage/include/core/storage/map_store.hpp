@@ -9,6 +9,7 @@
 #include <shared_mutex>
 #include <thread>
 #include <unordered_map>
+#include "core/storage/shared_memory_wrapper.hpp"
 #include "core/types/factor.hpp"
 #include "core/types/gaussian_splat.hpp"
 #include "core/types/keyframe.hpp"
@@ -23,10 +24,17 @@
 namespace core {
 namespace storage {
 
+// Process role for determining auto-sync behavior
+enum class ProcessRole {
+    WRITER,  // Primary data producer (e.g., visualize_rosbag writing keyframes)
+    READER,  // Cross-process data consumer (e.g., gs_processor reading keyframes)
+    DUAL     // Both producer and consumer (e.g., unit tests)
+};
+
 using KeyFramePtr = types::KeyFrame::Ptr;
 class MapStore {
 public:
-    MapStore(const std::string& map_base_filepth);
+    MapStore(const std::string& map_base_filepth, ProcessRole role = ProcessRole::DUAL);
     ~MapStore();
 
     bool initializeFilePaths(const std::string& map_base_filepath);
@@ -70,7 +78,7 @@ public:
 
     bool addKeyFrame(const KeyFramePtr& keyframe);
     bool addFactor(const types::Factor& factor);
-    bool addKeyPoint(const types::Keypoint& keypoint);
+    bool addKeyPoint(const types::Keypoint keypoint);
     bool addGaussianSplatBatch(const types::GaussianSplatBatch& batch);
 
     KeyFramePtr getKeyFrame(uint64_t id) const;
@@ -107,6 +115,7 @@ public:
 
     bool saveChanges();
     bool loadMap();
+    bool syncIndexFromDisk();  // Lightweight index synchronization
 
     const proto::MapDiskMetadata& getMetadata() const {
         return metadata_;
@@ -162,9 +171,20 @@ public:
     using WriteCompletionCallback = std::function<void(const std::vector<uint64_t>&)>;
     void setWriteCompletionCallback(WriteCompletionCallback callback);
 
+    // Process role and auto-sync control
+    ProcessRole getProcessRole() const {
+        return process_role_;
+    }
+    bool shouldAutoSync() const;
+    bool hasUncommittedKeyFrame(uint64_t id) const;
+
 private:
     std::mutex file_operations_mutex_;         // Protect all file operations from concurrent access
     std::mutex status_file_operations_mutex_;  // Protect all file operations from concurrent access
+
+    // Process role and identification for auto-sync behavior
+    ProcessRole process_role_;
+    pid_t process_id_;
 
     // Cache infrastructure - thread-safe access to in-memory cached data
     mutable std::shared_mutex cache_mutex_;
@@ -190,9 +210,6 @@ private:
     mutable std::atomic<bool> metadata_dirty_;
     mutable std::atomic<bool> transform_tree_dirty_;
 
-    // ===== THREE-QUEUE SYSTEM CACHES =====
-
-    // Three-queue system with atomic pointer swapping
     mutable std::shared_mutex unprocessed_cache_mutex_;
     std::unordered_map<uint64_t, KeyFramePtr> unprocessed_cache_;
 
@@ -271,6 +288,10 @@ private:
     // Optimization tracking
     uint64_t last_optimized_keyframe_id_ = 0;
 
+    // Shared memory for inter-process coordination
+    std::unique_ptr<SharedMemoryWrapper> shared_memory_;
+    std::atomic<bool> shared_memory_enabled_{false};
+
     bool openDataFileForAppend(std::fstream& file_stream);
     bool openDataFileForRead(std::fstream& file_stream) const;
 
@@ -335,6 +356,17 @@ private:
     bool writeSplatBatchesToDisk();
     bool loadSplatBatchFromDisk(uint32_t batch_id, types::GaussianSplatBatch& batch) const;
     void markSplatBatchDirty(uint32_t batch_id);
+
+    // Shared memory helper methods
+    void initializeSharedMemory();
+    void updateSharedMemoryKeyFrameIndex(uint64_t keyframe_id, uint64_t disk_offset,
+                                         uint32_t data_size, bool is_optimized);
+    void updateSharedMemoryKeyPointIndex(uint64_t batch_id, uint64_t keyframe_id,
+                                         uint64_t disk_offset, uint32_t data_size,
+                                         uint32_t num_keypoints);
+    void updateSharedMemorySplatIndex(uint64_t batch_id, uint64_t disk_offset, uint32_t data_size,
+                                      uint32_t num_gaussians);
+    void updateSharedMemoryCounters();
 };
 
 }  // namespace storage
