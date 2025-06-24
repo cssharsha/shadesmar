@@ -25,7 +25,15 @@
 namespace viz {
 
 RerunVisualizer::RerunVisualizer(const std::string& name, const std::string& host, uint16_t port)
-    : name_(name), host_(host), port_(port), rec_(name) {
+    : name_(name), recording_id_(""), host_(host), port_(port), rec_(name) {
+    rec_.spawn().exit_on_failure();
+}
+
+RerunVisualizer::RerunVisualizer(const std::string& name, const std::string& recording_id,
+                                const std::string& host, uint16_t port)
+    : name_(name), recording_id_(recording_id), host_(host), port_(port), rec_(name, recording_id) {
+    // Use two-parameter constructor: RecordingStream(application_id, recording_id)
+    // This ensures both processes share the same recording
     rec_.spawn().exit_on_failure();
 }
 
@@ -506,13 +514,9 @@ void RerunVisualizer::visualizeFromStorage(const core::storage::MapStore& map_st
                      .with_colors({rerun::components::Color(255, 0, 255)}));  // Magenta
     }
 
-    // ===== VISUALIZE GAUSSIAN SPLATS =====
-    // NOTE: This section is designed to be easily extracted into a separate visualization process
-    try {
-        visualizeGaussianSplatsFromStorage(map_store, "gaussian_splats");
-    } catch (const std::exception& e) {
-        LOG(WARNING) << "Failed to visualize Gaussian splats: " << e.what();
-    }
+    // ===== GAUSSIAN SPLATS VISUALIZATION MOVED =====
+    // NOTE: Gaussian splat visualization has been moved to dedicated visualize_gs_rerun.cpp
+    // This is now handled by GaussianSplatRerunVisualizer in gs_processor_main.cpp
 
     LOG(INFO) << "Three-queue visualization complete - Cameras: " << numCameras
               << ", Non-optimized KFs: " << non_optimized_points.size()

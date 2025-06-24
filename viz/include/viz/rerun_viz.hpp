@@ -21,6 +21,10 @@ class RerunVisualizer : public VisualizerInterface {
 public:
     RerunVisualizer(const std::string& name = "shadesmar", const std::string& host = "localhost",
                     uint16_t port = 9999);
+    
+    // Constructor with recording ID for shared recordings across processes
+    RerunVisualizer(const std::string& name, const std::string& recording_id,
+                    const std::string& host = "localhost", uint16_t port = 9999);
 
     bool initialize() override {
         return initialize(false);
@@ -68,7 +72,7 @@ public:
         uint64_t previous_keyframe_id,
         size_t trajectory_keyframe_count = 5);
 
-    // Gaussian splat visualization methods
+    // Gaussian splat visualization methods (primarily used by GaussianSplatRerunVisualizer)
     void addGaussianSplats(const std::vector<core::types::GaussianSplat>& splats,
                           const std::string& entity_path, double timestamp);
     void addGaussianSplatBatch(const core::types::GaussianSplatBatch& batch,
@@ -78,6 +82,7 @@ public:
 
 private:
     std::string name_;
+    std::string recording_id_;
     std::string host_;
     uint16_t port_;
     rerun::RecordingStream rec_;

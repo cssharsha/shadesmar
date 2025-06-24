@@ -301,6 +301,15 @@ bool GaussianSplatProcessor::processNewKeyframes(uint64_t start_keyframe_id,
         LOG(INFO) << "Successfully processed keyframes " << start_keyframe_id << " to "
                   << end_keyframe_id << ", generated " << batch.size() << " splats";
 
+        // Notify visualization callback if set
+        if (splat_batch_callback_) {
+            try {
+                splat_batch_callback_();
+            } catch (const std::exception& e) {
+                LOG(WARNING) << "Exception in splat batch callback: " << e.what();
+            }
+        }
+
         return true;
 
     } catch (const std::exception& e) {
@@ -742,6 +751,16 @@ void GaussianSplatProcessor::logKeyframePosesDebug(uint64_t start_keyframe_id,
     // Check latest optimization status
     uint64_t last_optimized_id = map_store_->getLastOptimizedKeyFrameId();
     LOG(INFO) << "DEBUG: Last optimized keyframe ID: " << last_optimized_id;
+}
+
+void GaussianSplatProcessor::setSplatBatchCallback(SplatBatchCallback callback) {
+    splat_batch_callback_ = callback;
+    LOG(INFO) << "Splat batch callback set for GaussianSplatProcessor";
+}
+
+void GaussianSplatProcessor::clearSplatBatchCallback() {
+    splat_batch_callback_ = nullptr;
+    LOG(INFO) << "Splat batch callback cleared for GaussianSplatProcessor";
 }
 
 }  // namespace gaussian_splatting

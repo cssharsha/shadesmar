@@ -44,6 +44,20 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "visualize_gs_rerun",
+    srcs = ["src/visualize_gs_rerun.cpp"],
+    hdrs = ["include/viz/visualize_gs_rerun.hpp"],
+    includes = ["include"],
+    deps = [
+        ":rerun_viz",
+        "//core/storage",
+        "//core/types",
+        "//common:logging",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "rerun_viz_test",
     srcs = ["src/test_rerun.cpp"],

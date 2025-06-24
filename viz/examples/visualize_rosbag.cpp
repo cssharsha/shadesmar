@@ -65,13 +65,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Initialize visualizer for TCP transport
+    // Initialize visualizer for TCP transport with shared recording ID
+    // This allows coordination with Gaussian splat visualization from gs_processor
     std::cout << "Initializing visualizer..." << std::endl;
-    auto visualizer = std::make_shared<viz::RerunVisualizer>("rosbag_viz", "localhost", 9999);
+    std::string shared_recording_id = "shadesmar_combined";
+    auto visualizer = std::make_shared<viz::RerunVisualizer>("rosbag_viz", shared_recording_id, "localhost", 9999);
     if (!visualizer->initialize()) {
         std::cerr << "Failed to initialize visualizer" << std::endl;
         return 1;
     }
+    std::cout << "Rosbag visualization using shared recording_id: " << shared_recording_id << std::endl;
 
     // Set up data structures - derive map store path from bagfile path
     std::string bagfile_path = argv[1];

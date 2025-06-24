@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -13,6 +14,9 @@
 #include "stf/transform_tree.hpp"
 
 namespace gaussian_splatting {
+
+// Callback type for notifying about new splat batches
+using SplatBatchCallback = std::function<void()>;
 
 struct ProcessorConfig {
     std::string map_base_path;                    // Base path for map data files
@@ -70,6 +74,10 @@ public:
     const ProcessorStats& getStats() const { return stats_; }
     void resetStats() { stats_.reset(); }
 
+    // Visualization callback management
+    void setSplatBatchCallback(SplatBatchCallback callback);
+    void clearSplatBatchCallback();
+
     // Status file management
     bool readVSLAMStatus(core::proto::ProcessStatus& status) const;
     bool writeGSStatus(const core::proto::ProcessStatus& status) const;
@@ -92,6 +100,9 @@ private:
     uint32_t next_batch_id_{1};
     uint32_t next_splat_id_{1};
     std::vector<core::types::GaussianSplatBatch> splat_batches_in_memory_;
+
+    // Visualization callback
+    SplatBatchCallback splat_batch_callback_;
 
     // Main processing methods
     void processingLoop();

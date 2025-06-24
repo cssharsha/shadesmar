@@ -4,12 +4,18 @@
 #include <thread>
 #include <chrono>
 #include "gs_processor.hpp"
+#include "viz/visualize_gs_rerun.hpp"
+#include "core/storage/map_store.hpp"
 #include <logging/logging.hpp>
 
 std::unique_ptr<gaussian_splatting::GaussianSplatProcessor> g_processor;
+std::unique_ptr<viz::GaussianSplatRerunVisualizer> g_visualizer;
 
 void signalHandler(int signal) {
     LOG(INFO) << "Received signal " << signal << ", shutting down Gaussian splat processor...";
+    if (g_visualizer) {
+        g_visualizer->disconnect();
+    }
     if (g_processor) {
         g_processor->stop();
     }
@@ -47,6 +53,29 @@ int main(int argc, char* argv[]) {
         if (!g_processor->initialize()) {
             LOG(ERROR) << "Failed to initialize Gaussian splat processor";
             return 1;
+        }
+
+        // Create MapStore instance for the visualizer
+        auto map_store = std::make_shared<core::storage::MapStore>(map_base_path);
+        
+        // Create and initialize Gaussian splat visualizer with shared recording ID
+        // This allows both rosbag and GS processes to publish to the same Rerun viewer
+        std::string shared_recording_id = "shadesmar_combined";
+        g_visualizer = std::make_unique<viz::GaussianSplatRerunVisualizer>(
+            map_store, shared_recording_id, "gaussian_splats");
+        
+        if (!g_visualizer->initialize()) {
+            LOG(WARNING) << "Failed to initialize Gaussian splat visualizer, continuing without visualization";
+            g_visualizer.reset();
+        } else {
+            // Attach visualizer callback to processor
+            g_processor->setSplatBatchCallback([&]() {
+                if (g_visualizer) {
+                    g_visualizer->notifyNewSplatBatch();
+                }
+            });
+            LOG(INFO) << "Gaussian splat visualizer initialized with recording_id: " << shared_recording_id
+                      << " and attached to processor";
         }
 
         // Start processing

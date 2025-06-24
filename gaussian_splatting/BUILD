@@ -21,6 +21,8 @@ cc_binary(
     srcs = ["gs_processor_main.cpp"],
     deps = [
         ":gaussian_splatting",
+        "//viz:visualize_gs_rerun",
+        "//core/storage",
         "//common:logging",
     ],
 )
