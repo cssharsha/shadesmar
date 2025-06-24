@@ -30,7 +30,7 @@ RerunVisualizer::RerunVisualizer(const std::string& name, const std::string& hos
 }
 
 RerunVisualizer::RerunVisualizer(const std::string& name, const std::string& recording_id,
-                                const std::string& host, uint16_t port)
+                                 const std::string& host, uint16_t port)
     : name_(name), recording_id_(recording_id), host_(host), port_(port), rec_(name, recording_id) {
     // Use two-parameter constructor: RecordingStream(application_id, recording_id)
     // This ensures both processes share the same recording
@@ -606,7 +606,7 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
     // Create Points3D with colors and radii
     auto points3d = rerun::Points3D(positions).with_colors(colors).with_radii(radii);
 
-    rec_.set_time_sequence("gaussian_splats", timestamp);
+    rec_.set_time_sequence("max_keyframe_id", timestamp);
     rec_.log(entity_path, points3d);
 
     LOG(INFO) << "Visualized " << splats.size() << " Gaussian splats at " << entity_path;

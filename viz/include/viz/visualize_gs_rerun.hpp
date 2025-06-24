@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,6 +34,7 @@ public:
 
     // Notification mechanism for gs_processor
     void notifyNewSplatBatch();
+    void notifyNewSplatBatch(uint32_t batch_id);  // Event-driven notification with specific batch ID
 
     // Enable/disable visualization
     void setEnabled(bool enabled);
@@ -44,6 +46,7 @@ private:
     
     // Query and visualize latest splat batches
     void visualizeLatestSplatBatches();
+    void visualizeSpecificSplatBatch(uint32_t batch_id);  // Event-driven visualization of specific batch
     
     // Initialize or attach to existing Rerun client
     bool initializeRerunClient();
@@ -66,6 +69,10 @@ private:
     // Keep track of processed batches to avoid duplicates
     std::vector<uint64_t> processed_batch_ids_;
     std::mutex processed_batches_mutex_;
+    
+    // Event-driven batch processing queue
+    std::queue<uint32_t> pending_batch_ids_;
+    std::mutex pending_batches_mutex_;
     
     double current_timestamp_;
 };

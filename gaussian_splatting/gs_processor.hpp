@@ -19,16 +19,16 @@ namespace gaussian_splatting {
 using SplatBatchCallback = std::function<void()>;
 
 struct ProcessorConfig {
-    std::string map_base_path;                    // Base path for map data files
-    std::string status_file_path;                 // Path for process status files
-    double polling_interval_ms = 100.0;          // How often to check for new data
-    size_t batch_size = 10;                      // Number of keyframes per splat batch
-    size_t max_splat_batches_in_memory = 50;     // Memory management limit
-    bool enable_gpu_acceleration = true;         // Use GPU for splat generation
-    double min_keypoint_confidence = 0.5;        // Minimum confidence for splat generation
-    bool offline_mode = false;                   // If true, process all available data then visualize
-    bool enable_visualization = false;           // If true, launch built-in Rerun visualizer
-    
+    std::string map_base_path;                // Base path for map data files
+    std::string status_file_path;             // Path for process status files
+    double polling_interval_ms = 100.0;       // How often to check for new data
+    size_t batch_size = 10;                   // Number of keyframes per splat batch
+    size_t max_splat_batches_in_memory = 50;  // Memory management limit
+    bool enable_gpu_acceleration = true;      // Use GPU for splat generation
+    double min_keypoint_confidence = 0.5;     // Minimum confidence for splat generation
+    bool offline_mode = false;                // If true, process all available data then visualize
+    bool enable_visualization = false;        // If true, launch built-in Rerun visualizer
+
     ProcessorConfig() = default;
     ProcessorConfig(const std::string& map_path) : map_base_path(map_path) {
         status_file_path = map_path + "_gs_status";
@@ -43,7 +43,7 @@ struct ProcessorStats {
     std::atomic<uint32_t> last_generated_batch_id{0};
     std::atomic<bool> is_processing{false};
     std::atomic<double> last_processing_time_ms{0.0};
-    
+
     void reset() {
         total_keyframes_processed = 0;
         total_splat_batches_generated = 0;
@@ -61,22 +61,35 @@ public:
     ~GaussianSplatProcessor();
 
     // Main processing control
-    bool initialize();
+    bool initialize(std::shared_ptr<core::storage::MapStore>& map_store);
     bool start();
     void stop();
-    bool isRunning() const { return processing_thread_running_.load(); }
+    bool isRunning() const {
+        return processing_thread_running_.load();
+    }
 
     // Configuration
-    void setConfig(const ProcessorConfig& config) { config_ = config; }
-    const ProcessorConfig& getConfig() const { return config_; }
+    void setConfig(const ProcessorConfig& config) {
+        config_ = config;
+    }
+    const ProcessorConfig& getConfig() const {
+        return config_;
+    }
 
     // Statistics
-    const ProcessorStats& getStats() const { return stats_; }
-    void resetStats() { stats_.reset(); }
+    const ProcessorStats& getStats() const {
+        return stats_;
+    }
+    void resetStats() {
+        stats_.reset();
+    }
 
     // Visualization callback management
     void setSplatBatchCallback(SplatBatchCallback callback);
     void clearSplatBatchCallback();
+
+    // Get latest written batch ID for event-driven visualization
+    uint32_t getLatestWrittenBatchId() const;
 
     // Status file management
     bool readVSLAMStatus(core::proto::ProcessStatus& status) const;
@@ -92,7 +105,7 @@ private:
     std::atomic<bool> should_stop_processing_{false};
 
     // Storage and data access
-    std::unique_ptr<core::storage::MapStore> map_store_;
+    std::shared_ptr<core::storage::MapStore> map_store_;
     std::shared_ptr<stf::TransformTree> transform_tree_;
     std::unique_ptr<core::storage::SharedMemoryWrapper> shared_memory_;
 
@@ -104,40 +117,43 @@ private:
     // Visualization callback
     SplatBatchCallback splat_batch_callback_;
 
+    // Latest batch ID for event-driven visualization
+    std::atomic<uint32_t> latest_written_batch_id_{0};
+
     // Main processing methods
     void processingLoop();
     bool checkForNewMapData();
     bool processNewKeyframes(uint64_t start_keyframe_id, uint64_t end_keyframe_id);
-    
+
     // Splat generation pipeline
     bool generateSplatBatch(const std::vector<core::types::KeyFrame::Ptr>& keyframes,
-                           const std::vector<core::types::Keypoint>& map_points,
-                           core::types::GaussianSplatBatch& output_batch);
-    
+                            const std::vector<core::types::Keypoint>& map_points,
+                            core::types::GaussianSplatBatch& output_batch);
+
     bool generateSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keypoints,
-                                   std::vector<core::types::GaussianSplat>& output_splats);
-    
+                                     std::vector<core::types::GaussianSplat>& output_splats);
+
     bool generateSplatFromKeypoint(const core::types::Keypoint& keypoint,
-                                  core::types::GaussianSplat& output_splat);
+                                   core::types::GaussianSplat& output_splat);
 
     // Covariance estimation methods
     bool estimateCovarianceFromObservations(const core::types::Keypoint& keypoint,
-                                          Eigen::Matrix3d& covariance);
-    
+                                            Eigen::Matrix3d& covariance);
+
     bool extractColorFromObservations(const core::types::Keypoint& keypoint,
-                                    Eigen::Vector3f& color);
+                                      Eigen::Vector3f& color);
 
     // Memory management
     void manageSplatBatchMemory();
     bool saveSplatBatchToDisk(const core::types::GaussianSplatBatch& batch);
 
-    // Status and health monitoring  
+    // Status and health monitoring
     bool updateProcessStatus();
     bool isVSLAMProcessHealthy() const;
-    
+
     // Map data waiting (transform tree, keyframes, keypoints)
     bool waitForMapData();
-    
+
     // Utility methods
     void initializeLogging();
     double getCurrentTimestamp() const;

@@ -26,10 +26,18 @@ message KeyPointIndexEntry {
   FileLocation location = 2;
 }
 
+message GaussianSplatBatchIndexEntry {
+  uint32 batch_id = 1;
+  FileLocation location = 2;
+  uint32 splat_count = 3;
+  double timestamp = 4;
+}
+
 message MapDiskIndex {
   repeated KeyFrameIndexEntry keyframe_entries = 1;
   repeated FactorIndexEntry factor_entries = 2;
   repeated KeyPointIndexEntry keypoint_entries = 3;
+  repeated GaussianSplatBatchIndexEntry splat_batch_entries = 4;
 }
 
 message MapDiskMetadata {
@@ -46,4 +54,19 @@ message MapDiskMetadata {
     double max_z = 6;
   }
   Bounds bounds = 4;
+
+  message GaussianSplatMetadata {
+    uint32 total_splat_count = 1;
+    uint32 total_batch_count = 2;
+    uint32 min_splat_id = 3;
+    uint32 max_splat_id = 4;
+    uint32 min_batch_id = 5;
+    uint32 max_batch_id = 6;
+  }
+  GaussianSplatMetadata splat_metadata = 5;
+}
+
+// Separate index file for Gaussian splat batches
+message SplatBatchIndex {
+  repeated GaussianSplatBatchIndexEntry entries = 1;
 }

@@ -66,7 +66,7 @@ MapStore::~MapStore() {
     }
 
     if (keyframes_dirty_.load() || factors_dirty_.load() || keypoints_dirty_.load() ||
-        splat_batches_dirty_.load() || metadata_dirty_.load() || has_pending_data) {
+        metadata_dirty_.load() || has_pending_data) {
         LOG(INFO) << "Performing final sync before MapStore destruction";
         performAtomicSync();
     }
@@ -597,6 +597,21 @@ bool MapStore::saveChanges() {
         entry->set_keypoint_id(pair.first);
         *entry->mutable_location() = pair.second;
     }
+    for (const auto& pair : splat_batch_locations_) {
+        proto::GaussianSplatBatchIndexEntry* entry = disk_index.add_splat_batch_entries();
+        entry->set_batch_id(pair.first);
+        *entry->mutable_location() = pair.second;
+
+        // Add metadata if available in cache
+        {
+            std::shared_lock<std::shared_mutex> cache_lock(cache_mutex_);
+            auto cache_it = splat_batch_cache_.find(pair.first);
+            if (cache_it != splat_batch_cache_.end()) {
+                entry->set_splat_count(cache_it->second.size());
+                entry->set_timestamp(cache_it->second.timestamp);
+            }
+        }
+    }
 
     std::fstream index_stream(index_filepath_, std::ios::out | std::ios::trunc | std::ios::binary);
     if (!index_stream.is_open() || !disk_index.SerializeToOstream(&index_stream)) {
@@ -611,7 +626,15 @@ bool MapStore::saveChanges() {
     factors_dirty_ = false;
     keypoints_dirty_ = false;
     metadata_dirty_ = false;
+    // NOTE: splat_batches_dirty_ is managed independently by splat storage system
 
+    return true;
+}
+
+bool MapStore::syncSplatBatchesToDisk() {
+    // NOTE: This method is now deprecated as splat batches are written immediately
+    // via the independent splat storage system (writeSplatBatchToDisk)
+    LOG(INFO) << "syncSplatBatchesToDisk() is deprecated - splats are now written immediately";
     return true;
 }
 
@@ -727,7 +750,8 @@ bool MapStore::writePendingDataToDisk() {
     data_file.close();
 
     LOG(INFO) << "Wrote pending data to disk: " << keyframes_written << " keyframes, "
-              << factors_written << " factors, " << keypoints_written << " keypoints";
+              << factors_written << " factors, " << keypoints_written << " keypoints"
+              << " (splat batches handled independently)";
 
     return true;
 }
@@ -1340,10 +1364,18 @@ bool MapStore::loadMap() {
     for (const auto& entry : disk_index.keypoint_entries()) {
         keypoint_locations_[entry.keypoint_id()] = entry.location();
     }
+    for (const auto& entry : disk_index.splat_batch_entries()) {
+        splat_batch_locations_[entry.batch_id()] = entry.location();
+    }
 
     rebuildTransientIndices();
+
+    // Load separate splat index file
+    loadSplatBatchIndex();
+
     LOG(INFO) << "Index loaded from " << index_filepath_
-              << ". KF entries: " << keyframe_locations_.size() << std::endl;
+              << ". KF entries: " << keyframe_locations_.size()
+              << ", Splat batches: " << splat_batch_locations_.size() << std::endl;
     return true;
 }
 
@@ -1399,6 +1431,7 @@ bool MapStore::syncIndexFromDisk() {
 void MapStore::rebuildTransientIndices() {
     timestamp_to_keyframe_ids_.clear();
     keyframe_to_factor_ids_.clear();  // Clear factor-keyframe associations
+    clearSplatIndexes();              // Clear splat indexes before rebuilding
 
     for (const auto& kf_idx_entry : keyframe_spatial_index_entries_) {
         timestamp_to_keyframe_ids_[kf_idx_entry.timestamp()].push_back(kf_idx_entry.keyframe_id());
@@ -1432,15 +1465,35 @@ void MapStore::rebuildTransientIndices() {
     }
     LOG(INFO) << "Rebuilt factor-keyframe associations: " << keyframe_to_factor_ids_.size()
               << " keyframes with " << total_associations << " total factor associations";
+
+    // Rebuild Gaussian splat indexes from all loaded batches
+    LOG(INFO) << "Rebuilding Gaussian splat indexes from " << splat_batch_locations_.size()
+              << " batches";
+    for (const auto& [batch_id, location] : splat_batch_locations_) {
+        auto batch_opt = getGaussianSplatBatch(batch_id);
+        if (batch_opt) {
+            updateSplatIndexes(batch_opt.value());
+        } else {
+            LOG(WARNING) << "Failed to load splat batch " << batch_id << " during index rebuild";
+        }
+    }
+
+    updateSplatMetadata();
+    LOG(INFO) << "Rebuilt Gaussian splat indexes: " << splat_id_to_location_.size()
+              << " splats from " << splat_batch_locations_.size() << " batches";
 }
 
 void MapStore::clearDataAndIndices() {
     keyframe_locations_.clear();
     factor_locations_.clear();
     keypoint_locations_.clear();
+    splat_batch_locations_.clear();
     timestamp_to_keyframe_ids_.clear();
     keyframe_spatial_index_entries_.clear();
     keyframe_to_factor_ids_.clear();  // Clear factor-keyframe associations
+
+    // Clear Gaussian splat indexes
+    clearSplatIndexes();
 
     // Clear pending writes and caches
     {
@@ -1448,9 +1501,11 @@ void MapStore::clearDataAndIndices() {
         keyframe_pending_writes_.clear();
         factor_pending_writes_.clear();
         keypoint_pending_writes_.clear();
+        splat_batch_pending_writes_.clear();
         keyframe_cache_.clear();
         factor_cache_.clear();
         keypoint_cache_.clear();
+        splat_batch_cache_.clear();
         keyframe_lru_list_.clear();
         keyframe_lru_map_.clear();
     }
@@ -1461,6 +1516,7 @@ void MapStore::clearDataAndIndices() {
     keypoints_dirty_ = false;
     metadata_dirty_ = false;
     transform_tree_dirty_ = false;
+    // NOTE: splat_batches_dirty_ is managed independently by splat storage system
 
     metadata_.Clear();
     metadata_.set_version("1.0-disk");
@@ -1766,6 +1822,21 @@ void MapStore::writeBatchToDiskComplete(
         entry->set_keypoint_id(pair.first);
         *entry->mutable_location() = pair.second;
     }
+    for (const auto& pair : splat_batch_locations_) {
+        proto::GaussianSplatBatchIndexEntry* entry = disk_index.add_splat_batch_entries();
+        entry->set_batch_id(pair.first);
+        *entry->mutable_location() = pair.second;
+
+        // Add metadata if available in cache
+        {
+            std::shared_lock<std::shared_mutex> cache_lock(cache_mutex_);
+            auto cache_it = splat_batch_cache_.find(pair.first);
+            if (cache_it != splat_batch_cache_.end()) {
+                entry->set_splat_count(cache_it->second.size());
+                entry->set_timestamp(cache_it->second.timestamp);
+            }
+        }
+    }
 
     std::fstream index_stream(index_filepath_, std::ios::out | std::ios::trunc | std::ios::binary);
     if (!index_stream.is_open() || !disk_index.SerializeToOstream(&index_stream)) {
@@ -1788,6 +1859,7 @@ void MapStore::writeBatchToDiskComplete(
     keyframes_dirty_ = false;
     factors_dirty_ = false;
     keypoints_dirty_ = false;
+    splat_batches_dirty_ = false;
     metadata_dirty_ = false;
 
     {
@@ -2170,27 +2242,192 @@ void MapStore::syncProcessedOptimizedToDisk() {
 
 // Gaussian splat storage methods
 bool MapStore::addGaussianSplatBatch(const types::GaussianSplatBatch& batch) {
-    // TODO: Implement full splat batch storage
-    LOG(INFO) << "addGaussianSplatBatch placeholder - batch " << batch.batch_id << " with "
-              << batch.size() << " splats";
+    if (batch.empty()) {
+        LOG(WARNING) << "Attempting to add empty Gaussian splat batch " << batch.batch_id;
+        return false;
+    }
+
+    LOG(INFO) << "Adding Gaussian splat batch " << batch.batch_id << " with " << batch.size()
+              << " splats";
+
+    // Use separate splat mutex for all splat operations
+    {
+        std::unique_lock<std::shared_mutex> splat_lock(splat_mutex_);
+
+        // Cache the splat batch
+        splat_batch_cache_[batch.batch_id] = batch;
+
+        // Add to pending writes
+        splat_batch_pending_writes_[batch.batch_id] = batch;
+        splat_batches_dirty_ = true;
+
+        // Update indexes for individual splat queries
+        updateSplatIndexes(batch);
+    }
+
+    // Update metadata
+    updateSplatMetadata();
+    metadata_dirty_ = true;
+
+    LOG(INFO) << "Successfully added Gaussian splat batch " << batch.batch_id
+              << " to cache and pending writes";
     return true;
 }
 
 std::optional<types::GaussianSplatBatch> MapStore::getGaussianSplatBatch(uint32_t batch_id) const {
-    // TODO: Implement splat batch loading from disk
-    LOG(INFO) << "getGaussianSplatBatch placeholder - batch " << batch_id;
+    // First check cache using splat mutex
+    {
+        LOG(INFO) << "Tring to get sp bat " << batch_id;
+        // std::shared_lock<std::shared_mutex> splat_lock(splat_mutex_);
+        auto cache_it = splat_batch_cache_.find(batch_id);
+        if (cache_it != splat_batch_cache_.end()) {
+            return cache_it->second;
+        }
+        LOG(INFO) << "Tring to get sp bat from disk " << batch_id
+                  << " from the current size of locations: " << splat_batch_locations_.size();
+
+        // Check if batch exists on disk
+        auto location_it = splat_batch_locations_.find(batch_id);
+        if (location_it == splat_batch_locations_.end()) {
+            return std::nullopt;
+        }
+
+        LOG(INFO) << "Loading from a location " << batch_id;
+        // Load from disk using protobuf
+        auto batch_opt = readProtoMessage<proto::GaussianSplatBatch, types::GaussianSplatBatch>(
+            location_it->second, types::GaussianSplatBatch::fromProto);
+
+        LOG(INFO) << "Loading from a location now " << batch_id;
+        if (batch_opt) {
+            // Cache the loaded batch for future access
+            // Need to upgrade to unique lock for caching
+            // splat_lock.unlock();
+            // std::unique_lock<std::shared_mutex> cache_lock(splat_mutex_);
+            // splat_batch_cache_[batch_id] = batch_opt.value();
+            return batch_opt.value();
+        }
+    }
+
     return std::nullopt;
 }
 
 bool MapStore::hasGaussianSplatBatch(uint32_t batch_id) const {
-    // TODO: Implement splat batch existence check
-    return false;
+    // Check cache first
+    {
+        std::shared_lock<std::shared_mutex> lock(cache_mutex_);
+        if (splat_batch_cache_.find(batch_id) != splat_batch_cache_.end()) {
+            return true;
+        }
+    }
+
+    // Check if exists on disk
+    return splat_batch_locations_.find(batch_id) != splat_batch_locations_.end();
 }
 
 std::vector<types::GaussianSplatBatch> MapStore::getAllGaussianSplatBatches() const {
-    // TODO: Implement loading all splat batches
-    LOG(INFO) << "getAllGaussianSplatBatches placeholder";
-    return {};
+    std::vector<types::GaussianSplatBatch> all_batches;
+
+    // Collect all batch IDs from locations map
+    std::vector<uint32_t> batch_ids;
+    for (const auto& [batch_id, location] : splat_batch_locations_) {
+        batch_ids.push_back(batch_id);
+    }
+
+    all_batches.reserve(batch_ids.size());
+
+    // Load each batch
+    size_t loaded_count = 0;
+    size_t failed_count = 0;
+
+    for (uint32_t batch_id : batch_ids) {
+        auto batch_opt = getGaussianSplatBatch(batch_id);
+        if (batch_opt) {
+            all_batches.push_back(batch_opt.value());
+            loaded_count++;
+        } else {
+            LOG(WARNING) << "Failed to load Gaussian splat batch " << batch_id;
+            failed_count++;
+        }
+    }
+
+    LOG(INFO) << "Loaded " << loaded_count << " Gaussian splat batches, " << failed_count
+              << " failed";
+
+    return all_batches;
+}
+
+// Individual splat querying methods
+std::optional<types::GaussianSplat> MapStore::getGaussianSplat(uint32_t splat_id) const {
+    // Use the splat index to find the batch and position
+    auto location_it = splat_id_to_location_.find(splat_id);
+    if (location_it == splat_id_to_location_.end()) {
+        return std::nullopt;
+    }
+
+    const auto& location = location_it->second;
+
+    // Get the batch containing this splat
+    auto batch_opt = getGaussianSplatBatch(location.batch_id);
+    if (!batch_opt) {
+        LOG(WARNING) << "Batch " << location.batch_id << " not found for splat " << splat_id;
+        return std::nullopt;
+    }
+
+    // Check if position is valid
+    if (location.position_in_batch >= batch_opt->splats.size()) {
+        LOG(ERROR) << "Invalid position " << location.position_in_batch << " in batch "
+                   << location.batch_id << " for splat " << splat_id;
+        return std::nullopt;
+    }
+
+    return batch_opt->splats[location.position_in_batch];
+}
+
+std::vector<types::GaussianSplat> MapStore::getGaussianSplatsByKeypoint(
+    uint32_t keypoint_id) const {
+    std::vector<types::GaussianSplat> result;
+
+    // Use the reverse index to find splats for this keypoint
+    auto keypoint_splats_it = keypoint_to_splat_ids_.find(keypoint_id);
+    if (keypoint_splats_it == keypoint_to_splat_ids_.end()) {
+        return result;  // Empty vector if no splats found
+    }
+
+    const auto& splat_ids = keypoint_splats_it->second;
+    result.reserve(splat_ids.size());
+
+    size_t loaded_count = 0;
+    size_t failed_count = 0;
+
+    for (uint32_t splat_id : splat_ids) {
+        auto splat_opt = getGaussianSplat(splat_id);
+        if (splat_opt) {
+            result.push_back(splat_opt.value());
+            loaded_count++;
+        } else {
+            LOG(WARNING) << "Failed to load splat " << splat_id << " for keypoint " << keypoint_id;
+            failed_count++;
+        }
+    }
+
+    LOG(INFO) << "Loaded " << loaded_count << " splats for keypoint " << keypoint_id << ", "
+              << failed_count << " failed";
+
+    return result;
+}
+
+std::vector<types::GaussianSplat> MapStore::getGaussianSplatsByBatch(uint32_t batch_id) const {
+    auto batch_opt = getGaussianSplatBatch(batch_id);
+    if (!batch_opt) {
+        LOG(WARNING) << "Batch " << batch_id << " not found";
+        return {};
+    }
+
+    return batch_opt->splats;
+}
+
+bool MapStore::hasGaussianSplat(uint32_t splat_id) const {
+    return splat_id_to_location_.find(splat_id) != splat_id_to_location_.end();
 }
 
 // Transform tree storage methods
@@ -2273,19 +2510,14 @@ bool MapStore::saveTransformTreeToDisk() const {
 
 // Splat storage helper methods
 bool MapStore::writeSplatBatchesToDisk() {
-    // TODO: Implement splat batch disk writing
-    LOG(INFO) << "writeSplatBatchesToDisk placeholder";
     return true;
 }
 
 bool MapStore::loadSplatBatchFromDisk(uint32_t batch_id, types::GaussianSplatBatch& batch) const {
-    // TODO: Implement splat batch loading from disk
-    LOG(INFO) << "loadSplatBatchFromDisk placeholder - batch " << batch_id;
     return false;
 }
 
 void MapStore::markSplatBatchDirty(uint32_t batch_id) {
-    // TODO: Mark splat batch for disk write
     splat_batches_dirty_ = true;
 }
 
@@ -2568,6 +2800,252 @@ bool MapStore::hasUncommittedKeyFrame(uint64_t id) const {
     }
 
     return false;
+}
+
+// Gaussian splat indexing maintenance methods
+void MapStore::updateSplatIndexes(const types::GaussianSplatBatch& batch) {
+    if (batch.empty()) {
+        return;
+    }
+
+    LOG(INFO) << "Updating splat indexes for batch " << batch.batch_id << " with " << batch.size()
+              << " splats";
+
+    // Update individual splat index and keypoint reverse index
+    for (size_t i = 0; i < batch.splats.size(); ++i) {
+        const auto& splat = batch.splats[i];
+
+        // Map splat_id to its location in this batch
+        splat_id_to_location_[splat.id] = SplatLocation(batch.batch_id, static_cast<uint32_t>(i));
+
+        // Update keypoint-to-splat reverse index
+        if (splat.source_keypoint_id > 0) {
+            keypoint_to_splat_ids_[splat.source_keypoint_id].push_back(splat.id);
+        }
+
+        // Update next available splat ID
+        if (splat.id >= next_available_splat_id_) {
+            next_available_splat_id_ = splat.id + 1;
+        }
+    }
+
+    // Update total splat count
+    total_splat_count_ += batch.size();
+
+    LOG(INFO) << "Updated splat indexes: " << splat_id_to_location_.size()
+              << " total splats indexed, next available ID: " << next_available_splat_id_;
+}
+
+void MapStore::clearSplatIndexes() {
+    LOG(INFO) << "Clearing splat indexes (" << splat_id_to_location_.size() << " splats, "
+              << keypoint_to_splat_ids_.size() << " keypoints)";
+
+    splat_id_to_location_.clear();
+    keypoint_to_splat_ids_.clear();
+    next_available_splat_id_ = 1;
+    total_splat_count_ = 0;
+}
+
+void MapStore::updateSplatMetadata() {
+    auto* splat_meta = metadata_.mutable_splat_metadata();
+    if (!splat_meta) {
+        return;
+    }
+
+    splat_meta->set_total_splat_count(total_splat_count_);
+    splat_meta->set_total_batch_count(static_cast<uint32_t>(splat_batch_locations_.size()));
+
+    // Find min/max splat IDs from the index
+    if (!splat_id_to_location_.empty()) {
+        auto min_max_splat =
+            std::minmax_element(splat_id_to_location_.begin(), splat_id_to_location_.end(),
+                                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        splat_meta->set_min_splat_id(min_max_splat.first->first);
+        splat_meta->set_max_splat_id(min_max_splat.second->first);
+    } else {
+        splat_meta->set_min_splat_id(0);
+        splat_meta->set_max_splat_id(0);
+    }
+
+    // Find min/max batch IDs from the locations
+    if (!splat_batch_locations_.empty()) {
+        auto min_max_batch =
+            std::minmax_element(splat_batch_locations_.begin(), splat_batch_locations_.end(),
+                                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        splat_meta->set_min_batch_id(min_max_batch.first->first);
+        splat_meta->set_max_batch_id(min_max_batch.second->first);
+    } else {
+        splat_meta->set_min_batch_id(0);
+        splat_meta->set_max_batch_id(0);
+    }
+
+    LOG(INFO) << "Updated splat metadata - Splats: " << splat_meta->total_splat_count()
+              << ", Batches: " << splat_meta->total_batch_count() << ", Splat ID range: ["
+              << splat_meta->min_splat_id() << ", " << splat_meta->max_splat_id() << "]"
+              << ", Batch ID range: [" << splat_meta->min_batch_id() << ", "
+              << splat_meta->max_batch_id() << "]";
+}
+
+// ===== SEPARATE GAUSSIAN SPLAT STORAGE METHODS =====
+
+bool MapStore::writeSplatBatchToDisk(uint32_t batch_id) {
+    std::unique_lock<std::shared_mutex> splat_lock(splat_mutex_);
+
+    // Find the batch in pending writes
+    auto pending_it = splat_batch_pending_writes_.find(batch_id);
+    if (pending_it == splat_batch_pending_writes_.end()) {
+        LOG(WARNING) << "Splat batch " << batch_id << " not found in pending writes";
+        return false;
+    }
+
+    const auto& batch = pending_it->second;
+
+    // Open splat data file for append
+    std::fstream splat_file;
+    if (!openSplatDataFileForAppend(splat_file)) {
+        LOG(ERROR) << "Failed to open splat data file for writing batch " << batch_id;
+        return false;
+    }
+
+    // Convert to protobuf and write
+    proto::FileLocation location;
+    proto::GaussianSplatBatch proto_batch;
+    batch.toProto(proto_batch);
+    if (!writeProtoMessage(splat_file, proto_batch, location)) {
+        LOG(ERROR) << "Failed to write splat batch " << batch_id << " to disk";
+        splat_file.close();
+        return false;
+    }
+
+    splat_file.close();
+
+    // Update disk locations
+    splat_batch_locations_[batch_id] = location;
+    LOG(INFO) << "Wrote splat " << batch_id << " at " << splat_batch_locations_[batch_id].offset();
+
+    // Remove from pending writes
+    splat_batch_pending_writes_.erase(pending_it);
+
+    // Update dirty flag
+    if (splat_batch_pending_writes_.empty()) {
+        splat_batches_dirty_ = false;
+    }
+
+    // Save index to separate splat index file
+    if (!saveSplatBatchIndex()) {
+        LOG(WARNING) << "Failed to save splat batch index after writing batch " << batch_id;
+    }
+
+    LOG(INFO) << "Successfully wrote splat batch " << batch_id << " to disk";
+
+    // Trigger callback if set
+    {
+        std::lock_guard<std::mutex> callback_lock(splat_callback_mutex_);
+        if (splat_write_completion_callback_) {
+            splat_write_completion_callback_(batch_id, true);
+        }
+    }
+
+    return true;
+}
+
+bool MapStore::saveSplatBatchIndex() {
+    if (splat_index_filepath_.empty()) {
+        LOG(ERROR) << "Splat index filepath not set";
+        return false;
+    }
+
+    proto::SplatBatchIndex index_proto;
+
+    // Add all batch locations to index
+    for (const auto& [batch_id, location] : splat_batch_locations_) {
+        auto* entry = index_proto.add_entries();
+        entry->set_batch_id(batch_id);
+        *entry->mutable_location() = location;
+
+        // Add splat count if we can determine it
+        auto cache_it = splat_batch_cache_.find(batch_id);
+        if (cache_it != splat_batch_cache_.end()) {
+            entry->set_splat_count(static_cast<uint32_t>(cache_it->second.splats.size()));
+            entry->set_timestamp(cache_it->second.timestamp);
+        }
+    }
+
+    // Write to separate splat index file
+    std::ofstream index_file(splat_index_filepath_, std::ios::binary);
+    if (!index_file.is_open()) {
+        LOG(ERROR) << "Failed to open splat index file for writing: " << splat_index_filepath_;
+        return false;
+    }
+
+    std::string serialized;
+    if (!index_proto.SerializeToString(&serialized)) {
+        LOG(ERROR) << "Failed to serialize splat batch index";
+        return false;
+    }
+
+    index_file.write(serialized.data(), serialized.size());
+    index_file.close();
+
+    LOG(INFO) << "Saved splat batch index with " << splat_batch_locations_.size() << " entries";
+    return true;
+}
+
+bool MapStore::loadSplatBatchIndex() {
+    if (splat_index_filepath_.empty() || !std::filesystem::exists(splat_index_filepath_)) {
+        LOG(INFO) << "Splat index file does not exist, starting with empty index";
+        return true;
+    }
+
+    std::ifstream index_file(splat_index_filepath_, std::ios::binary);
+    if (!index_file.is_open()) {
+        LOG(ERROR) << "Failed to open splat index file for reading: " << splat_index_filepath_;
+        return false;
+    }
+
+    std::string serialized((std::istreambuf_iterator<char>(index_file)),
+                           std::istreambuf_iterator<char>());
+    index_file.close();
+
+    if (serialized.empty()) {
+        LOG(INFO) << "Splat index file is empty";
+        return true;
+    }
+
+    proto::SplatBatchIndex index_proto;
+    if (!index_proto.ParseFromString(serialized)) {
+        LOG(ERROR) << "Failed to parse splat batch index";
+        return false;
+    }
+
+    // Load all batch locations
+    splat_batch_locations_.clear();
+    for (const auto& entry : index_proto.entries()) {
+        splat_batch_locations_[entry.batch_id()] = entry.location();
+    }
+
+    LOG(INFO) << "Loaded splat batch index with " << splat_batch_locations_.size() << " entries";
+    return true;
+}
+
+void MapStore::setSplatWriteCompletionCallback(SplatWriteCompletionCallback callback) {
+    std::lock_guard<std::mutex> callback_lock(splat_callback_mutex_);
+    splat_write_completion_callback_ = std::move(callback);
+}
+
+bool MapStore::openSplatDataFileForAppend(std::fstream& file_stream) {
+    if (splat_data_filepath_.empty()) {
+        LOG(ERROR) << "Splat data filepath not set";
+        return false;
+    }
+    file_stream.open(splat_data_filepath_, std::ios::out | std::ios::app | std::ios::binary);
+    if (!file_stream.is_open()) {
+        LOG(ERROR) << "Failed to open splat data file for append: " << splat_data_filepath_;
+        return false;
+    }
+    return true;
 }
 
 }  // namespace storage

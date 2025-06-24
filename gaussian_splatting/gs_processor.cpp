@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <iostream>
 #include <logging/logging.hpp>
+#include <memory>
 #include <sstream>
 #include <thread>
 
@@ -62,17 +63,38 @@ GaussianSplatProcessor::~GaussianSplatProcessor() {
     LOG(INFO) << "GaussianSplatProcessor destroyed";
 }
 
-bool GaussianSplatProcessor::initialize() {
+bool GaussianSplatProcessor::initialize(std::shared_ptr<core::storage::MapStore>& map_store) {
     LOG(INFO) << "Initializing Gaussian splat processor...";
 
     try {
         // Initialize MapStore for reading VSLAM data (cross-process reader)
-        map_store_ = std::make_unique<core::storage::MapStore>(config_.map_base_path,
-                                                               core::storage::ProcessRole::READER);
+        // map_store_ = std::make_unique<core::storage::MapStore>(config_.map_base_path,
+        //                                                        core::storage::ProcessRole::READER);
+        map_store_ = map_store;
         if (!map_store_) {
             LOG(ERROR) << "Failed to create MapStore for path: " << config_.map_base_path;
             return false;
         }
+
+        // Set up MapStore splat write completion callback to trigger visualization
+        map_store_->setSplatWriteCompletionCallback([this](uint32_t batch_id, bool success) {
+            if (success) {
+                LOG(INFO) << "Splat batch " << batch_id << " successfully written to disk";
+                // Store latest written batch ID for event-driven visualization
+                latest_written_batch_id_.store(batch_id);
+                // Trigger visualization callback if set - now event-driven with batch ID
+                if (splat_batch_callback_) {
+                    try {
+                        splat_batch_callback_();
+                    } catch (const std::exception& e) {
+                        LOG(WARNING) << "Exception in splat batch callback: " << e.what();
+                    }
+                }
+            } else {
+                LOG(ERROR) << "Failed to write splat batch " << batch_id << " to disk";
+            }
+        });
+        LOG(INFO) << "Set up MapStore splat write completion callback";
 
         // Wait for map data (transform tree, keyframes, keypoints) to be available
         if (!waitForMapData()) {
@@ -275,7 +297,7 @@ bool GaussianSplatProcessor::processNewKeyframes(uint64_t start_keyframe_id,
         // Create splat batch
         core::types::GaussianSplatBatch batch;
         batch.batch_id = next_batch_id_++;
-        batch.timestamp = getCurrentTimestamp();
+        batch.timestamp = map_store_->getKeyFrame(end_keyframe_id)->pose.timestamp;
         batch.start_keyframe_id = start_keyframe_id;
         batch.end_keyframe_id = end_keyframe_id;
         batch.splats = std::move(new_splats);
@@ -286,7 +308,7 @@ bool GaussianSplatProcessor::processNewKeyframes(uint64_t start_keyframe_id,
         // Add to in-memory storage
         splat_batches_in_memory_.push_back(batch);
 
-        // Save to disk if configured
+        // Save to disk using independent splat storage system
         if (!saveSplatBatchToDisk(batch)) {
             LOG(WARNING) << "Failed to save splat batch " << batch.batch_id << " to disk";
         }
@@ -301,14 +323,7 @@ bool GaussianSplatProcessor::processNewKeyframes(uint64_t start_keyframe_id,
         LOG(INFO) << "Successfully processed keyframes " << start_keyframe_id << " to "
                   << end_keyframe_id << ", generated " << batch.size() << " splats";
 
-        // Notify visualization callback if set
-        if (splat_batch_callback_) {
-            try {
-                splat_batch_callback_();
-            } catch (const std::exception& e) {
-                LOG(WARNING) << "Exception in splat batch callback: " << e.what();
-            }
-        }
+        // Note: Visualization callback is now triggered by MapStore after successful disk write
 
         return true;
 
@@ -399,8 +414,20 @@ void GaussianSplatProcessor::manageSplatBatchMemory() {
 }
 
 bool GaussianSplatProcessor::saveSplatBatchToDisk(const core::types::GaussianSplatBatch& batch) {
-    // Save splat batch using MapStore
-    return map_store_->addGaussianSplatBatch(batch);
+    // First add to MapStore cache and pending writes
+    if (!map_store_->addGaussianSplatBatch(batch)) {
+        LOG(ERROR) << "Failed to add splat batch " << batch.batch_id << " to MapStore";
+        return false;
+    }
+
+    // Then immediately write to disk using the new independent method
+    if (!map_store_->writeSplatBatchToDisk(batch.batch_id)) {
+        LOG(ERROR) << "Failed to write splat batch " << batch.batch_id << " to disk";
+        return false;
+    }
+
+    LOG(INFO) << "Successfully saved and wrote splat batch " << batch.batch_id << " to disk";
+    return true;
 }
 
 double GaussianSplatProcessor::getCurrentTimestamp() const {
@@ -761,6 +788,10 @@ void GaussianSplatProcessor::setSplatBatchCallback(SplatBatchCallback callback) 
 void GaussianSplatProcessor::clearSplatBatchCallback() {
     splat_batch_callback_ = nullptr;
     LOG(INFO) << "Splat batch callback cleared for GaussianSplatProcessor";
+}
+
+uint32_t GaussianSplatProcessor::getLatestWrittenBatchId() const {
+    return latest_written_batch_id_.load();
 }
 
 }  // namespace gaussian_splatting

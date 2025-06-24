@@ -34,6 +34,8 @@ enum class ProcessRole {
 using KeyFramePtr = types::KeyFrame::Ptr;
 class MapStore {
 public:
+    using SplatWriteCompletionCallback = std::function<void(uint32_t batch_id, bool success)>;
+    
     MapStore(const std::string& map_base_filepth, ProcessRole role = ProcessRole::DUAL);
     ~MapStore();
 
@@ -85,9 +87,15 @@ public:
     std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
     std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
     std::optional<types::GaussianSplatBatch> getGaussianSplatBatch(uint32_t batch_id) const;
+    
+    // Individual splat querying methods
+    std::optional<types::GaussianSplat> getGaussianSplat(uint32_t splat_id) const;
+    std::vector<types::GaussianSplat> getGaussianSplatsByKeypoint(uint32_t keypoint_id) const;
+    std::vector<types::GaussianSplat> getGaussianSplatsByBatch(uint32_t batch_id) const;
 
     bool hasKeyPoint(uint32_t id) const;
     bool hasGaussianSplatBatch(uint32_t batch_id) const;
+    bool hasGaussianSplat(uint32_t splat_id) const;
 
     std::vector<KeyFramePtr> getAllKeyFrames() const;
     std::vector<types::Factor> getAllFactors() const;
@@ -114,6 +122,13 @@ public:
                                                        double radius, int max_results = -1) const;
 
     bool saveChanges();
+    bool syncSplatBatchesToDisk();  // Force immediate sync of pending splat batches
+    
+    // Splat-specific storage methods (independent of main MapStore sync)
+    bool writeSplatBatchToDisk(uint32_t batch_id);
+    bool loadSplatBatchIndex();
+    bool saveSplatBatchIndex();
+    void setSplatWriteCompletionCallback(SplatWriteCompletionCallback callback);
     bool loadMap();
     bool syncIndexFromDisk();  // Lightweight index synchronization
 
@@ -285,6 +300,32 @@ private:
     // Factor-keyframe association tracking (reverse mapping)
     std::unordered_map<uint64_t, std::vector<uint64_t>> keyframe_to_factor_ids_;
 
+    // Gaussian splat indexing for efficient individual splat queries
+    struct SplatLocation {
+        uint32_t batch_id;
+        uint32_t position_in_batch;
+        
+        SplatLocation() : batch_id(0), position_in_batch(0) {}
+        SplatLocation(uint32_t bid, uint32_t pos) : batch_id(bid), position_in_batch(pos) {}
+    };
+    
+    // Individual splat index: splat_id → location in batch
+    std::unordered_map<uint32_t, SplatLocation> splat_id_to_location_;
+    
+    // Keypoint-to-splat reverse index: keypoint_id → vector of splat_ids
+    std::unordered_map<uint32_t, std::vector<uint32_t>> keypoint_to_splat_ids_;
+    
+    // Splat metadata tracking
+    uint32_t next_available_splat_id_ = 1;
+    uint32_t total_splat_count_ = 0;
+    
+    // Separate mutex for Gaussian splat operations
+    mutable std::shared_mutex splat_mutex_;
+    
+    // Splat write completion callback instance
+    SplatWriteCompletionCallback splat_write_completion_callback_;
+    std::mutex splat_callback_mutex_;
+
     // Optimization tracking
     uint64_t last_optimized_keyframe_id_ = 0;
 
@@ -294,6 +335,7 @@ private:
 
     bool openDataFileForAppend(std::fstream& file_stream);
     bool openDataFileForRead(std::fstream& file_stream) const;
+    bool openSplatDataFileForAppend(std::fstream& file_stream);
 
     template <typename ProtoType>
     bool writeProtoMessage(std::fstream& stream, const ProtoType& message,
@@ -307,6 +349,11 @@ private:
     void updateMetadataBounds(const types::Pose& pose);
     void rebuildTransientIndices();
     void updateBounds();
+    
+    // Gaussian splat indexing maintenance
+    void updateSplatIndexes(const types::GaussianSplatBatch& batch);
+    void clearSplatIndexes();
+    void updateSplatMetadata();
 
     // Cache management methods
     void cacheKeyFrame(uint64_t id, const KeyFramePtr& keyframe) const;
