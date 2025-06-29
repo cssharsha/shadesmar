@@ -27,7 +27,7 @@ void GaussianSplatProcessor::initializeLogging() {
        << ".log";
 
     // Configure glog to write to separate files
-    FLAGS_log_dir = "/workspace/logs";
+    FLAGS_log_dir = "/logs";
     FLAGS_alsologtostderr = true;  // Also log to stderr
     FLAGS_logbufsecs = 0;          // Flush logs immediately
 

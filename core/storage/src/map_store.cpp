@@ -2586,8 +2586,6 @@ bool MapStore::readVSLAMStatus(core::proto::ProcessStatus& status) const {
     return status.ParseFromString(serialized_data);
 }
 
-// ===== SHARED MEMORY METHODS =====
-
 void MapStore::initializeSharedMemory() {
     if (base_filepath_.empty()) {
         LOG(WARNING) << "Cannot initialize shared memory without base filepath";
@@ -2887,8 +2885,6 @@ void MapStore::updateSplatMetadata() {
               << ", Batch ID range: [" << splat_meta->min_batch_id() << ", "
               << splat_meta->max_batch_id() << "]";
 }
-
-// ===== SEPARATE GAUSSIAN SPLAT STORAGE METHODS =====
 
 bool MapStore::writeSplatBatchToDisk(uint32_t batch_id) {
     std::unique_lock<std::shared_mutex> splat_lock(splat_mutex_);

@@ -12,8 +12,6 @@
 void initializeVisualizerLogging() {
     google::InitGoogleLogging("visualize_rosbag");
 
-    std::filesystem::create_directories("/workspace/logs");
-
     FLAGS_alsologtostderr = true;             // Also log to stderr for real-time monitoring
     FLAGS_logbufsecs = 0;                     // Flush logs immediately
     FLAGS_logtostderr = false;                // Don't log ONLY to stderr
@@ -69,12 +67,14 @@ int main(int argc, char** argv) {
     // This allows coordination with Gaussian splat visualization from gs_processor
     std::cout << "Initializing visualizer..." << std::endl;
     std::string shared_recording_id = "shadesmar_combined";
-    auto visualizer = std::make_shared<viz::RerunVisualizer>("rosbag_viz", shared_recording_id, "localhost", 9999);
+    auto visualizer = std::make_shared<viz::RerunVisualizer>("rosbag_viz", shared_recording_id,
+                                                             "localhost", 9999);
     if (!visualizer->initialize()) {
         std::cerr << "Failed to initialize visualizer" << std::endl;
         return 1;
     }
-    std::cout << "Rosbag visualization using shared recording_id: " << shared_recording_id << std::endl;
+    std::cout << "Rosbag visualization using shared recording_id: " << shared_recording_id
+              << std::endl;
 
     // Set up data structures - derive map store path from bagfile path
     std::string bagfile_path = argv[1];

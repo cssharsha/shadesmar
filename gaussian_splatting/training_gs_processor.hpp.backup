@@ -1,0 +1,277 @@
+#pragma once
+
+#include <torch/torch.h>
+#include <Eigen/Dense>
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+#include "core/storage/map_store.hpp"
+#include "core/storage/shared_memory_wrapper.hpp"
+#include "core/types/gaussian_splat.hpp"
+#include "core/types/keyframe.hpp"
+#include "core/types/keypoint.hpp"
+#include "stf/transform_tree.hpp"
+
+#include "optimization/densification_controller.hpp"
+#include "rendering/bilateral_grid.hpp"
+#include "rendering/rasterizer.hpp"
+#include "rendering/spherical_harmonics.hpp"
+#include "training/batch_trainer.hpp"
+#include "training/keyframe_batch.hpp"
+#include "training/training_config.hpp"
+#include "visualization/training_visualizer.hpp"
+
+namespace gaussian_splatting {
+
+void initializeLogging();
+// Splat initialization modes
+enum class SplatInitMode {
+    SFM_KEYPOINTS,  // Initialize from existing SfM keypoints
+    RANDOM_POINTS   // Initialize random points within scene bounds
+};
+
+// Training progress callback
+using TrainingProgressCallback = std::function<void(int iteration, float loss, int splat_count)>;
+
+// Template configuration for different backends
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+struct TrainingProcessorConfig {
+    // Basic configuration
+    std::string map_base_path;
+    std::string status_file_path;
+
+    // Training parameters
+    SplatInitMode init_mode = SplatInitMode::SFM_KEYPOINTS;
+    int keyframes_per_batch = 10;
+    int max_training_iterations = 1000;
+    int visualization_frequency = 10;  // Show progress every N iterations
+
+    // Visualization settings
+    bool enable_training_visualization = true;
+    std::string training_viz_recording_id = "gaussian_splat_training";
+    std::string training_viz_host = "localhost";
+    uint16_t training_viz_port = 9999;
+
+    // Scene bounds for random initialization
+    Eigen::Vector3f scene_min = Eigen::Vector3f(-10.0f, -10.0f, -10.0f);
+    Eigen::Vector3f scene_max = Eigen::Vector3f(10.0f, 10.0f, 10.0f);
+    int initial_random_splats = 10000;
+
+    // Device configuration
+    torch::Device device = torch::kCPU;
+    bool enable_cuda = true;
+
+    // Training schedule
+    bool train_batch_to_convergence = true;  // Train each batch fully before next
+    float convergence_threshold = 1e-4f;
+
+    TrainingProcessorConfig() = default;
+    TrainingProcessorConfig(const std::string& map_path) : map_base_path(map_path) {
+        status_file_path = map_path + "_training_gs_status";
+
+        // Auto-detect CUDA
+        if (enable_cuda && torch::cuda::is_available()) {
+            device = torch::kCUDA;
+        }
+    }
+};
+
+// Training statistics
+struct TrainingStats {
+    std::atomic<int> total_iterations{0};
+    std::atomic<int> current_batch_id{0};
+    std::atomic<float> current_loss{0.0f};
+    std::atomic<int> current_splat_count{0};
+    std::atomic<bool> is_training{false};
+    std::atomic<uint64_t> last_processed_keyframe_id{0};
+
+    void reset() {
+        total_iterations = 0;
+        current_batch_id = 0;
+        current_loss = 0.0f;
+        current_splat_count = 0;
+        is_training = false;
+        last_processed_keyframe_id = 0;
+    }
+};
+
+template <typename BilateralGridT = rendering::BilateralGrid,
+          typename DensityControllerT = optimization::DensificationController,
+          typename TrainingConfigT = training::TrainingConfig,
+          typename RasterizationT = rendering::DifferentiableRasterizer>
+class TrainingGaussianSplatProcessor {
+public:
+    using ConfigType = TrainingProcessorConfig<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                               RasterizationT>;
+
+    explicit TrainingGaussianSplatProcessor(const ConfigType& config);
+    ~TrainingGaussianSplatProcessor();
+
+    // Main processing control
+    bool initialize();
+    bool start();
+    void stop();
+    bool isRunning() const {
+        return training_thread_running_.load();
+    }
+
+    // Configuration access
+    void setConfig(const ConfigType& config) {
+        config_ = config;
+    }
+    const ConfigType& getConfig() const {
+        return config_;
+    }
+
+    // Statistics
+    const TrainingStats& getStats() const {
+        return stats_;
+    }
+    void resetStats() {
+        stats_.reset();
+    }
+
+    // Callbacks
+    void setTrainingProgressCallback(TrainingProgressCallback callback);
+    void clearTrainingProgressCallback();
+
+    // Manual training control
+    bool processKeyframeBatch(const std::vector<uint64_t>& keyframe_ids);
+    bool trainCurrentBatch(int max_iterations = -1);  // -1 uses config default
+
+    // Batch processing control
+    bool initializeBatchLoader();
+    bool loadNextTrainingBatch();
+    bool trainOnBatch(const training::KeyframeBatch& batch, int max_iterations = -1);
+    bool runFullEpochTraining();
+    void startNewEpoch();
+
+private:
+    ConfigType config_;
+    TrainingStats stats_;
+    TrainingConfigT training_config_;
+
+    // Template-parameterized components
+    std::unique_ptr<BilateralGridT> bilateral_grid_;
+    std::unique_ptr<DensityControllerT> density_controller_;
+    std::unique_ptr<training::BatchTrainer> batch_trainer_;
+    std::unique_ptr<rendering::SphericalHarmonics> spherical_harmonics_;
+    std::unique_ptr<RasterizationT> rasterizer_;
+
+    // Threading
+    std::unique_ptr<std::thread> training_thread_;
+    std::atomic<bool> training_thread_running_{false};
+    std::atomic<bool> should_stop_training_{false};
+
+    // Storage and data access
+    std::shared_ptr<core::storage::MapStore> map_store_;
+    std::shared_ptr<stf::TransformTree> transform_tree_;
+    std::unique_ptr<core::storage::SharedMemoryWrapper> shared_memory_;
+
+    // Training state
+    std::vector<uint64_t> current_keyframe_batch_;
+    uint32_t current_batch_id_{0};
+    uint32_t next_splat_id_{1};
+    bool has_initialized_splats_{false};
+    uint64_t last_processed_keyframe_id_{0};
+
+    // Keyframe batch processing
+    std::shared_ptr<training::KeyframeBatchLoader> batch_loader_;
+    std::shared_ptr<training::TrainingBatchIterator> batch_iterator_;
+    training::KeyframeBatch current_batch_;
+
+    // Current splat data for training
+    std::vector<core::types::GaussianSplat> current_splats_;
+
+    // Legacy batch training data (for backward compatibility)
+    std::vector<torch::Tensor> current_training_images_;
+    std::vector<core::types::CameraInfo> current_camera_params_;
+    std::vector<Eigen::Isometry3d> current_camera_poses_;
+
+    // Callbacks
+    TrainingProgressCallback training_progress_callback_;
+
+    // Training visualization
+    std::unique_ptr<visualization::RerunTrainingVisualizer> training_visualizer_;
+
+    // Main processing methods
+    void trainingLoop();
+    bool checkForNewKeyframes();
+    bool loadNextKeyframeBatch();
+
+    // Batch processing methods
+    bool setupBatchProcessing();
+    bool processTrainingBatch(const training::KeyframeBatch& batch);
+    void updateBatchTrainingStats(const training::KeyframeBatch& batch, float avg_loss);
+
+    // Splat initialization
+    bool initializeSplats();
+    bool initializeFromSfMKeypoints();
+    bool initializeRandomSplats();
+    
+    // Helper methods for SfM keypoint initialization
+    Eigen::Vector3f extractColorFromKeyframes(const core::types::Keypoint& keypoint,
+                                             const std::unordered_map<uint64_t, core::types::KeyFrame::Ptr>& keyframe_map);
+    Eigen::Matrix3d computeKeypointCovariance(const core::types::Keypoint& keypoint,
+                                             const std::unordered_map<uint64_t, core::types::KeyFrame::Ptr>& keyframe_map);
+    float computeInitialOpacity(const core::types::Keypoint& keypoint);
+    float computeInitialConfidence(const core::types::Keypoint& keypoint);
+
+    // Scene bounds estimation
+    std::pair<Eigen::Vector3f, Eigen::Vector3f> estimateSceneBounds();
+
+    // Training pipeline
+    bool setupTrainingBatch(const std::vector<uint64_t>& keyframe_ids);
+    bool performTrainingIteration(int iteration);
+    void updateTrainingStats(int iteration, float loss);
+
+    // Image processing
+    bool extractImageTensor(const core::types::KeyFrame::Ptr& keyframe, torch::Tensor& image_tensor,
+                            core::types::CameraInfo& camera_info);
+
+    // Camera parameter extraction
+    bool extractCameraPoses(const std::vector<uint64_t>& keyframe_ids,
+                            std::vector<Eigen::Isometry3d>& camera_poses,
+                            const std::string& target_frame = "world");
+    bool extractCameraIntrinsics(const std::vector<uint64_t>& keyframe_ids,
+                                 std::vector<core::types::CameraInfo>& camera_infos);
+    torch::Tensor convertCameraIntrinsicsToTensor(const core::types::CameraInfo& camera_info);
+    torch::Tensor convertCameraPoseToTensor(const Eigen::Isometry3d& pose);
+
+    // Rasterization and rendering
+    bool renderCurrentSplats(const std::vector<core::types::GaussianSplat>& splats,
+                             const torch::Tensor& camera_pose,
+                             const torch::Tensor& camera_intrinsics, torch::Tensor& rendered_image);
+    float computeRenderingLoss(const torch::Tensor& rendered_image,
+                               const torch::Tensor& ground_truth_image);
+
+    // Visualization
+    bool shouldVisualize(int iteration) const;
+    void visualizeTrainingProgress(int iteration);
+    bool initializeTrainingVisualization();
+    void shutdownTrainingVisualization();
+    void logTrainingMetrics(int iteration, float total_loss, float l1_loss, float ssim_loss,
+                            double learning_rate);
+
+    // Utility methods
+    bool waitForMapData();
+    double getCurrentTimestamp() const;
+    void logTrainingStats() const;
+};
+
+// Convenience type aliases for common configurations
+using StandardTrainingProcessor =
+    TrainingGaussianSplatProcessor<rendering::BilateralGrid, optimization::DensificationController,
+                                   training::TrainingConfig, rendering::DifferentiableRasterizer>;
+
+using CPUTrainingProcessor =
+    TrainingGaussianSplatProcessor<rendering::BilateralGrid, optimization::DensificationController,
+                                   training::TrainingConfig, rendering::DifferentiableRasterizer>;
+
+}  // namespace gaussian_splatting

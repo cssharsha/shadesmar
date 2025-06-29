@@ -23,8 +23,11 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+# Looks like libssh-gcrypt has some issue, so installing it separately
+RUN apt update -y && apt install -y libssh-gcrypt-4
+
 # Install dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt update -y && apt install -y \
     wget \
     lsb-release \
     gnupg2 \

@@ -128,13 +128,15 @@ http_archive(
     strip_prefix = "googletest-release-1.11.0",
 )
 
-# CUDA Support
 http_archive(
-    name = "local_cuda",
-    build_file = "//third_party:cuda.BUILD",
-    urls = ["https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run"],
-    # sha256 = "...",
+    name = "rules_cuda",
+    sha256 = "",
+    strip_prefix = "rules_cuda-v0.2.4",
+    urls = ["https://github.com/bazel-contrib/rules_cuda/releases/download/v0.2.4/rules_cuda-v0.2.4.tar.gz"],
 )
+load("@rules_cuda//cuda:repositories.bzl", "rules_cuda_dependencies", "register_detected_cuda_toolchains")
+rules_cuda_dependencies()
+register_detected_cuda_toolchains()
 
 # JSON for Modern C++
 http_archive(

@@ -2,6 +2,7 @@
 
 #include <Eigen/Dense>
 #include <cstdint>
+#include <set>
 #include <vector>
 #include "core/proto/gaussian_splat.pb.h"
 
@@ -128,6 +129,7 @@ struct GaussianSplatBatch {
     std::vector<GaussianSplat> splats;
     uint64_t start_keyframe_id;
     uint64_t end_keyframe_id;
+    std::set<uint64_t> source_keyframe_ids;  // Set of keyframe IDs that generated this batch
     double timestamp;
 
     GaussianSplatBatch()
@@ -140,6 +142,12 @@ struct GaussianSplatBatch {
         proto_batch.set_end_keyframe_id(end_keyframe_id);
         proto_batch.set_timestamp(timestamp);
         proto_batch.set_splat_count(splats.size());
+        
+        // Store source keyframe IDs
+        proto_batch.clear_source_keyframe_ids();
+        for (const auto& keyframe_id : source_keyframe_ids) {
+            proto_batch.add_source_keyframe_ids(keyframe_id);
+        }
         
         proto_batch.clear_splats();
         for (const auto& splat : splats) {
@@ -155,6 +163,11 @@ struct GaussianSplatBatch {
         batch.start_keyframe_id = proto_batch.start_keyframe_id();
         batch.end_keyframe_id = proto_batch.end_keyframe_id();
         batch.timestamp = proto_batch.timestamp();
+        
+        // Load source keyframe IDs
+        for (const auto& keyframe_id : proto_batch.source_keyframe_ids()) {
+            batch.source_keyframe_ids.insert(keyframe_id);
+        }
         
         batch.splats.reserve(proto_batch.splats_size());
         for (const auto& splat_proto : proto_batch.splats()) {

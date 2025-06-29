@@ -46,6 +46,9 @@ message GaussianSplatBatch {
     
     // Total number of splats in batch
     uint32 splat_count = 6;
+    
+    // Set of keyframe IDs that generated this batch
+    repeated uint64 source_keyframe_ids = 7;
 }
 
 message ProcessStatus {

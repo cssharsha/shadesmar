@@ -1,0 +1,1645 @@
+#include "training_gs_processor.hpp"
+#include <algorithm>
+#include <chrono>
+#include <logging/logging.hpp>
+#include <memory>
+#include <random>
+#include <opencv2/opencv.hpp>
+
+namespace gaussian_splatting {
+
+void initializeLogging() {
+    google::InitGoogleLogging("training_gs_processor");
+
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << "/logs/training_gs_processor_" << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S")
+       << ".log";
+
+    FLAGS_alsologtostderr = true;
+    FLAGS_logbufsecs = 0;
+    FLAGS_log_prefix = true;
+
+    google::SetLogDestination(google::GLOG_INFO, ss.str().c_str());
+    google::SetLogDestination(google::GLOG_WARNING, "");
+    google::SetLogDestination(google::GLOG_ERROR, "");
+    google::SetLogDestination(google::GLOG_FATAL, "");
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                               RasterizationT>::TrainingGaussianSplatProcessor(const ConfigType&
+                                                                                   config)
+    : config_(config) {
+    initializeLogging();
+    LOG(INFO) << "Initializing TrainingGaussianSplatProcessor with device: "
+              << (config_.device.is_cuda() ? "CUDA" : "CPU");
+
+    // Initialize training configuration
+    training_config_.initial_width = 512;
+    training_config_.initial_height = 384;
+    training_config_.max_iterations_per_batch = config_.max_training_iterations;
+
+    LOG(INFO) << "Training configuration: " << training_config_.initial_width << "x"
+              << training_config_.initial_height
+              << ", max iterations: " << training_config_.max_iterations_per_batch;
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                               RasterizationT>::~TrainingGaussianSplatProcessor() {
+    stop();
+    shutdownTrainingVisualization();
+    LOG(INFO) << "TrainingGaussianSplatProcessor destroyed";
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::initialize() {
+    LOG(INFO) << "Initializing training processor...";
+
+    try {
+        map_store_ = std::make_shared<core::storage::MapStore>(config_.map_base_path,
+                                                               core::storage::ProcessRole::READER);
+        if (!map_store_) {
+            LOG(ERROR) << "Invalid MapStore provided";
+            return false;
+        }
+
+        // Wait for map data availability
+        if (!waitForMapData()) {
+            LOG(ERROR) << "Failed to wait for map data";
+            return false;
+        }
+
+        // Load transform tree
+        transform_tree_ = map_store_->getTransformTree();
+        if (!transform_tree_) {
+            LOG(ERROR) << "Failed to load transform tree";
+            return false;
+        }
+        transform_tree_->printTree();
+
+        // Initialize template-parameterized components
+        bilateral_grid_ =
+            std::make_unique<BilateralGridT>(rendering::BilateralGridConfig{}, config_.device);
+
+        density_controller_ = std::make_unique<DensityControllerT>(training_config_);
+
+        batch_trainer_ = std::make_unique<training::BatchTrainer>(training_config_, map_store_);
+
+        spherical_harmonics_ = std::make_unique<rendering::SphericalHarmonics>(
+            training_config_.sh_degree, config_.device);
+
+        // Initialize rasterizer
+        rendering::RasterizationConfig raster_config(
+            training_config_.initial_width, training_config_.initial_height, config_.device);
+        rasterizer_ = std::make_unique<RasterizationT>(raster_config);
+
+        // Initialize batch processing
+        if (!setupBatchProcessing()) {
+            LOG(ERROR) << "Failed to setup batch processing";
+            return false;
+        }
+
+        // Initialize training visualization
+        if (config_.enable_training_visualization) {
+            if (!initializeTrainingVisualization()) {
+                LOG(WARNING)
+                    << "Failed to initialize training visualization, continuing without it";
+            }
+        }
+
+        LOG(INFO) << "Initialized all template components successfully";
+
+        // Reset statistics
+        stats_.reset();
+
+        LOG(INFO) << "Training processor initialized successfully";
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to initialize training processor: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::start() {
+    if (training_thread_running_.load()) {
+        LOG(WARNING) << "Training processor already running";
+        return true;
+    }
+
+    if (!map_store_) {
+        LOG(ERROR) << "Cannot start: not initialized";
+        return false;
+    }
+
+    should_stop_training_ = false;
+    training_thread_running_ = true;
+
+    training_thread_ =
+        std::make_unique<std::thread>(&TrainingGaussianSplatProcessor::trainingLoop, this);
+
+    LOG(INFO) << "Training processor started";
+    return true;
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::stop() {
+    if (!training_thread_running_.load()) {
+        return;
+    }
+
+    LOG(INFO) << "Stopping training processor...";
+
+    should_stop_training_ = true;
+    training_thread_running_ = false;
+
+    if (training_thread_ && training_thread_->joinable()) {
+        training_thread_->join();
+    }
+
+    training_thread_.reset();
+
+    LOG(INFO) << "Training processor stopped";
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::setTrainingProgressCallback(TrainingProgressCallback callback) {
+    training_progress_callback_ = callback;
+    LOG(INFO) << "Training progress callback set";
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::clearTrainingProgressCallback() {
+    training_progress_callback_ = nullptr;
+    LOG(INFO) << "Training progress callback cleared";
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::trainingLoop() {
+    LOG(INFO) << "Training loop started";
+
+    while (training_thread_running_.load() && !should_stop_training_.load()) {
+        try {
+            // Check for new keyframes
+            if (checkForNewKeyframes()) {
+                // Load next batch of keyframes
+                if (loadNextKeyframeBatch()) {
+                    // Initialize splats if needed
+                    if (!has_initialized_splats_) {
+                        if (initializeSplats()) {
+                            has_initialized_splats_ = true;
+                            LOG(INFO) << "Splats initialized successfully";
+                        } else {
+                            LOG(ERROR) << "Failed to initialize splats";
+                            continue;
+                        }
+                    }
+
+                    // Train current batch
+                    if (trainCurrentBatch()) {
+                        LOG(INFO) << "Successfully trained batch " << current_batch_id_;
+                    } else {
+                        LOG(WARNING) << "Training failed for batch " << current_batch_id_;
+                    }
+                }
+            }
+
+            // Periodic status updates
+            logTrainingStats();
+
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "Error in training loop: " << e.what();
+        }
+
+        // Sleep to control processing frequency
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    LOG(INFO) << "Training loop ended";
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::checkForNewKeyframes() {
+    try {
+        // Read VSLAM status to get the latest processed keyframe ID
+        core::proto::ProcessStatus vslam_status;
+        if (!map_store_->readVSLAMStatus(vslam_status)) {
+            LOG(WARNING) << "Failed to read VSLAM status";
+            return false;
+        }
+
+        // Check if VSLAM is healthy and has processed new keyframes
+        if (!vslam_status.is_healthy()) {
+            LOG(WARNING) << "VSLAM process is not healthy: " << vslam_status.status_message();
+            return false;
+        }
+
+        uint64_t latest_vslam_keyframe = vslam_status.last_processed_keyframe_id();
+
+        // Check if we have new keyframes to process for training
+        if (latest_vslam_keyframe > last_processed_keyframe_id_) {
+            LOG(INFO) << "New keyframes available for training: " << last_processed_keyframe_id_
+                      << " -> " << latest_vslam_keyframe;
+            return true;
+        }
+
+        return false;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error checking for new keyframes: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::loadNextKeyframeBatch() {
+    try {
+        // Read VSLAM status to get latest keyframe ID
+        core::proto::ProcessStatus vslam_status;
+        if (!map_store_->readVSLAMStatus(vslam_status)) {
+            LOG(ERROR) << "Failed to read VSLAM status";
+            return false;
+        }
+
+        uint64_t latest_keyframe_id = vslam_status.last_processed_keyframe_id();
+
+        // Determine keyframe range for next batch
+        uint64_t start_id = last_processed_keyframe_id_ + 1;
+        uint64_t end_id =
+            std::min(start_id + training_config_.keyframes_per_batch - 1, latest_keyframe_id);
+
+        if (start_id > latest_keyframe_id) {
+            LOG(INFO) << "No new keyframes to process";
+            return false;
+        }
+
+        LOG(INFO) << "Loading keyframe batch: " << start_id << " to " << end_id;
+
+        // Clear previous batch
+        current_keyframe_batch_.clear();
+        current_training_images_.clear();
+        current_camera_params_.clear();
+        current_camera_poses_.clear();
+
+        // Load keyframes in the range
+        for (uint64_t kf_id = start_id; kf_id <= end_id; ++kf_id) {
+            auto keyframe = map_store_->getKeyFrame(kf_id);
+            if (!keyframe) {
+                LOG(WARNING) << "Failed to load keyframe " << kf_id;
+                continue;
+            }
+
+            // Extract and preprocess image
+            torch::Tensor image_tensor;
+            core::types::CameraInfo camera_info;
+
+            if (!extractImageTensor(keyframe, image_tensor, camera_info)) {
+                LOG(WARNING) << "Failed to extract image tensor from keyframe " << kf_id;
+                continue;
+            }
+
+            // Store processed data
+            current_keyframe_batch_.push_back(kf_id);
+            current_training_images_.push_back(image_tensor);
+            current_camera_params_.push_back(camera_info);
+
+            LOG(INFO) << "Loaded keyframe " << kf_id << " with image size: " << image_tensor.size(1)
+                      << "x" << image_tensor.size(2) << " with channels: " << image_tensor.size(0);
+        }
+
+        if (current_keyframe_batch_.empty()) {
+            LOG(ERROR) << "No valid keyframes loaded in batch";
+            return false;
+        }
+
+        // Extract camera poses for the loaded keyframes
+        if (!extractCameraPoses(current_keyframe_batch_, current_camera_poses_)) {
+            LOG(ERROR) << "Failed to extract camera poses for batch";
+            return false;
+        }
+
+        // Update tracking
+        last_processed_keyframe_id_ = end_id;
+        current_batch_id_++;
+
+        LOG(INFO) << "Successfully loaded batch " << current_batch_id_ << " with "
+                  << current_keyframe_batch_.size() << " keyframes";
+
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error loading keyframe batch: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::initializeSplats() {
+    LOG(INFO) << "Initializing splats with mode: "
+              << (config_.init_mode == SplatInitMode::SFM_KEYPOINTS ? "SFM_KEYPOINTS"
+                                                                    : "RANDOM_POINTS");
+
+    switch (config_.init_mode) {
+        case SplatInitMode::SFM_KEYPOINTS:
+            return initializeFromSfMKeypoints();
+        case SplatInitMode::RANDOM_POINTS:
+            return initializeRandomSplats();
+        default:
+            LOG(ERROR) << "Unknown initialization mode";
+            return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::initializeFromSfMKeypoints() {
+    LOG(INFO) << "Initializing splats from SfM keypoints with keyframe color extraction";
+
+    try {
+        // Get existing keypoints from map store
+        auto keypoints = map_store_->getAllKeyPoints();
+        if (keypoints.empty()) {
+            LOG(ERROR) << "No SfM keypoints found in map store";
+            return false;
+        }
+
+        // Get available keyframes for color extraction
+        auto keyframes = map_store_->getAllKeyFrames();
+        if (keyframes.empty()) {
+            LOG(WARNING) << "No keyframes available for color extraction, using default colors";
+        }
+
+        LOG(INFO) << "Found " << keypoints.size() << " SfM keypoints and " << keyframes.size() << " keyframes";
+
+        // Create mapping from keyframe ID to keyframe for efficient lookup
+        std::unordered_map<uint64_t, core::types::KeyFrame::Ptr> keyframe_map;
+        for (const auto& kf : keyframes) {
+            keyframe_map[kf->id] = kf;
+        }
+
+        // Create splat batch from keypoints
+        core::types::GaussianSplatBatch splat_batch;
+        current_splats_.clear();
+        splat_batch.batch_id = 0;
+        splat_batch.timestamp = getCurrentTimestamp();
+
+        // Convert each keypoint to a gaussian splat
+        for (const auto& keypoint : keypoints) {
+            // Skip keypoints that need triangulation (no 3D position)
+            if (keypoint.needs_triangulation)
+                continue;
+
+            core::types::GaussianSplat splat;
+            splat.id = next_splat_id_++;
+            splat.position = keypoint.position;
+            splat.source_keypoint_id = keypoint.id();
+
+            // Initialize color by extracting from keyframe observations
+            Eigen::Vector3f extracted_color = extractColorFromKeyframes(keypoint, keyframe_map);
+            splat.color = extracted_color;
+
+            // Initialize covariance based on keypoint uncertainty and observations
+            Eigen::Matrix3d covariance = computeKeypointCovariance(keypoint, keyframe_map);
+            splat.covariance = covariance;
+
+            // Initialize opacity based on observation quality
+            splat.opacity = computeInitialOpacity(keypoint);
+            splat.confidence = computeInitialConfidence(keypoint);
+            splat.timestamp = getCurrentTimestamp();
+
+            splat_batch.splats.push_back(splat);
+            current_splats_.push_back(splat);
+        }
+
+        LOG(INFO) << "Created " << splat_batch.splats.size() << " splats from SfM keypoints";
+
+        // Save initial splat batch to map store
+        if (!map_store_->addGaussianSplatBatch(splat_batch)) {
+            LOG(ERROR) << "Failed to save initial splat batch";
+            return false;
+        }
+
+        stats_.current_splat_count = splat_batch.splats.size();
+        LOG(INFO) << "Successfully initialized splats from SfM keypoints with keyframe data";
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to initialize from SfM keypoints: " << e.what();
+        return false;
+    }
+}
+
+// Helper method to extract color from keyframe observations
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+Eigen::Vector3f TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                              RasterizationT>::extractColorFromKeyframes(
+    const core::types::Keypoint& keypoint,
+    const std::unordered_map<uint64_t, core::types::KeyFrame::Ptr>& keyframe_map) {
+    
+    std::vector<Eigen::Vector3f> colors;
+    std::vector<float> weights;
+    
+    // Extract color from each keyframe observation
+    for (const auto& location : keypoint.locations) {
+        auto kf_it = keyframe_map.find(location.keyframe_id);
+        if (kf_it == keyframe_map.end()) continue;
+        
+        const auto& keyframe = kf_it->second;
+        if (!keyframe->hasColorImage()) continue;
+        
+        // Extract pixel color at keypoint location
+        const auto& color_image = keyframe->getColorImage();
+        cv::Mat cv_image = color_image.toCvMat();
+        
+        // Convert pixel coordinates to image coordinates
+        int x = static_cast<int>(location.x);
+        int y = static_cast<int>(location.y);
+        
+        // Check bounds
+        if (x >= 0 && x < cv_image.cols && y >= 0 && y < cv_image.rows) {
+            cv::Vec3b pixel = cv_image.at<cv::Vec3b>(y, x);
+            
+            // Convert BGR to RGB and normalize
+            Eigen::Vector3f color(pixel[2] / 255.0f, pixel[1] / 255.0f, pixel[0] / 255.0f);
+            
+            // Use uniform weighting since response is not available in Location struct
+            float weight = 1.0f;
+            
+            colors.push_back(color);
+            weights.push_back(weight);
+        }
+    }
+    
+    // Compute weighted average color
+    if (!colors.empty()) {
+        Eigen::Vector3f weighted_color = Eigen::Vector3f::Zero();
+        float total_weight = 0.0f;
+        
+        for (size_t i = 0; i < colors.size(); ++i) {
+            weighted_color += weights[i] * colors[i];
+            total_weight += weights[i];
+        }
+        
+        if (total_weight > 0) {
+            return weighted_color / total_weight;
+        }
+    }
+    
+    // Fallback to neutral color if no valid observations
+    return Eigen::Vector3f(0.7f, 0.7f, 0.7f);
+}
+
+// Helper method to compute covariance from keypoint observations
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+Eigen::Matrix3d TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                              RasterizationT>::computeKeypointCovariance(
+    const core::types::Keypoint& keypoint,
+    const std::unordered_map<uint64_t, core::types::KeyFrame::Ptr>& keyframe_map) {
+    
+    // Base covariance scaled by observation quality
+    double base_variance = 0.01;
+    
+    // Scale based on number of observations (more observations = lower uncertainty)
+    if (keypoint.locations.size() > 3) {
+        base_variance = 0.005;
+    } else if (keypoint.locations.size() > 1) {
+        base_variance = 0.008;
+    }
+    
+    // Compute viewing angle variance - points seen from more diverse angles are more certain
+    std::vector<Eigen::Vector3d> viewing_directions;
+    for (const auto& location : keypoint.locations) {
+        auto kf_it = keyframe_map.find(location.keyframe_id);
+        if (kf_it != keyframe_map.end()) {
+            const auto& keyframe = kf_it->second;
+            Eigen::Vector3d view_dir = (keypoint.position - keyframe->pose.position).normalized();
+            viewing_directions.push_back(view_dir);
+        }
+    }
+    
+    // Compute viewing angle spread
+    if (viewing_directions.size() > 1) {
+        double angle_variance = 0.0;
+        for (size_t i = 0; i < viewing_directions.size(); ++i) {
+            for (size_t j = i + 1; j < viewing_directions.size(); ++j) {
+                double angle = std::acos(std::clamp(viewing_directions[i].dot(viewing_directions[j]), -1.0, 1.0));
+                angle_variance += angle * angle;
+            }
+        }
+        angle_variance /= (viewing_directions.size() * (viewing_directions.size() - 1) / 2);
+        
+        // More diverse viewing angles reduce uncertainty
+        double angle_factor = std::exp(-angle_variance * 2.0);
+        base_variance *= (0.5 + 0.5 * angle_factor);
+    }
+    
+    // Scale by distance from cameras (closer points are more certain)
+    if (!viewing_directions.empty()) {
+        double avg_distance = 0.0;
+        int count = 0;
+        for (const auto& location : keypoint.locations) {
+            auto kf_it = keyframe_map.find(location.keyframe_id);
+            if (kf_it != keyframe_map.end()) {
+                const auto& keyframe = kf_it->second;
+                avg_distance += (keypoint.position - keyframe->pose.position).norm();
+                count++;
+            }
+        }
+        if (count > 0) {
+            avg_distance /= count;
+            // Scale variance with distance (farther points are less certain)
+            base_variance *= std::max(0.5, std::min(2.0, avg_distance / 5.0));
+        }
+    }
+    
+    return Eigen::Matrix3d::Identity() * base_variance;
+}
+
+// Helper method to compute initial opacity
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+float TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::computeInitialOpacity(const core::types::Keypoint& keypoint) {
+    // Higher opacity for keypoints with more observations
+    float opacity = 0.5f + 0.3f * std::min(1.0f, keypoint.locations.size() / 5.0f);
+    return std::clamp(opacity, 0.1f, 0.9f);
+}
+
+// Helper method to compute initial confidence
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+float TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::computeInitialConfidence(const core::types::Keypoint& keypoint) {
+    // Confidence based on observation count and descriptor quality
+    float base_confidence = 0.8f;
+    if (keypoint.locations.size() > 2) {
+        base_confidence = 0.95f;
+    } else if (keypoint.locations.size() > 1) {
+        base_confidence = 0.85f;
+    }
+    
+    // Note: Response field not available in Location struct, using location count only
+    // Could be enhanced later if response data becomes available
+    
+    return std::clamp(base_confidence, 0.3f, 1.0f);
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::initializeRandomSplats() {
+    LOG(INFO) << "Initializing " << config_.initial_random_splats << " random splats";
+
+    try {
+        // Estimate scene bounds from available keyframes or use config defaults
+        auto scene_bounds = estimateSceneBounds();
+        Eigen::Vector3f scene_min = scene_bounds.first;
+        Eigen::Vector3f scene_max = scene_bounds.second;
+
+        LOG(INFO) << "Scene bounds: min(" << scene_min.transpose() << ") max("
+                  << scene_max.transpose() << ")";
+
+        // Create splat batch with random splats
+        core::types::GaussianSplatBatch splat_batch;
+        splat_batch.batch_id = 0;  // Initial batch
+        splat_batch.timestamp = getCurrentTimestamp();
+
+        // Random number generator
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<float> pos_dist_x(scene_min.x(), scene_max.x());
+        std::uniform_real_distribution<float> pos_dist_y(scene_min.y(), scene_max.y());
+        std::uniform_real_distribution<float> pos_dist_z(scene_min.z(), scene_max.z());
+        std::uniform_real_distribution<float> color_dist(0.0f, 1.0f);
+        std::uniform_real_distribution<float> scale_dist(0.005f, 0.02f);  // Small initial scales
+        std::uniform_real_distribution<float> opacity_dist(0.1f, 0.9f);
+
+        // Generate random splats
+        for (int i = 0; i < config_.initial_random_splats; ++i) {
+            core::types::GaussianSplat splat;
+            splat.id = next_splat_id_++;
+
+            // Random position within scene bounds
+            splat.position = Eigen::Vector3d(static_cast<double>(pos_dist_x(gen)),
+                                             static_cast<double>(pos_dist_y(gen)),
+                                             static_cast<double>(pos_dist_z(gen)));
+
+            // Random color
+            splat.color = Eigen::Vector3f(color_dist(gen), color_dist(gen), color_dist(gen));
+
+            // Random small covariance (isotropic)
+            float scale = scale_dist(gen);
+            splat.covariance = Eigen::Matrix3d::Identity() * (scale * scale);
+
+            // Random opacity
+            splat.opacity = opacity_dist(gen);
+            splat.confidence = 1.0f;
+            splat.source_keypoint_id = 0;  // No source keypoint for random splats
+            splat.timestamp = getCurrentTimestamp();
+
+            splat_batch.splats.push_back(splat);
+        }
+
+        LOG(INFO) << "Created " << splat_batch.splats.size() << " random splats";
+
+        // Save initial splat batch to map store
+        if (!map_store_->addGaussianSplatBatch(splat_batch)) {
+            LOG(ERROR) << "Failed to save random splat batch";
+            return false;
+        }
+
+        stats_.current_splat_count = splat_batch.splats.size();
+        LOG(INFO) << "Successfully initialized random splats";
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to initialize random splats: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::trainCurrentBatch(int max_iterations) {
+    if (current_keyframe_batch_.empty() || current_training_images_.empty()) {
+        LOG(ERROR) << "No current batch data available for training";
+        return false;
+    }
+
+    try {
+        // Convert existing data to KeyframeBatch format
+        training::KeyframeBatch batch;
+        batch.batch_id = current_batch_id_;
+        batch.keyframe_ids = current_keyframe_batch_;
+        batch.batch_size = current_keyframe_batch_.size();
+
+        // Stack images into batched tensor [batch_size, 3, height, width]
+        batch.images = torch::stack(current_training_images_, /*dim=*/0);
+
+        // Convert camera poses to tensors and stack [batch_size, 4, 4]
+        std::vector<torch::Tensor> camera_pose_tensors;
+        for (const auto& pose : current_camera_poses_) {
+            camera_pose_tensors.push_back(convertCameraPoseToTensor(pose));
+        }
+        batch.camera_poses = torch::stack(camera_pose_tensors, /*dim=*/0);
+
+        // Convert camera intrinsics to tensors and stack [batch_size, 3, 3]
+        std::vector<torch::Tensor> camera_intrinsic_tensors;
+        for (const auto& camera_info : current_camera_params_) {
+            camera_intrinsic_tensors.push_back(convertCameraIntrinsicsToTensor(camera_info));
+        }
+        batch.camera_intrinsics = torch::stack(camera_intrinsic_tensors, /*dim=*/0);
+        LOG(INFO) << "Just printing: ";
+        LOG(INFO) << batch.isValid();
+
+        // Use existing trainOnBatch method
+        LOG(INFO) << "Calling train on batch from here";
+        return trainOnBatch(batch, max_iterations);
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error in trainCurrentBatch: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::waitForMapData() {
+    LOG(INFO) << "Waiting for map data (transform tree, keyframes, keypoints) to become available "
+                 "via shared memory...";
+
+    // Initialize shared memory for monitoring - use same naming scheme as MapStore
+    std::string shared_memory_name = config_.map_base_path;
+    std::replace(shared_memory_name.begin(), shared_memory_name.end(), '/', '_');
+    std::replace(shared_memory_name.begin(), shared_memory_name.end(), '.', '_');
+
+    shared_memory_ = std::make_unique<core::storage::SharedMemoryWrapper>(shared_memory_name);
+    LOG(INFO) << "Connecting to shared memory: " << shared_memory_name;
+
+    if (!shared_memory_->initialize()) {
+        LOG(ERROR) << "Failed to initialize shared memory for transform tree monitoring: "
+                   << shared_memory_name;
+        return false;
+    }
+
+    const auto* region = shared_memory_->getRegion();
+    if (!region) {
+        LOG(ERROR) << "Shared memory region is null";
+        return false;
+    }
+
+    // Event-driven waiting using data_version counter for efficient notifications
+    const int max_wait_seconds = 300;   // 5 minutes timeout
+    const int poll_interval_ms = 1000;  // Check every 1 second (much less frequent)
+
+    uint64_t last_data_version = region->header.data_version.load();
+
+    for (int elapsed_ms = 0; elapsed_ms < max_wait_seconds * 1000; elapsed_ms += poll_interval_ms) {
+        // Check current data version - if it changed, new data might be available
+        uint64_t current_data_version = region->header.data_version.load();
+        LOG(INFO) << "Data version loaded " << current_data_version;
+        if (current_data_version != last_data_version) {
+            LOG(INFO) << "Data version changed from " << last_data_version << " to "
+                      << current_data_version << ", checking for new map data";
+            last_data_version = current_data_version;
+
+            // Sync MapStore index to get latest data locations
+            map_store_->syncIndexFromDisk();
+        }
+
+        // Check if all required data types are available
+        bool tf_tree_ready = region->header.tf_tree_available.load();
+        bool keyframes_ready = region->header.keyframes_available.load();
+        bool keypoints_ready = region->header.keypoints_available.load();
+
+        if (tf_tree_ready && keyframes_ready && keypoints_ready) {
+            LOG(INFO) << "All map data types are available (tf_tree: " << tf_tree_ready
+                      << ", keyframes: " << keyframes_ready << ", keypoints: " << keypoints_ready
+                      << ")";
+            return true;
+        }
+
+        // Log progress periodically
+        if (elapsed_ms % 10000 == 0) {  // Every 10 seconds
+            LOG(INFO) << "Still waiting for map data... (" << elapsed_ms / 1000 << "s elapsed) "
+                      << "tf_tree: " << tf_tree_ready << ", keyframes: " << keyframes_ready
+                      << ", keypoints: " << keypoints_ready;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+    }
+
+    LOG(ERROR) << "Timeout waiting for map data after " << max_wait_seconds << " seconds";
+    return false;
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+double TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                      RasterizationT>::getCurrentTimestamp() const {
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::duration<double>>(duration).count();
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::logTrainingStats() const {
+    LOG(INFO) << "Training Stats - Batch: " << stats_.current_batch_id.load()
+              << ", Iterations: " << stats_.total_iterations.load()
+              << ", Loss: " << stats_.current_loss.load()
+              << ", Splats: " << stats_.current_splat_count.load()
+              << ", Training: " << (stats_.is_training.load() ? "YES" : "NO");
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+std::pair<Eigen::Vector3f, Eigen::Vector3f> TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT, RasterizationT>::estimateSceneBounds() {
+    Eigen::Vector3f scene_min = config_.scene_min;
+    Eigen::Vector3f scene_max = config_.scene_max;
+
+    try {
+        // Try to estimate bounds from existing keyframes
+        auto keyframes = map_store_->getAllKeyFrames();
+        if (!keyframes.empty()) {
+            LOG(INFO) << "Estimating scene bounds from " << keyframes.size() << " keyframes";
+
+            // Initialize with first keyframe position
+            Eigen::Vector3f first_pos = keyframes[0]->pose.position.cast<float>();
+            scene_min = first_pos;
+            scene_max = first_pos;
+
+            // Expand bounds to include all keyframe positions
+            for (const auto& kf : keyframes) {
+                Eigen::Vector3f pos = kf->pose.position.cast<float>();
+                scene_min = scene_min.cwiseMin(pos);
+                scene_max = scene_max.cwiseMax(pos);
+            }
+
+            // Add padding around camera trajectory
+            Eigen::Vector3f padding(2.0f, 2.0f, 2.0f);
+            scene_min -= padding;
+            scene_max += padding;
+
+            LOG(INFO) << "Estimated scene bounds from keyframes: min(" << scene_min.transpose()
+                      << ") max(" << scene_max.transpose() << ")";
+        } else {
+            LOG(INFO) << "No keyframes available, using config scene bounds";
+        }
+
+        // Also try to incorporate existing keypoints if available
+        auto keypoints = map_store_->getAllKeyPoints();
+        if (!keypoints.empty() && keyframes.empty()) {
+            LOG(INFO) << "Estimating scene bounds from " << keypoints.size() << " keypoints";
+
+            // Initialize with first keypoint
+            Eigen::Vector3f first_pos = keypoints[0].position.cast<float>();
+            scene_min = first_pos;
+            scene_max = first_pos;
+
+            // Expand to include all keypoints
+            for (const auto& kp : keypoints) {
+                if (!kp.needs_triangulation) {  // Only use triangulated keypoints
+                    Eigen::Vector3f pos = kp.position.cast<float>();
+                    scene_min = scene_min.cwiseMin(pos);
+                    scene_max = scene_max.cwiseMax(pos);
+                }
+            }
+
+            // Add padding
+            Eigen::Vector3f padding(1.0f, 1.0f, 1.0f);
+            scene_min -= padding;
+            scene_max += padding;
+        }
+
+    } catch (const std::exception& e) {
+        LOG(WARNING) << "Failed to estimate scene bounds from map data: " << e.what()
+                     << ", using config bounds";
+    }
+
+    return std::make_pair(scene_min, scene_max);
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::extractImageTensor(const core::types::KeyFrame::Ptr& keyframe,
+                                        torch::Tensor& image_tensor,
+                                        core::types::CameraInfo& camera_info) {
+    try {
+        // Check if keyframe has color image data
+        if (!keyframe->hasColorImage()) {
+            LOG(ERROR) << "Keyframe " << keyframe->id << " has no color image";
+            return false;
+        }
+
+        // Get camera info
+        if (!keyframe->hasCameraInfo()) {
+            LOG(ERROR) << "Keyframe " << keyframe->id << " has no camera info";
+            return false;
+        }
+
+        camera_info = keyframe->getCameraInfo();
+        const auto& color_image = keyframe->getColorImage();
+
+        // Convert OpenCV Mat to LibTorch tensor
+        cv::Mat cv_image = color_image.toCvMat();
+
+        // Ensure image is in RGB format (OpenCV uses BGR by default)
+        if (cv_image.channels() == 3) {
+            cv::cvtColor(cv_image, cv_image, cv::COLOR_BGR2RGB);
+        }
+
+        // Resize to training resolution
+        cv::Mat resized_image;
+        cv::resize(cv_image, resized_image,
+                   cv::Size(training_config_.initial_width, training_config_.initial_height));
+
+        // Convert to float and normalize to [0, 1]
+        cv::Mat float_image;
+        resized_image.convertTo(float_image, CV_32F, 1.0 / 255.0);
+
+        // Convert to LibTorch tensor (HWC -> CHW format)
+        image_tensor =
+            torch::from_blob(float_image.data,
+                             {training_config_.initial_height, training_config_.initial_width, 3},
+                             torch::kFloat32)
+                .clone();
+
+        // Permute dimensions from HWC to CHW (channels first for neural networks)
+        image_tensor = image_tensor.permute({2, 0, 1});
+
+        // Move to configured device
+        image_tensor = image_tensor.to(config_.device);
+
+        LOG(INFO) << "Extracted image tensor with shape: " << image_tensor.sizes()
+                  << " on device: " << (config_.device.is_cuda() ? "CUDA" : "CPU");
+
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to extract image tensor: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::extractCameraPoses(const std::vector<uint64_t>& keyframe_ids,
+                                        std::vector<Eigen::Isometry3d>& camera_poses,
+                                        const std::string& target_frame) {
+    try {
+        camera_poses.clear();
+        camera_poses.reserve(keyframe_ids.size());
+
+        if (!transform_tree_) {
+            LOG(ERROR) << "Transform tree not available for camera pose extraction";
+            return false;
+        }
+
+        LOG(INFO) << "Extracting camera poses for " << keyframe_ids.size()
+                  << " keyframes to target frame: " << target_frame;
+
+        // Get static transform from base_link to camera frame
+        auto getTransformFromTree = [&](const std::string& camera_frame) {
+            try {
+                auto transform_result = transform_tree_->getTransform("base_link", "camera");
+                LOG(INFO) << "Using base_link to camera transform: "
+                          << transform_result.transform.translation().transpose();
+                return transform_result.transform;
+            } catch (const std::exception& e) {
+                LOG(WARNING) << "Failed to get base_link to camera transform: " << e.what()
+                             << ". Using identity transform.";
+                return Eigen::Isometry3d::Identity();
+            }
+        };
+        Eigen::Isometry3d T_baselink_camera;
+
+        for (const auto& kf_id : keyframe_ids) {
+            auto keyframe = map_store_->getKeyFrame(kf_id);
+            if (!keyframe) {
+                LOG(WARNING) << "Failed to load keyframe " << kf_id << " for pose extraction";
+                continue;
+            }
+
+            // T_baselink_camera = getTransformFromTree(keyframe->color_data.value().frame_id);
+            T_baselink_camera = getTransformFromTree("camera_color_optical_frame");
+            // Get keyframe's pose in world frame (this is base_link pose in odom frame)
+            Eigen::Isometry3d T_world_baselink = keyframe->pose.getEigenIsometry();
+
+            // Chain transforms: T_world_camera = T_world_baselink * T_baselink_camera
+            Eigen::Isometry3d T_world_camera = T_world_baselink * T_baselink_camera;
+
+            // Transform to target frame if different from world/odom
+            if (target_frame != "world" && target_frame != "odom") {
+                try {
+                    auto transform_result = transform_tree_->getTransform(target_frame, "odom");
+                    T_world_camera = transform_result.transform * T_world_camera;
+                } catch (const std::exception& e) {
+                    LOG(WARNING) << "Failed to transform to target frame " << target_frame << ": "
+                                 << e.what() << ". Using odom frame.";
+                }
+            }
+
+            camera_poses.push_back(T_world_camera);
+
+            LOG(INFO) << "Extracted camera pose for keyframe " << kf_id
+                      << " at position: " << T_world_camera.translation().transpose()
+                      << " in frame: " << target_frame;
+        }
+
+        if (camera_poses.size() != keyframe_ids.size()) {
+            LOG(WARNING) << "Extracted " << camera_poses.size() << " poses but expected "
+                         << keyframe_ids.size();
+        }
+
+        LOG(INFO) << "Successfully extracted " << camera_poses.size() << " camera poses";
+        return !camera_poses.empty();
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error extracting camera poses: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::extractCameraIntrinsics(const std::vector<uint64_t>& keyframe_ids,
+                                             std::vector<core::types::CameraInfo>& camera_infos) {
+    try {
+        camera_infos.clear();
+        camera_infos.reserve(keyframe_ids.size());
+
+        LOG(INFO) << "Extracting camera intrinsics for " << keyframe_ids.size() << " keyframes";
+
+        for (const auto& kf_id : keyframe_ids) {
+            auto keyframe = map_store_->getKeyFrame(kf_id);
+            if (!keyframe) {
+                LOG(WARNING) << "Failed to load keyframe " << kf_id << " for intrinsics extraction";
+                continue;
+            }
+
+            if (!keyframe->hasCameraInfo()) {
+                LOG(WARNING) << "Keyframe " << kf_id << " has no camera info";
+                continue;
+            }
+
+            core::types::CameraInfo camera_info = keyframe->getCameraInfo();
+            camera_infos.push_back(camera_info);
+
+            LOG(INFO) << "Extracted camera intrinsics for keyframe " << kf_id
+                      << " with resolution: " << camera_info.width << "x" << camera_info.height;
+        }
+
+        if (camera_infos.size() != keyframe_ids.size()) {
+            LOG(WARNING) << "Extracted " << camera_infos.size() << " camera infos but expected "
+                         << keyframe_ids.size();
+        }
+
+        LOG(INFO) << "Successfully extracted " << camera_infos.size() << " camera intrinsics";
+        return !camera_infos.empty();
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error extracting camera intrinsics: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+torch::Tensor TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::convertCameraIntrinsicsToTensor(const core::types::CameraInfo& camera_info) {
+    try {
+        // Convert camera matrix to tensor
+        Eigen::Matrix3d K = camera_info.getKInEigen();
+
+        // Create tensor from camera matrix
+        torch::Tensor K_tensor =
+            torch::from_blob(K.data(), {3, 3}, torch::kFloat64).clone().to(torch::kFloat32);
+
+        // Move to configured device
+        K_tensor = K_tensor.to(config_.device);
+
+        LOG(INFO) << "Converted camera intrinsics to tensor with shape: " << K_tensor.sizes()
+                  << " on device: " << (config_.device.is_cuda() ? "CUDA" : "CPU");
+
+        return K_tensor;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error converting camera intrinsics to tensor: " << e.what();
+        return torch::Tensor();
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+torch::Tensor TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::convertCameraPoseToTensor(const Eigen::Isometry3d& pose) {
+    try {
+        // Convert pose to 4x4 homogeneous transformation matrix
+        Eigen::Matrix4d pose_matrix = pose.matrix();
+
+        // Create tensor from pose matrix
+        torch::Tensor pose_tensor = torch::from_blob(pose_matrix.data(), {4, 4}, torch::kFloat64)
+                                        .clone()
+                                        .to(torch::kFloat32);
+
+        // Move to configured device
+        pose_tensor = pose_tensor.to(config_.device);
+
+        LOG(INFO) << "Converted camera pose to tensor with shape: " << pose_tensor.sizes()
+                  << " on device: " << (config_.device.is_cuda() ? "CUDA" : "CPU");
+
+        return pose_tensor;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error converting camera pose to tensor: " << e.what();
+        return torch::Tensor();
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::renderCurrentSplats(const std::vector<core::types::GaussianSplat>& splats,
+                                         const torch::Tensor& camera_pose,
+                                         const torch::Tensor& camera_intrinsics,
+                                         torch::Tensor& rendered_image) {
+    try {
+        if (!rasterizer_) {
+            LOG(ERROR) << "Rasterizer not initialized";
+            return false;
+        }
+
+        // Prepare splats for rasterization
+        rendering::RasterizationInput input = rendering::prepareSplatsForRasterization(
+            splats, camera_pose, camera_intrinsics, config_.device);
+
+        if (!input.isValid()) {
+            LOG(ERROR) << "Failed to prepare splats for rasterization";
+            return false;
+        }
+
+        // Perform rasterization
+        rendering::RasterizationOutput output = rasterizer_->rasterize(input);
+
+        if (!output.isValid()) {
+            LOG(ERROR) << "Rasterization failed";
+            return false;
+        }
+
+        rendered_image = output.rendered_image;
+
+        LOG(INFO) << "Successfully rendered " << splats.size()
+                  << " splats to image of size: " << rendered_image.size(1) << "x"
+                  << rendered_image.size(2);
+
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error during splat rendering: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+float TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::computeRenderingLoss(const torch::Tensor& rendered_image,
+                                          const torch::Tensor& ground_truth_image) {
+    try {
+        // Ensure images are on the same device and have compatible shapes
+        torch::Tensor gt_image = ground_truth_image.to(config_.device);
+
+        if (rendered_image.sizes() != gt_image.sizes()) {
+            LOG(WARNING) << "Image size mismatch - rendered: " << rendered_image.sizes()
+                         << " vs ground truth: " << gt_image.sizes();
+
+            // Resize ground truth to match rendered image
+            gt_image =
+                torch::nn::functional::interpolate(
+                    gt_image.unsqueeze(0),
+                    torch::nn::functional::InterpolateFuncOptions()
+                        .size(std::vector<int64_t>{rendered_image.size(1), rendered_image.size(2)})
+                        .mode(torch::kBilinear)
+                        .align_corners(false))
+                    .squeeze(0);
+        }
+
+        // Compute L1 loss (photometric loss)
+        torch::Tensor l1_loss = torch::nn::functional::l1_loss(rendered_image, gt_image);
+
+        // Compute SSIM-based loss for structural similarity
+        // Simplified SSIM approximation using mean and variance
+        torch::Tensor rendered_mean = torch::mean(rendered_image, {1, 2}, true);
+        torch::Tensor gt_mean = torch::mean(gt_image, {1, 2}, true);
+
+        torch::Tensor rendered_var = torch::var(rendered_image, {1, 2}, true);
+        torch::Tensor gt_var = torch::var(gt_image, {1, 2}, true);
+
+        torch::Tensor covariance =
+            torch::mean((rendered_image - rendered_mean) * (gt_image - gt_mean), {1, 2}, true);
+
+        float c1 = 0.01f * 0.01f;  // stability constants
+        float c2 = 0.03f * 0.03f;
+
+        torch::Tensor ssim = (2 * rendered_mean * gt_mean + c1) * (2 * covariance + c2) /
+                             ((rendered_mean * rendered_mean + gt_mean * gt_mean + c1) *
+                              (rendered_var + gt_var + c2));
+
+        torch::Tensor ssim_loss = 1.0f - torch::mean(ssim);
+
+        // Combined loss (weighted combination)
+        float alpha = 0.8f;  // Weight for L1 loss
+        float beta = 0.2f;   // Weight for SSIM loss
+
+        torch::Tensor total_loss = alpha * l1_loss + beta * ssim_loss;
+
+        float loss_value = total_loss.item<float>();
+
+        LOG(INFO) << "Rendering loss - L1: " << l1_loss.item<float>()
+                  << ", SSIM: " << ssim_loss.item<float>() << ", Total: " << loss_value;
+
+        return loss_value;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error computing rendering loss: " << e.what();
+        return std::numeric_limits<float>::max();
+    }
+}
+
+// Batch processing implementation
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::setupBatchProcessing() {
+    LOG(INFO) << "Setting up batch processing...";
+
+    try {
+        // Initialize batch loader
+        batch_loader_ = std::make_shared<training::KeyframeBatchLoader>(
+            map_store_, training_config_, config_.device);
+
+        if (!batch_loader_->initialize()) {
+            LOG(ERROR) << "Failed to initialize KeyframeBatchLoader";
+            return false;
+        }
+
+        // Initialize batch iterator
+        batch_iterator_ = std::make_shared<training::TrainingBatchIterator>(batch_loader_);
+
+        LOG(INFO) << "Batch processing setup complete - " << batch_loader_->getTotalKeyframes()
+                  << " keyframes, " << batch_loader_->getTotalBatches() << " batches";
+
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error setting up batch processing: " << e.what();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::initializeBatchLoader() {
+    if (!batch_loader_) {
+        return setupBatchProcessing();
+    }
+    return batch_loader_->initialize();
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::loadNextTrainingBatch() {
+    if (!batch_iterator_) {
+        LOG(ERROR) << "Batch iterator not initialized";
+        return false;
+    }
+
+    if (!batch_iterator_->hasNext()) {
+        LOG(INFO) << "No more batches available in current epoch";
+        return false;
+    }
+
+    bool success = batch_iterator_->getNext(current_batch_);
+    if (success) {
+        stats_.current_batch_id = current_batch_.batch_id;
+        LOG(INFO) << "Loaded training batch " << current_batch_.batch_id << " with "
+                  << current_batch_.batch_size << " keyframes";
+    }
+
+    return success;
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::trainOnBatch(const training::KeyframeBatch&
+                                                                      batch,
+                                                                  int max_iterations) {
+    if (!batch.isValid()) {
+        LOG(ERROR) << "Invalid batch provided for training";
+        return false;
+    }
+
+    if (max_iterations <= 0) {
+        max_iterations = config_.max_training_iterations;
+    }
+
+    LOG(INFO) << "Training on batch " << batch.batch_id << " with " << batch.batch_size
+              << " keyframes for " << max_iterations << " iterations";
+
+    stats_.is_training = true;
+    float total_loss = 0.0f;
+    int successful_iterations = 0;
+
+    try {
+        // Process each keyframe in the batch
+        for (size_t i = 0; i < batch.batch_size; ++i) {
+            torch::Tensor ground_truth_image = batch.images[i];
+            torch::Tensor camera_pose = batch.camera_poses[i];
+            torch::Tensor camera_intrinsics = batch.camera_intrinsics[i];
+
+            for (int iter = 0; iter < max_iterations; ++iter) {
+                // Render current splats
+                torch::Tensor rendered_image;
+                if (!renderCurrentSplats(current_splats_, camera_pose, camera_intrinsics,
+                                         rendered_image)) {
+                    LOG(WARNING) << "Failed to render splats for keyframe " << batch.keyframe_ids[i]
+                                 << ", iteration " << iter;
+                    continue;
+                }
+
+                // Compute loss (with individual loss components for visualization)
+                float loss = computeRenderingLoss(rendered_image, ground_truth_image);
+                if (loss == std::numeric_limits<float>::max()) {
+                    LOG(WARNING) << "Invalid loss computed for keyframe " << batch.keyframe_ids[i]
+                                 << ", iteration " << iter;
+                    continue;
+                }
+
+                // Extract individual loss components for detailed visualization
+                // (simplified - in practice these would be computed separately)
+                float l1_loss = loss * 0.8f;    // Approximation based on our weighting
+                float ssim_loss = loss * 0.2f;  // Approximation based on our weighting
+                double learning_rate = 0.001;   // TODO: Get actual learning rate from optimizer
+
+                total_loss += loss;
+                successful_iterations++;
+
+                // Update statistics
+                stats_.total_iterations++;
+                stats_.current_loss = loss;
+
+                // Log detailed training metrics
+                if (training_visualizer_) {
+                    logTrainingMetrics(stats_.total_iterations.load(), loss, l1_loss, ssim_loss,
+                                       learning_rate);
+                }
+
+                // Call progress callback if set
+                if (training_progress_callback_) {
+                    training_progress_callback_(stats_.total_iterations.load(), loss,
+                                                static_cast<int>(current_splats_.size()));
+                }
+
+                // Visualization
+                if (shouldVisualize(iter)) {
+                    visualizeTrainingProgress(iter);
+                }
+
+                // Early stopping if loss is very low
+                if (loss < 0.001f) {
+                    LOG(INFO) << "Early stopping at iteration " << iter
+                              << " due to low loss: " << loss;
+                    break;
+                }
+            }
+        }
+
+        // Update batch training statistics
+        float avg_loss = successful_iterations > 0 ? total_loss / successful_iterations : 0.0f;
+        updateBatchTrainingStats(batch, avg_loss);
+
+        stats_.is_training = false;
+
+        LOG(INFO) << "Completed training on batch " << batch.batch_id
+                  << " with average loss: " << avg_loss << " over " << successful_iterations
+                  << " iterations";
+
+        return successful_iterations > 0;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Error during batch training: " << e.what();
+        stats_.is_training = false;
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::runFullEpochTraining() {
+    LOG(INFO) << "Starting full epoch training...";
+
+    if (!batch_iterator_) {
+        LOG(ERROR) << "Batch iterator not initialized";
+        return false;
+    }
+
+    batch_iterator_->startNewEpoch();
+
+    // Log epoch start
+    if (training_visualizer_) {
+        size_t total_batches = batch_iterator_->getTotalBatches();
+        uint32_t epoch = batch_iterator_->getCurrentEpoch();
+        training_visualizer_->logEpochStart(epoch, total_batches);
+    }
+
+    auto epoch_start_time = std::chrono::steady_clock::now();
+    int batches_processed = 0;
+    int failed_batches = 0;
+    float epoch_total_loss = 0.0f;
+
+    while (batch_iterator_->hasNext()) {
+        training::KeyframeBatch batch;
+        if (!batch_iterator_->getNext(batch)) {
+            LOG(WARNING) << "Failed to get next batch";
+            failed_batches++;
+            continue;
+        }
+
+        if (trainOnBatch(batch)) {
+            batches_processed++;
+            epoch_total_loss += stats_.current_loss.load();
+        } else {
+            failed_batches++;
+            LOG(WARNING) << "Failed to train on batch " << batch.batch_id;
+        }
+
+        // Check for stop signal
+        if (should_stop_training_.load()) {
+            LOG(INFO) << "Training stopped by user request";
+            break;
+        }
+    }
+
+    // Log epoch end
+    auto epoch_end_time = std::chrono::steady_clock::now();
+    auto epoch_duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(epoch_end_time - epoch_start_time);
+    double epoch_time_s = epoch_duration.count() / 1000.0;
+    double avg_epoch_loss = batches_processed > 0 ? epoch_total_loss / batches_processed : 0.0;
+
+    auto iterator_stats = batch_iterator_->getStats();
+    if (training_visualizer_) {
+        training_visualizer_->logEpochEnd(iterator_stats.current_epoch, avg_epoch_loss,
+                                          epoch_time_s);
+    }
+
+    LOG(INFO) << "Completed epoch " << iterator_stats.current_epoch << " - processed "
+              << batches_processed << " batches successfully, " << failed_batches
+              << " failed, avg loss: " << avg_epoch_loss;
+
+    return batches_processed > 0;
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::startNewEpoch() {
+    if (batch_iterator_) {
+        batch_iterator_->startNewEpoch();
+        LOG(INFO) << "Started new training epoch " << batch_iterator_->getCurrentEpoch();
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::processTrainingBatch(const training::KeyframeBatch& batch) {
+    LOG(INFO) << "Processing training batch " << batch.batch_id;
+
+    // Store current batch for rendering
+    current_batch_ = batch;
+
+    // Train on this batch
+    return trainOnBatch(batch);
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<
+    BilateralGridT, DensityControllerT, TrainingConfigT,
+    RasterizationT>::updateBatchTrainingStats(const training::KeyframeBatch& batch,
+                                              float avg_loss) {
+    stats_.current_batch_id = batch.batch_id;
+    stats_.current_loss = avg_loss;
+    stats_.current_splat_count = static_cast<uint32_t>(current_splats_.size());
+
+    LOG(INFO) << "Updated training stats for batch " << batch.batch_id << " - loss: " << avg_loss
+              << ", splats: " << current_splats_.size();
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::shouldVisualize(int iteration) const {
+    return (config_.visualization_frequency > 0) &&
+           (iteration % config_.visualization_frequency == 0);
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::visualizeTrainingProgress(int iteration) {
+    LOG(INFO) << "Visualization at iteration " << iteration
+              << " - loss: " << stats_.current_loss.load()
+              << ", splats: " << stats_.current_splat_count.load();
+
+    if (training_visualizer_) {
+        // Visualize current splats
+        training_visualizer_->visualizeCurrentSplats(current_splats_, iteration);
+
+        // Visualize current batch if available
+        if (current_batch_.isValid()) {
+            training_visualizer_->visualizeKeyframeBatch(current_batch_, "training");
+        }
+
+        // Update training state
+        std::string state_details = "Iteration " + std::to_string(iteration) +
+                                    ", Loss: " + std::to_string(stats_.current_loss.load());
+        training_visualizer_->visualizeTrainingState("Training", state_details);
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+bool TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::initializeTrainingVisualization() {
+    LOG(INFO) << "Initializing training visualization...";
+
+    try {
+        training_visualizer_ = std::make_unique<visualization::RerunTrainingVisualizer>(
+            config_.training_viz_recording_id, config_.training_viz_host,
+            config_.training_viz_port);
+
+        if (!training_visualizer_->initialize()) {
+            LOG(ERROR) << "Failed to initialize RerunTrainingVisualizer";
+            training_visualizer_.reset();
+            return false;
+        }
+
+        // Configure visualization settings
+        training_visualizer_->setVisualizationFrequency(config_.visualization_frequency);
+        training_visualizer_->enableBatchVisualization(true);
+        training_visualizer_->enableSplatVisualization(true);
+
+        // Log initial training state
+        training_visualizer_->visualizeTrainingState("Initialized", "Training processor ready");
+
+        LOG(INFO) << "Training visualization initialized successfully";
+        return true;
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to initialize training visualization: " << e.what();
+        training_visualizer_.reset();
+        return false;
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::shutdownTrainingVisualization() {
+    if (training_visualizer_) {
+        training_visualizer_->visualizeTrainingState("Shutdown", "Training completed");
+        training_visualizer_->shutdown();
+        training_visualizer_.reset();
+        LOG(INFO) << "Training visualization shut down";
+    }
+}
+
+template <typename BilateralGridT, typename DensityControllerT, typename TrainingConfigT,
+          typename RasterizationT>
+void TrainingGaussianSplatProcessor<BilateralGridT, DensityControllerT, TrainingConfigT,
+                                    RasterizationT>::logTrainingMetrics(int iteration,
+                                                                        float total_loss,
+                                                                        float l1_loss,
+                                                                        float ssim_loss,
+                                                                        double learning_rate) {
+    if (!training_visualizer_) {
+        return;
+    }
+
+    // Create training metrics structure
+    visualization::TrainingMetrics metrics;
+    metrics.epoch = batch_iterator_ ? batch_iterator_->getCurrentEpoch() : 0;
+    metrics.batch_in_epoch = batch_iterator_ ? batch_iterator_->getCurrentBatchInEpoch() : 0;
+    metrics.total_batches_processed = stats_.total_iterations.load();
+    metrics.total_loss = total_loss;
+    metrics.l1_loss = l1_loss;
+    metrics.ssim_loss = ssim_loss;
+    metrics.learning_rate = learning_rate;
+    metrics.batch_processing_time_ms = 0.0;  // TODO: Track actual timing
+    metrics.timestamp = std::chrono::steady_clock::now();
+    metrics.num_splats = current_splats_.size();
+    metrics.num_keyframes_in_batch = current_batch_.isValid() ? current_batch_.batch_size : 0;
+
+    // Log the metrics
+    training_visualizer_->logTrainingMetrics(metrics);
+
+    // Update loss curves
+    training_visualizer_->updateLossCurves(total_loss, l1_loss, ssim_loss, iteration);
+}
+
+// Explicit template instantiations for common configurations
+template class TrainingGaussianSplatProcessor<
+    rendering::BilateralGrid, optimization::DensificationController, training::TrainingConfig,
+    rendering::DifferentiableRasterizer>;
+
+}  // namespace gaussian_splatting

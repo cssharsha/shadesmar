@@ -28,16 +28,3 @@ cc_library(
     deps = [":cuda_runtime", ":cublas"],
     visibility = ["//visibility:public"],
 )
-
-# Specialized config for Gaussian Splatting CUDA kernels
-cuda_library(
-    name = "gaussian_splat_cuda",
-    srcs = ["cuda/gaussian_splat.cu"],
-    hdrs = ["cuda/gaussian_splat.cuh"],
-    deps = [
-        ":cuda_runtime",
-        ":cublas",
-        "@eigen",
-    ],
-    gpu_arch = "sm_75",  # Adjust based on your GPU
-)
