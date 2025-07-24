@@ -1,10 +1,10 @@
 #pragma once
 
+#include <Eigen/Core>
 #include <cstdint>
+#include <opencv2/opencv.hpp>
 #include <utility>
 #include <vector>
-#include <Eigen/Core>
-#include <opencv2/opencv.hpp>
 #include "core/proto/geometry.pb.h"
 #include "core/proto/keypoint.pb.h"
 
@@ -23,6 +23,7 @@ struct Keypoint {
     cv::Mat descriptor;
     std::vector<Location> locations;
     bool needs_triangulation = false;  // Flag for keypoints without 3D position
+    Eigen::Vector3d color;
     // Add additional info like ellipsoid if required later
 
     Keypoint() {}
@@ -34,6 +35,8 @@ struct Keypoint {
             Eigen::Vector3d(keypoint_proto.position().x(), keypoint_proto.position().y(),
                             keypoint_proto.position().z());
         point.needs_triangulation = keypoint_proto.needs_triangulation();
+        point.color = Eigen::Vector3d(keypoint_proto.color().x(), keypoint_proto.color().y(),
+                                      keypoint_proto.color().z());
 
         for (const auto& location : keypoint_proto.locations()) {
             Location loc{location.keyframe_id(), location.frame_id()};
@@ -52,6 +55,10 @@ struct Keypoint {
         point_proto->set_y(position.y());
         point_proto->set_z(position.z());
         keypoint_proto.set_needs_triangulation(needs_triangulation);
+        auto* color_proto = keypoint_proto.mutable_color();
+        color_proto->set_x(color.x());
+        color_proto->set_y(color.y());
+        color_proto->set_z(color.z());
 
         for (const auto& location : locations) {
             auto* l = keypoint_proto.add_locations();

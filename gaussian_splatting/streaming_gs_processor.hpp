@@ -12,20 +12,20 @@
 #include <unordered_map>
 #include <vector>
 
-#include <Eigen/Dense>
 #include <torch/torch.h>
+#include <Eigen/Dense>
 
 #include "core/storage/map_store.hpp"
 #include "core/storage/shared_memory_wrapper.hpp"
 #include "core/types/gaussian_splat.hpp"
 #include "core/types/keyframe.hpp"
 #include "core/types/keypoint.hpp"
-#include "utils/stf/transform_tree.hpp"
+#include "gaussian_splatting/optimization/densification_controller.hpp"
+#include "gaussian_splatting/rendering/bilateral_grid.hpp"
 #include "gaussian_splatting/training/batch_trainer.hpp"
 #include "gaussian_splatting/visualization/training_visualizer.hpp"
-#include "gaussian_splatting/rendering/bilateral_grid.hpp"
-#include "gaussian_splatting/optimization/densification_controller.hpp"
 #include "logging/logging.hpp"
+#include "utils/stf/transform_tree.hpp"
 
 namespace gaussian_splatting {
 
@@ -55,23 +55,23 @@ struct SlidingWindowConfig {
 
 // Configuration for convergence detection
 struct ConvergenceConfig {
-    double covariance_threshold = 0.001;          // Splat covariance convergence threshold
-    int max_iterations_per_splat = 1000;          // Maximum training iterations per splat
-    double loss_convergence_threshold = 1e-6;    // Loss convergence threshold
-    int convergence_check_interval = 10;         // Check convergence every N iterations
-    double min_opacity_threshold = 0.05;         // Minimum opacity for active splats
-    bool enable_early_stopping = true;           // Enable early stopping based on convergence
+    double covariance_threshold = 0.001;       // Splat covariance convergence threshold
+    int max_iterations_per_splat = 1000;       // Maximum training iterations per splat
+    double loss_convergence_threshold = 1e-6;  // Loss convergence threshold
+    int convergence_check_interval = 10;       // Check convergence every N iterations
+    double min_opacity_threshold = 0.05;       // Minimum opacity for active splats
+    bool enable_early_stopping = true;         // Enable early stopping based on convergence
 };
 
 // Configuration for random splat initialization
 struct SplatInitializationConfig {
-    int initial_splat_count = 10000;              // Initial number of splats to generate
-    double scene_bounds_padding = 2.0;            // Padding around camera trajectory bounds
-    double initial_covariance_scale = 0.1;        // Initial covariance scaling factor
-    double initial_opacity_range_min = 0.1;       // Minimum initial opacity
-    double initial_opacity_range_max = 0.9;       // Maximum initial opacity
-    bool adaptive_density = true;                 // Enable adaptive splat density
-    double density_scale_factor = 1.0;            // Global density scaling factor
+    int initial_splat_count = 10000;         // Initial number of splats to generate
+    double scene_bounds_padding = 2.0;       // Padding around camera trajectory bounds
+    double initial_covariance_scale = 0.1;   // Initial covariance scaling factor
+    double initial_opacity_range_min = 0.1;  // Minimum initial opacity
+    double initial_opacity_range_max = 0.9;  // Maximum initial opacity
+    bool adaptive_density = true;            // Enable adaptive splat density
+    double density_scale_factor = 1.0;       // Global density scaling factor
 };
 
 // Sliding window data structure for managing keyframes
@@ -189,10 +189,18 @@ public:
     void clearTrainingProgressCallback();
 
     // Status and statistics methods
-    bool isRunning() const { return main_thread_running_.load(); }
-    bool isTraining() const { return stats_.is_training.load(); }
-    bool isConverged() const { return stats_.is_converged.load(); }
-    const TrainingStatistics& getStatistics() const { return stats_; }
+    bool isRunning() const {
+        return main_thread_running_.load();
+    }
+    bool isTraining() const {
+        return stats_.is_training.load();
+    }
+    bool isConverged() const {
+        return stats_.is_converged.load();
+    }
+    const TrainingStatistics& getStatistics() const {
+        return stats_;
+    }
 
 private:
     // Configuration
@@ -229,7 +237,8 @@ private:
     TrainingStatistics stats_;
 
     // Splat management
-    std::atomic<uint64_t> next_splat_id_{1};
+    std::atomic<uint64_t> next_splat_id_{0};
+    std::atomic<uint64_t> batch_id_{0};
     std::atomic<uint64_t> last_processed_keyframe_id_{0};
 
     // Callback
@@ -246,21 +255,9 @@ private:
     bool updateSlidingWindow();
     bool handleNewKeyframe(core::types::KeyFrame::Ptr keyframe);
 
-    // Splat initialization methods
-    bool initializeRandomSplats();
-    std::pair<Eigen::Vector3f, Eigen::Vector3f> estimateSceneBoundsFromTrajectory();
-    std::vector<core::types::GaussianSplat> generateRandomSplats(
-        const Eigen::Vector3f& scene_min, const Eigen::Vector3f& scene_max, int count);
-    Eigen::Vector3f generateRandomPosition(const Eigen::Vector3f& min_bounds,
-                                           const Eigen::Vector3f& max_bounds);
-    Eigen::Vector3f generateRandomColor();
-    Eigen::Matrix3d generateInitialCovariance();
-    float generateInitialOpacity();
-
     // Training thread methods
     void trainingThreadLoop();
     bool trainOnCurrentWindow();
-    bool loadWindowForTraining(training::KeyframeBatch& keyframe_batch);
     bool executeIncrementalTraining(const training::KeyframeBatch& keyframe_batch);
     bool checkConvergence();
 
@@ -273,16 +270,6 @@ private:
     void handleTrainingStatsCallback(int iteration, float total_loss, float l1_loss,
                                      float d_ssim_loss, int splat_count);
 
-    // Camera parameter extraction methods
-    bool extractImageTensor(const core::types::KeyFrame::Ptr& keyframe,
-                            torch::Tensor& image_tensor,
-                            core::types::CameraInfo& camera_info);
-    bool extractCameraPoses(const std::vector<uint64_t>& keyframe_ids,
-                            std::vector<Eigen::Isometry3d>& camera_poses,
-                            const std::string& target_frame = "odom");
-    torch::Tensor convertCameraIntrinsicsToTensor(const core::types::CameraInfo& camera_info);
-    torch::Tensor convertCameraPoseToTensor(const Eigen::Isometry3d& pose);
-
     // Utility methods
     bool waitForMapData();
     double getCurrentTimestamp() const;
@@ -291,8 +278,8 @@ private:
 };
 
 // Type aliases for common configurations
-using DefaultStreamingGSProcessor = StreamingGaussianSplatProcessor<
-    rendering::BilateralGrid, optimization::DensificationController, training::TrainingConfig,
-    rendering::DifferentiableRasterizer>;
+using DefaultStreamingGSProcessor =
+    StreamingGaussianSplatProcessor<rendering::BilateralGrid, optimization::DensificationController,
+                                    training::TrainingConfig, rendering::DifferentiableRasterizer>;
 
 }  // namespace gaussian_splatting

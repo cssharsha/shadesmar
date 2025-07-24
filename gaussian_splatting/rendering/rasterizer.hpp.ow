@@ -1,0 +1,99 @@
+#pragma once
+
+#include <torch/torch.h>
+#include "gaussian_splatting/training/gaussian_tensors.hpp"
+
+namespace gaussian_splatting {
+namespace rendering {
+
+/**
+ * @brief Holds the output of the rasterization process.
+ */
+struct RasterizationOutput {
+    bool success;
+    // The rendered RGB image. Shape: [H, W, 3]
+    torch::Tensor rendered_image;
+    // The alpha channel of the rendered image. Shape: [H, W, 1]
+    torch::Tensor alpha_channel;
+    // The radii of the projected Gaussians. Shape: [N]
+    torch::Tensor radii;
+    torch::Tensor means2d;
+    torch::Tensor depths;
+    torch::Tensor visibility;
+    float width, height;
+};
+
+/**
+ * @brief Differentiable rasterizer for Gaussian splatting.
+ *
+ * This class orchestrates the multi-stage rendering pipeline, including
+ * projection, spherical harmonics evaluation, and rasterization. Each stage
+ * is implemented as a torch::autograd::Function to enable automatic
+ * differentiation for training.
+ */
+class DifferentiableRasterizer {
+public:
+    DifferentiableRasterizer() = default;
+
+    /**
+     * @brief Renders a batch of Gaussian splats.
+     *
+     * @param gaussians The Gaussian splats to render.
+     * @param camera_pose The world-to-camera transformation matrix.
+     * @param camera_intrinsics The camera projection matrix.
+     * @param image_width The width of the output image.
+     * @param image_height The height of the output image.
+     * @return RasterizationOutput containing the rendered image and other buffers.
+     */
+    RasterizationOutput rasterize(const GaussianTensors& gaussians,
+                                  const torch::Tensor& camera_pose,
+                                  const torch::Tensor& camera_intrinsics, int image_width,
+                                  int image_height);
+};
+
+// --- Autograd Functions for the Rendering Pipeline ---
+
+/**
+ * @brief Projects 3D Gaussians to 2D screen space.
+ */
+class ProjectGaussians : public torch::autograd::Function<ProjectGaussians> {
+public:
+    static torch::autograd::variable_list forward(
+        torch::autograd::AutogradContext* ctx, const torch::Tensor& positions,
+        const torch::Tensor& rotations, const torch::Tensor& scales, const torch::Tensor& opacities,
+        const torch::Tensor& camera_pose, const torch::Tensor& camera_intrinsics);
+
+    static torch::autograd::variable_list backward(
+        torch::autograd::AutogradContext* ctx, const torch::autograd::variable_list& grad_outputs);
+};
+
+/**
+ * @brief Evaluates spherical harmonics to compute colors.
+ */
+class EvaluateSphericalHarmonics : public torch::autograd::Function<EvaluateSphericalHarmonics> {
+public:
+    static torch::Tensor forward(torch::autograd::AutogradContext* ctx,
+                                 torch::Tensor sh_degree_tensor, torch::Tensor dirs,
+                                 torch::Tensor coeffs, torch::Tensor masks);
+    static torch::autograd::variable_list backward(
+        torch::autograd::AutogradContext* ctx, const torch::autograd::variable_list& grad_outputs);
+};
+
+/**
+ * @brief Rasterizes 2D Gaussians into an image using gsplat.
+ */
+class RasterizeGaussians : public torch::autograd::Function<RasterizeGaussians> {
+public:
+    static std::vector<torch::Tensor> forward(torch::autograd::AutogradContext* ctx,
+                                              const torch::Tensor& xys, const torch::Tensor& conics,
+                                              const torch::Tensor& colors,
+                                              const torch::Tensor& opacities,
+                                              const torch::Tensor& intersetion_offsets,
+                                              const torch::Tensor& flatten_ids, int image_height,
+                                              int image_width, int tile_size);
+    static torch::autograd::variable_list backward(
+        torch::autograd::AutogradContext* ctx, const torch::autograd::variable_list& grad_outputs);
+};
+
+}  // namespace rendering
+}  // namespace gaussian_splatting

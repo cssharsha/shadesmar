@@ -2,8 +2,9 @@
 
 #include <torch/torch.h>
 #include <vector>
-#include "../utils/batch_gpu_manager.hpp"
 #include "../training/training_config.hpp"
+#include "../utils/batch_gpu_manager.hpp"
+#include "gaussian_splatting/training/gaussian_tensors.hpp"
 
 namespace gaussian_splatting {
 namespace optimization {
@@ -19,48 +20,44 @@ struct DensificationStats {
 class DensificationController {
 public:
     explicit DensificationController(const training::TrainingConfig& config);
-    
+
     // Check if densification should be performed
     bool shouldDensify(int iteration) const;
-    
+
     // Perform densification/pruning
-    bool densifyAndPrune(utils::GPUBatchData& gpu_data, 
-                        const torch::Tensor& position_gradients,
-                        DensificationStats& stats);
-    
+    bool densifyAndPrune(GaussianTensors& gaussians, const torch::Tensor& position_gradients,
+                         DensificationStats& stats);
+
     // Reset tracking for new batch
     void resetForNewBatch();
-    
+
     // Accumulate gradients for densification decisions
     void accumulateGradients(const torch::Tensor& position_gradients);
-    
+
 private:
     training::TrainingConfig config_;
-    
+
     // Gradient accumulation for densification
     torch::Tensor accumulated_gradients_;
     torch::Tensor gradient_counts_;
     int accumulation_steps_ = 0;
-    
+
     // Densification operations
-    std::vector<int> identifyGaussiansToRemove(const utils::GPUBatchData& gpu_data) const;
+    std::vector<int> identifyGaussiansToRemove(const GaussianTensors& gaussians) const;
     std::vector<int> identifyGaussiansToSplit(const torch::Tensor& avg_gradients,
-                                            const torch::Tensor& scales) const;
+                                              const torch::Tensor& scales) const;
     std::vector<int> identifyGaussiansToClone(const torch::Tensor& avg_gradients,
-                                            const torch::Tensor& scales) const;
-    
+                                              const torch::Tensor& scales) const;
+
     // Apply densification operations
-    bool removeGaussians(utils::GPUBatchData& gpu_data, 
-                        const std::vector<int>& indices_to_remove);
-    bool splitGaussians(utils::GPUBatchData& gpu_data,
-                       const std::vector<int>& indices_to_split);
-    bool cloneGaussians(utils::GPUBatchData& gpu_data,
-                       const std::vector<int>& indices_to_clone);
-    
+    bool removeGaussians(GaussianTensors& gaussians, const std::vector<int>& indices_to_remove);
+    bool splitGaussians(GaussianTensors& gaussians, const std::vector<int>& indices_to_split);
+    bool cloneGaussians(GaussianTensors& gaussians, const std::vector<int>& indices_to_clone);
+
     // Utility functions
     torch::Tensor computeAverageGradients() const;
-    void updateGaussianCounts(utils::GPUBatchData& gpu_data);
+    void updateGaussianCounts(GaussianTensors& gaussians);
 };
 
-} // namespace optimization
-} // namespace gaussian_splatting
+}  // namespace optimization
+}  // namespace gaussian_splatting

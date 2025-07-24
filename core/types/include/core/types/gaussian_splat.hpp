@@ -11,20 +11,27 @@ namespace types {
 
 struct GaussianSplat {
     uint32_t id;
-    Eigen::Vector3d position;        // μ (mean position)
-    Eigen::Matrix3d covariance;      // Σ (3x3 covariance matrix)  
-    Eigen::Vector3f color;           // RGB color [0.0, 1.0]
-    float opacity;                   // α (alpha/opacity) [0.0, 1.0]
-    uint32_t source_keypoint_id;     // ID of keypoint that generated this splat
-    float confidence;                // Quality/confidence metric
-    double timestamp;                // Creation timestamp
+    Eigen::Vector3d position;    // μ (mean position)
+    Eigen::Matrix3d covariance;  // Σ (3x3 covariance matrix)
+    Eigen::Vector3f color;       // RGB color [0.0, 1.0]
+    float opacity;               // α (alpha/opacity) [0.0, 1.0]
+    Eigen::Vector3d scale;
+    Eigen::Quaterniond rotation;
+    Eigen::VectorXf sh_coefficients;
+    int sh_degree = 3;
+
+    uint32_t source_keypoint_id;  // ID of keypoint that generated this splat
+    float confidence;             // Quality/confidence metric
+    double timestamp;             // Creation timestamp
 
     GaussianSplat()
-        : id(0), 
+        : id(0),
           position(Eigen::Vector3d::Zero()),
           covariance(Eigen::Matrix3d::Identity()),
           color(Eigen::Vector3f::Zero()),
           opacity(1.0f),
+          scale(Eigen::Vector3d::Ones()),
+          rotation(Eigen::Quaterniond::Identity()),
           source_keypoint_id(0),
           confidence(1.0f),
           timestamp(0.0) {}
@@ -36,6 +43,8 @@ struct GaussianSplat {
           covariance(cov),
           color(rgb),
           opacity(alpha),
+          scale(Eigen::Vector3d::Ones()),
+          rotation(Eigen::Quaterniond::Identity()),
           source_keypoint_id(keypoint_id),
           confidence(1.0f),
           timestamp(0.0) {}
@@ -43,12 +52,12 @@ struct GaussianSplat {
     // Convert to protobuf message
     void toProto(proto::GaussianSplat& proto_splat) const {
         proto_splat.set_id(id);
-        
+
         auto* pos_proto = proto_splat.mutable_position();
         pos_proto->set_x(position.x());
         pos_proto->set_y(position.y());
         pos_proto->set_z(position.z());
-        
+
         // Store covariance as 9 elements in row-major order
         proto_splat.clear_covariance();
         for (int i = 0; i < 3; ++i) {
@@ -56,26 +65,42 @@ struct GaussianSplat {
                 proto_splat.add_covariance(covariance(i, j));
             }
         }
-        
+
         auto* color_proto = proto_splat.mutable_color();
         color_proto->set_x(color.x());
         color_proto->set_y(color.y());
         color_proto->set_z(color.z());
-        
+
         proto_splat.set_opacity(opacity);
         proto_splat.set_source_keypoint_id(source_keypoint_id);
         proto_splat.set_confidence(confidence);
         proto_splat.set_timestamp(timestamp);
+
+        auto* scale_proto = proto_splat.mutable_scale();
+        scale_proto->set_x(scale.x());
+        scale_proto->set_y(scale.y());
+        scale_proto->set_z(scale.z());
+
+        auto* rotation_proto = proto_splat.mutable_rotation();
+        rotation_proto->set_w(rotation.w());
+        rotation_proto->set_x(rotation.x());
+        rotation_proto->set_y(rotation.y());
+        rotation_proto->set_z(rotation.z());
+
+        proto_splat.clear_sh_coefficients();
+        for (int i = 0; i < sh_coefficients.size(); ++i) {
+            proto_splat.add_sh_coefficients(sh_coefficients(i));
+        }
     }
 
     // Create from protobuf message
     static GaussianSplat fromProto(const proto::GaussianSplat& proto_splat) {
         GaussianSplat splat;
         splat.id = proto_splat.id();
-        
+
         const auto& pos_proto = proto_splat.position();
         splat.position = Eigen::Vector3d(pos_proto.x(), pos_proto.y(), pos_proto.z());
-        
+
         // Reconstruct covariance matrix from 9 elements
         if (proto_splat.covariance_size() == 9) {
             for (int i = 0; i < 3; ++i) {
@@ -86,33 +111,49 @@ struct GaussianSplat {
         } else {
             splat.covariance = Eigen::Matrix3d::Identity();
         }
-        
+
         const auto& color_proto = proto_splat.color();
         splat.color = Eigen::Vector3f(color_proto.x(), color_proto.y(), color_proto.z());
-        
+
         splat.opacity = proto_splat.opacity();
         splat.source_keypoint_id = proto_splat.source_keypoint_id();
         splat.confidence = proto_splat.confidence();
         splat.timestamp = proto_splat.timestamp();
-        
+
+        const auto& scale_proto = proto_splat.scale();
+        splat.scale = Eigen::Vector3d(scale_proto.x(), scale_proto.y(), scale_proto.z());
+
+        const auto& rotation_proto = proto_splat.rotation();
+        splat.rotation = Eigen::Quaterniond(rotation_proto.w(), rotation_proto.x(),
+                                            rotation_proto.y(), rotation_proto.z());
+
+        splat.sh_coefficients.resize(proto_splat.sh_coefficients_size());
+        for (int i = 0; i < proto_splat.sh_coefficients_size(); ++i) {
+            splat.sh_coefficients(i) = proto_splat.sh_coefficients(i);
+        }
+
         return splat;
     }
 
     // Validate splat parameters
     bool isValid() const {
         // Check position is finite
-        if (!position.allFinite()) return false;
-        
+        if (!position.allFinite())
+            return false;
+
         // Check covariance is positive semi-definite
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
-        if (solver.eigenvalues().minCoeff() < 0) return false;
-        
+        if (solver.eigenvalues().minCoeff() < 0)
+            return false;
+
         // Check color range [0, 1]
-        if (color.minCoeff() < 0.0f || color.maxCoeff() > 1.0f) return false;
-        
+        if (color.minCoeff() < 0.0f || color.maxCoeff() > 1.0f)
+            return false;
+
         // Check opacity range [0, 1]
-        if (opacity < 0.0f || opacity > 1.0f) return false;
-        
+        if (opacity < 0.0f || opacity > 1.0f)
+            return false;
+
         return true;
     }
 
@@ -132,8 +173,7 @@ struct GaussianSplatBatch {
     std::set<uint64_t> source_keyframe_ids;  // Set of keyframe IDs that generated this batch
     double timestamp;
 
-    GaussianSplatBatch()
-        : batch_id(0), start_keyframe_id(0), end_keyframe_id(0), timestamp(0.0) {}
+    GaussianSplatBatch() : batch_id(0), start_keyframe_id(0), end_keyframe_id(0), timestamp(0.0) {}
 
     // Convert to protobuf message
     void toProto(proto::GaussianSplatBatch& proto_batch) const {
@@ -142,13 +182,13 @@ struct GaussianSplatBatch {
         proto_batch.set_end_keyframe_id(end_keyframe_id);
         proto_batch.set_timestamp(timestamp);
         proto_batch.set_splat_count(splats.size());
-        
+
         // Store source keyframe IDs
         proto_batch.clear_source_keyframe_ids();
         for (const auto& keyframe_id : source_keyframe_ids) {
             proto_batch.add_source_keyframe_ids(keyframe_id);
         }
-        
+
         proto_batch.clear_splats();
         for (const auto& splat : splats) {
             auto* splat_proto = proto_batch.add_splats();
@@ -163,22 +203,26 @@ struct GaussianSplatBatch {
         batch.start_keyframe_id = proto_batch.start_keyframe_id();
         batch.end_keyframe_id = proto_batch.end_keyframe_id();
         batch.timestamp = proto_batch.timestamp();
-        
+
         // Load source keyframe IDs
         for (const auto& keyframe_id : proto_batch.source_keyframe_ids()) {
             batch.source_keyframe_ids.insert(keyframe_id);
         }
-        
+
         batch.splats.reserve(proto_batch.splats_size());
         for (const auto& splat_proto : proto_batch.splats()) {
             batch.splats.push_back(GaussianSplat::fromProto(splat_proto));
         }
-        
+
         return batch;
     }
 
-    size_t size() const { return splats.size(); }
-    bool empty() const { return splats.empty(); }
+    size_t size() const {
+        return splats.size();
+    }
+    bool empty() const {
+        return splats.empty();
+    }
 };
 
 }  // namespace types

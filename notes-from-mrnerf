@@ -33,4 +33,6 @@ position
 scale -> surprisingly its a median?
 opacity
  cd /home/sree/Matrix/gaussian-splatting-cuda
+ Spherical harmonics: A bit complicated, might have to check the theory behind it:
+
 

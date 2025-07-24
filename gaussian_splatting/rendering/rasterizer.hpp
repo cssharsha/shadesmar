@@ -1,128 +1,96 @@
 #pragma once
 
+#include <Common.h>
 #include <torch/torch.h>
-#include <Eigen/Dense>
-#include <vector>
-#include <memory>
-
-#include "core/types/gaussian_splat.hpp"
+#include "gaussian_splatting/training/gaussian_tensors.hpp"
+#include "gaussian_splatting/training/keyframe_tensor.hpp"
 
 namespace gaussian_splatting {
 namespace rendering {
 
-struct RasterizationConfig {
-    int image_width = 512;
-    int image_height = 384;
-    float near_plane = 0.1f;
-    float far_plane = 100.0f;
-    bool enable_depth_culling = true;
-    bool enable_frustum_culling = true;
-    float tile_size = 16.0f;  // Tile-based rasterization
-    torch::Device device = torch::kCPU;
-    
-    RasterizationConfig() = default;
-    RasterizationConfig(int w, int h, torch::Device dev) 
-        : image_width(w), image_height(h), device(dev) {}
-};
-
-struct RasterizationInput {
-    torch::Tensor splat_positions;     // [N, 3] - 3D positions
-    torch::Tensor splat_colors;       // [N, 3] - RGB colors
-    torch::Tensor splat_opacities;    // [N, 1] - opacity values
-    torch::Tensor splat_covariances;  // [N, 3, 3] - 3D covariance matrices
-    torch::Tensor camera_pose;        // [4, 4] - camera pose matrix
-    torch::Tensor camera_intrinsics;  // [3, 3] - camera K matrix
-    
-    bool isValid() const {
-        return splat_positions.defined() && splat_colors.defined() && 
-               splat_opacities.defined() && splat_covariances.defined() &&
-               camera_pose.defined() && camera_intrinsics.defined();
-    }
-    
-    int getNumSplats() const {
-        return splat_positions.size(0);
-    }
-};
-
 struct RasterizationOutput {
-    torch::Tensor rendered_image;     // [3, H, W] - rendered RGB image
-    torch::Tensor depth_buffer;      // [H, W] - depth values
-    torch::Tensor alpha_buffer;      // [H, W] - accumulated alpha
-    torch::Tensor visibility_mask;   // [N] - which splats are visible
-    
-    bool isValid() const {
-        return rendered_image.defined() && depth_buffer.defined() && 
-               alpha_buffer.defined() && visibility_mask.defined();
-    }
+    bool success;
+    // The rendered RGB image. Shape: [H, W, 3]
+    torch::Tensor rendered_image;
+    // The alpha channel of the rendered image. Shape: [H, W, 1]
+    torch::Tensor alpha_channel;
+    // The radii of the projected Gaussians. Shape: [N]
+    torch::Tensor radii;
+    torch::Tensor means2d;
+    torch::Tensor depths;
+    torch::Tensor visibility;
+    float width, height;
 };
 
 class DifferentiableRasterizer {
 public:
-    explicit DifferentiableRasterizer(const RasterizationConfig& config);
-    ~DifferentiableRasterizer() = default;
-    
-    RasterizationOutput rasterize(const RasterizationInput& input);
-    
-    void setConfig(const RasterizationConfig& config) { config_ = config; }
-    const RasterizationConfig& getConfig() const { return config_; }
-    
-    static torch::Tensor projectSplats(const torch::Tensor& positions_3d,
-                                       const torch::Tensor& camera_pose,
-                                       const torch::Tensor& camera_intrinsics);
-    
-    static torch::Tensor compute2DCovariance(const torch::Tensor& covariances_3d,
-                                             const torch::Tensor& camera_pose,
-                                             const torch::Tensor& camera_intrinsics,
-                                             const torch::Tensor& positions_3d);
-    
-private:
-    RasterizationConfig config_;
-    
-    torch::Tensor frustumCulling(const torch::Tensor& positions_3d,
-                                 const torch::Tensor& camera_pose) const;
-    
-    torch::Tensor depthCulling(const torch::Tensor& positions_3d,
-                               const torch::Tensor& camera_pose) const;
-    
-    torch::Tensor tileBasedRasterization(const torch::Tensor& positions_2d,
-                                         const torch::Tensor& covariances_2d,
-                                         const torch::Tensor& colors,
-                                         const torch::Tensor& opacities,
-                                         const torch::Tensor& depths) const;
-    
-    torch::Tensor computeGaussianWeights(const torch::Tensor& pixel_coords,
-                                         const torch::Tensor& splat_center,
-                                         const torch::Tensor& covariance_2d) const;
-    
-    torch::Tensor alphaBlending(const torch::Tensor& colors,
-                                const torch::Tensor& alphas,
-                                const torch::Tensor& weights) const;
+    DifferentiableRasterizer() = default;
+
+    RasterizationOutput rasterize(const GaussianTensors& gaussians,
+                                  const torch::Tensor& camera_pose,
+                                  const torch::Tensor& camera_intrinsics, int image_width,
+                                  int image_height);
+    RasterizationOutput rasterize(GaussianTensors& gaussians,
+                                  training::KeyframeTensor& keyframe_tensor);
 };
 
-class TileRasterizer {
+enum class RasterizeStepStatus {
+    FINISHED,
+    INITIALIZED,
+    NOT_INITIALIZED,
+};
+
+class ProjectGaussians : public torch::autograd::Function<ProjectGaussians> {
 public:
-    explicit TileRasterizer(const RasterizationConfig& config);
-    
-    torch::Tensor rasterizeTile(const torch::Tensor& tile_splats,
-                                const torch::Tensor& tile_colors,
-                                const torch::Tensor& tile_opacities,
-                                const torch::Tensor& tile_covariances,
-                                int tile_x, int tile_y) const;
-    
-private:
-    RasterizationConfig config_;
-    int tile_size_;
+    static struct Config {
+        uint32_t image_width;
+        uint32_t image_height;
+        float eps2d;
+        float near_plane;
+        float far_plane;
+        float radius_clip;
+        bool calc_compensations;
+        gsplat::CameraModelType camera_model;
+        RasterizeStepStatus rasterize_step_status = RasterizeStepStatus::NOT_INITIALIZED;
+    } config;
+
+    static torch::autograd::tensor_list forward(torch::autograd::AutogradContext* ctx,
+                                                torch::Tensor means, torch::Tensor rotations,
+                                                torch::Tensor scales, torch::Tensor opacities,
+                                                torch::Tensor camera_pose,
+                                                torch::Tensor camera_intrinsics);
+
+    static torch::autograd::tensor_list backward(torch::autograd::AutogradContext* ctx,
+                                                 const torch::autograd::tensor_list& grad_outputs);
 };
 
-torch::Tensor convertGaussianSplatsToTensors(
-    const std::vector<core::types::GaussianSplat>& splats,
-    torch::Device device);
+class SphericalHarmonics : public torch::autograd::Function<SphericalHarmonics> {
+public:
+    static torch::autograd::tensor_list forward(torch::autograd::AutogradContext* ctx,
+                                                torch::Tensor sh_degree_tensor, torch::Tensor dirs,
+                                                torch::Tensor coeffs);
 
-RasterizationInput prepareSplatsForRasterization(
-    const std::vector<core::types::GaussianSplat>& splats,
-    const torch::Tensor& camera_pose,
-    const torch::Tensor& camera_intrinsics,
-    torch::Device device);
+    static torch::autograd::tensor_list backward(torch::autograd::AutogradContext* ctx,
+                                                 torch::autograd::tensor_list grad_outputs);
+};
 
-} // namespace rendering
-} // namespace gaussian_splatting
+class Rasterization : public torch::autograd::Function<Rasterization> {
+public:
+    static struct Config {
+        uint32_t image_width;
+        uint32_t image_height;
+        int32_t tile_size;
+        RasterizeStepStatus rasterize_step_status = RasterizeStepStatus::NOT_INITIALIZED;
+    } config;
+    static torch::autograd::tensor_list forward(torch::autograd::AutogradContext* ctx,
+                                                torch::Tensor means2d, torch::Tensor conics,
+                                                torch::Tensor colors, torch::Tensor opacities,
+                                                torch::Tensor bg_color, torch::Tensor isect_offsets,
+                                                torch::Tensor flatten_ids);
+
+    static torch::autograd::tensor_list backward(torch::autograd::AutogradContext* ctx,
+                                                 torch::autograd::tensor_list grad_outputs);
+};
+
+}  // namespace rendering
+}  // namespace gaussian_splatting

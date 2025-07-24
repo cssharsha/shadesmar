@@ -1,17 +1,18 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <rerun.hpp>
 #include <rerun/archetypes/pinhole.hpp>
 #include <stf/transform_tree.hpp>
-#include <memory>
 #include <string>
 #include <vector>
 
-#include "viz/interface.hpp"
 #include "core/storage/map_store.hpp"
-#include "core/types/pose.hpp"
 #include "core/types/gaussian_splat.hpp"
+#include "core/types/image.hpp"
+#include "core/types/pose.hpp"
+#include "viz/interface.hpp"
 
 namespace viz {
 
@@ -21,7 +22,7 @@ class RerunVisualizer : public VisualizerInterface {
 public:
     RerunVisualizer(const std::string& name = "shadesmar", const std::string& host = "localhost",
                     uint16_t port = 9999);
-    
+
     // Constructor with recording ID for shared recordings across processes
     RerunVisualizer(const std::string& name, const std::string& recording_id,
                     const std::string& host = "localhost", uint16_t port = 9999);
@@ -47,6 +48,10 @@ public:
     void addImage(const cv::Mat& image, const std::string& entity_path, double timestamp);
     void addPointCloud(const core::types::PointCloud& cloud, const std::string& entity_path,
                        double timestamp, const core::types::Pose& transform);
+    void addPointCloud(const core::types::PointCloud& cloud, const std::string& entity_path,
+                       double timestamp);
+    void addCamera(const core::types::CameraInfo& camera, const std::string& entity_path,
+                   double timestamp);
     void addCamera(const rerun::archetypes::Pinhole& camera, const std::string& entity_path,
                    double timestamp = 0);
 
@@ -59,26 +64,25 @@ public:
         camera_frame_id_ = camera_frame_id;
     }
 
-    void setFrameIds(const std::string& reference_frame_id, const std::string& base_link_frame_id, const std::string& camera_frame_id) {
+    void setFrameIds(const std::string& reference_frame_id, const std::string& base_link_frame_id,
+                     const std::string& camera_frame_id) {
         reference_frame_id_ = reference_frame_id;
         base_link_frame_id_ = base_link_frame_id;
         camera_frame_id_ = camera_frame_id;
     }
 
     // Clean storage-based visualization - gets keypoints directly from MapStore
-    void visualizeFromStorage(
-        const core::storage::MapStore& map_store,
-        uint64_t current_keyframe_id,
-        uint64_t previous_keyframe_id,
-        size_t trajectory_keyframe_count = 5);
+    void visualizeFromStorage(const core::storage::MapStore& map_store,
+                              uint64_t current_keyframe_id, uint64_t previous_keyframe_id,
+                              size_t trajectory_keyframe_count = 5);
 
     // Gaussian splat visualization methods (primarily used by GaussianSplatRerunVisualizer)
     void addGaussianSplats(const std::vector<core::types::GaussianSplat>& splats,
-                          const std::string& entity_path, double timestamp);
+                           const std::string& entity_path, double timestamp);
     void addGaussianSplatBatch(const core::types::GaussianSplatBatch& batch,
-                              const std::string& entity_path, double timestamp);
+                               const std::string& entity_path, double timestamp);
     void visualizeGaussianSplatsFromStorage(const core::storage::MapStore& map_store,
-                                           const std::string& entity_path = "gaussian_splats");
+                                            const std::string& entity_path = "gaussian_splats");
 
 private:
     std::string name_;
@@ -93,7 +97,7 @@ private:
     std::vector<std::string> camera_entity_paths_;
 
     // Configurable frame IDs
-    std::string reference_frame_id_ = "odom";  // Default to standard odometry frame
+    std::string reference_frame_id_ = "odom";       // Default to standard odometry frame
     std::string base_link_frame_id_ = "base_link";  // Default robot body frame
     std::string camera_frame_id_ = "camera_color_optical_frame";
 
