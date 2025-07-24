@@ -1,13 +1,14 @@
 #pragma once
 
-#include <opencv2/core.hpp>
-#include "core/proto/sensor_data.pb.h"
-
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
 #include <string>
 #include <vector>
+
+#include <opencv2/core.hpp>
+
+#include "core/proto/sensor_data.pb.h"
 
 namespace core {
 namespace types {

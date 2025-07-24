@@ -1,0 +1,79 @@
+#pragma once
+
+#include <core/storage/map_store.hpp>
+#include <core/types/gaussian_splat.hpp>
+#include <core/types/keyframe.hpp>
+#include <core/types/keypoint.hpp>
+
+#include "gaussian_splatting/training/gaussian_tensors.hpp"
+#include "gaussian_splatting/training/keyframe_batch.hpp"
+#include "gaussian_splatting/utils/point_cloud_utils.hpp"
+// #include "torch_utils.hpp"
+
+#include <cstdint>
+#include <memory>
+
+namespace gaussian_splatting {
+
+bool intializeSplatsFromKeypoints(std::shared_ptr<core::storage::MapStore>& map_store,
+                                  const uint64_t& current_batch_id, double& current_timestamp,
+                                  core::types::GaussianSplatBatch& splat_batch,
+                                  std::atomic<uint64_t>& next_splat_id,
+                                  std::vector<uint64_t>& keyframe_ids);
+bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
+                                  std::shared_ptr<core::storage::MapStore>& map_store,
+                                  const uint64_t& current_batch_id, double& current_timestamp,
+                                  core::types::GaussianSplatBatch& splat_batch,
+                                  std::atomic<uint64_t>& next_splat_id,
+                                  utils::PointCloudUtils& point_cloud_utils);
+bool initializeRandomSplats(const std::vector<uint64_t>& keyframe_ids,
+                            std::shared_ptr<core::storage::MapStore>& map_store,
+                            const uint64_t& current_batch_id, double& current_timestamp,
+                            core::types::GaussianSplatBatch& splat_batch,
+                            std::atomic<uint64_t>& next_splat_id, int splat_count);
+Eigen::Vector3f extractColorFromKeyframes(const core::types::Keypoint& keypoint,
+                                          std::shared_ptr<core::storage::MapStore>& map_store);
+Eigen::Matrix3d computeKeypointCovariance(const core::types::Keypoint& keypoint,
+                                          std::shared_ptr<core::storage::MapStore>& map_store);
+Eigen::Matrix3d computeKeypointCovarianceFromScale(
+    const core::types::Keypoint& keypoint, const std::vector<core::types::Keypoint>& all_keypoints,
+    int k_neighbors = 10);
+Eigen::Matrix3d computeKeypointCovarianceUsingScale(const core::types::Keypoint& keypoint,
+                                                    const Eigen::Vector3f& scale);
+Eigen::Matrix3d scaleToCovariance(const Eigen::Vector3f& scale,
+                                  const Eigen::Quaternionf& direction);
+bool testScaleCovarianceRoundtrip();
+float computeInitialOpacity(const core::types::Keypoint& keypoint);
+float computeInitialConfidence(const core::types::Keypoint& keypoint);
+bool loadKeyframesToTensorBatch(const std::vector<uint64_t>& keyframe_ids,
+                                const std::shared_ptr<core::storage::MapStore>& map_store,
+                                const std::shared_ptr<stf::TransformTree>& tf_tree,
+                                const torch::Device& device, const uint32_t& batch_id,
+                                training::KeyframeBatch& keyframe_batch);
+bool extractCameraPoses(const std::vector<uint64_t>& keyframe_ids,
+                        const std::shared_ptr<core::storage::MapStore>& map_store,
+                        const std::shared_ptr<stf::TransformTree>& tf_tree,
+                        training::KeyframeBatch& keyframe_batch);
+bool extractImageTensor(const core::types::KeyFrame::Ptr& keyframe, const torch::Device& device,
+                        torch::Tensor& image_tensor, core::types::CameraInfo& camera_info);
+torch::Tensor convertCameraIntrinsicsToTensor(const core::types::CameraInfo& camera_info,
+                                              const torch::Device& device);
+torch::Tensor convertCameraPoseToTensor(const Eigen::Isometry3d& pose, const torch::Device& device);
+GaussianTensors convertSplatBatchToTensors(const core::types::GaussianSplatBatch& splat_batch,
+                                           const torch::Device& device);
+
+// Helper functions for random splat generation
+std::pair<Eigen::Vector3f, Eigen::Vector3f> estimateSceneBoundsFromTrajectory(
+    std::shared_ptr<core::storage::MapStore>& map_store);
+std::vector<core::types::GaussianSplat> generateRandomSplats(const Eigen::Vector3f& scene_min,
+                                                             const Eigen::Vector3f& scene_max,
+                                                             int count,
+                                                             std::atomic<uint64_t>& next_splat_id,
+                                                             double timestamp);
+Eigen::Vector3f generateRandomPosition(const Eigen::Vector3f& min_bounds,
+                                       const Eigen::Vector3f& max_bounds);
+Eigen::Vector3f generateRandomColor();
+Eigen::Matrix3d generateInitialCovariance();
+float generateInitialOpacity();
+
+}  // namespace gaussian_splatting

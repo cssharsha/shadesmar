@@ -1,0 +1,12 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - -std=c++17
+
+Index:
+  Background: Build
+  
+Diagnostics:
+  ClangTidy:
+    Add: [performance-*, readability-*, modernize-*]
+    Remove: [readability-magic-numbers]

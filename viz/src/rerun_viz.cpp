@@ -66,6 +66,8 @@ bool RerunVisualizer::initialize(bool save_to_file) {
             LOG(INFO) << "RerunVisualizer initialized. Logging to "
                       << (save_to_file ? "file." : "spawned/connected viewer.");
         }
+        rec_.log_static("/", rerun::ViewCoordinates::RDF);
+        // rec_.log_static("/", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
         return is_connected_;
     } catch (const std::exception& e) {
         LOG(ERROR) << "Exception during RerunVisualizer::initialize: " << e.what();
@@ -90,6 +92,8 @@ void RerunVisualizer::disconnect() {
 
 void RerunVisualizer::addPose(const core::types::Pose& pose, const std::string& entity_path,
                               double timestamp) {
+    std::cout << "Adding pose to Rerun visualizer with pose: " << pose.position.transpose()
+              << std::endl;
     if (!is_connected_)
         return;
 
@@ -103,6 +107,25 @@ void RerunVisualizer::addPointCloud(const core::types::PointCloud& cloud,
         return;
 
     rec_.log(entity_path, toRerunPoints(cloud, transform));
+}
+
+void RerunVisualizer::addPointCloud(const core::types::PointCloud& cloud,
+                                    const std::string& entity_path, double timestamp) {
+    if (!is_connected_)
+        return;
+
+    rec_.log(entity_path, toRerunPoints(cloud));
+}
+
+void RerunVisualizer::addCamera(const core::types::CameraInfo& camera,
+                                const std::string& entity_path, double timestamp) {
+    if (!is_connected_)
+        return;
+    auto rerun_camera = rerun::archetypes::Pinhole::from_focal_length_and_resolution(
+        {static_cast<float>(camera.k[0]), static_cast<float>(camera.k[4])},
+        {static_cast<float>(camera.width), static_cast<float>(camera.height)});
+
+    rec_.log(entity_path, rerun_camera);
 }
 
 void RerunVisualizer::addCamera(const rerun::archetypes::Pinhole& camera,
@@ -134,6 +157,8 @@ void RerunVisualizer::addImage(const cv::Mat& image, const std::string& entity_p
 
         // Shape: H, W, C
         // Buffer: Collection of all uint8_t pixels (interleaved)
+        std::cout << "Logging image: " << image.rows << "x" << image.cols << "x" << image.channels()
+                  << std::endl;
         rec_.log(entity_path,
                  rerun::Image({static_cast<size_t>(image.rows), static_cast<size_t>(image.cols),
                                static_cast<size_t>(image.channels())},
@@ -525,18 +550,38 @@ void RerunVisualizer::visualizeFromStorage(const core::storage::MapStore& map_st
               << ", Map points: " << map_points.size();
 }
 
+// void RerunVisualizer::setFrame() {
+//
+// }
 rerun::Transform3D RerunVisualizer::toRerunTransform(const core::types::Pose& pose) {
-    return rerun::Transform3D(
-        rerun::datatypes::Vec3D{static_cast<float>(pose.position.x()),
-                                static_cast<float>(pose.position.y()),
-                                static_cast<float>(pose.position.z())},
-        rerun::datatypes::Quaternion{
-            static_cast<float>(pose.orientation.x()), static_cast<float>(pose.orientation.y()),
-            static_cast<float>(pose.orientation.z()), static_cast<float>(pose.orientation.w())});
+    auto rerun_position = rerun::datatypes::Vec3D{static_cast<float>(pose.position.x()),
+                                                  static_cast<float>(pose.position.y()),
+                                                  static_cast<float>(pose.position.z())};
+    auto rerun_orientation = rerun::datatypes::Quaternion::from_xyzw(
+        static_cast<float>(pose.orientation.x()), static_cast<float>(pose.orientation.y()),
+        static_cast<float>(pose.orientation.z()), static_cast<float>(pose.orientation.w()));
+    return rerun::Transform3D(rerun_position, rerun_orientation);
 }
 
 rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cloud) {
-    return toRerunPoints(cloud, core::types::Pose());
+    std::vector<Eigen::Vector3f> points;
+    std::vector<Eigen::Vector3f> colors;
+
+    points.reserve(cloud.points.size());
+    if (!cloud.colors.empty()) {
+        colors.reserve(cloud.colors.size());
+    }
+
+    for (const auto& p : cloud.points) {
+        points.push_back(p.cast<float>());
+    }
+
+    for (const auto& c : cloud.colors) {
+        colors.push_back(c.cast<float>());
+        std::cout << "Color: " << c.transpose() << std::endl;
+    }
+
+    return rerun::Points3D(points).with_colors(colors);
 }
 
 rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cloud,
@@ -573,6 +618,7 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
     if (!is_connected_ || splats.empty()) {
         return;
     }
+    std::cout << "Adding splats: " << splats.size() << " to " << entity_path << std::endl;
 
     // Extract positions and colors from splats
     std::vector<rerun::datatypes::Vec3D> positions;
@@ -585,6 +631,7 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
 
     for (const auto& splat : splats) {
         // Add position
+        // LOG(INFO) << "Adding position: " << splat.position.transpose();
         positions.emplace_back(rerun::datatypes::Vec3D{static_cast<float>(splat.position.x()),
                                                        static_cast<float>(splat.position.y()),
                                                        static_cast<float>(splat.position.z())});
@@ -594,19 +641,21 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
                                                      static_cast<uint8_t>(splat.color.y() * 255.0f),
                                                      static_cast<uint8_t>(splat.color.z() * 255.0f),
                                                      static_cast<uint8_t>(splat.opacity * 255.0f)});
+        // std::cout << "Added position: " << splat.position.transpose() << std::endl;
 
         // Calculate average radius from covariance eigenvalues
         Eigen::Vector3d scales;
-        Eigen::Matrix3d rotation;
-        splat.getEllipsoidParameters(scales, rotation);
+        // Eigen::Matrix3d rotation;
+        // splat.getEllipsoidParameters(scales, rotation);
+        splat.getScales(scales);
         float avg_radius = static_cast<float>(scales.mean() * 2.0);  // 2-sigma radius
-        radii.push_back(std::max(avg_radius, 0.001f));               // Minimum size for visibility
+        radii.push_back(avg_radius);                                 // Minimum size for visibility
     }
 
     // Create Points3D with colors and radii
     auto points3d = rerun::Points3D(positions).with_colors(colors).with_radii(radii);
 
-    rec_.set_time_sequence("max_keyframe_id", timestamp);
+    // rec_.set_time_sequence("max_keyframe_id", timestamp);
     rec_.log(entity_path, points3d);
 
     LOG(INFO) << "Visualized " << splats.size() << " Gaussian splats at " << entity_path;

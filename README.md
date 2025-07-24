@@ -216,3 +216,17 @@ Real-time visualization powered by Rerun SDK:
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE)
 file for details.
+
+: 1760382062:0;rerun --web-viewer&
+: 1760382067:0;./bazel-bin/gaussian_splatting/standalone_gs_processor /data/south-building/map/map 2>&1 | tee map.log
+: 1760386207:0;./bazel-bin/gaussian_splatting/standalone_gs_processor /data/robot/bags/house11
+: 1760392098:0;bazel build --config=cuda //viz:visualize_rerun_bags
+: 1760392160:0;bazel build --config=cuda //viz:rerun_viz
+: 1760392178:0;bazel build --config=cuda //viz:visualize_rosbag
+: 1760392247:0;bazel run //viz:visualize_rosbag -- /data/robot/bags/house11.db3
+: 1760393167:0;fg
+: 1760393182:0;rerun --web-viewer&
+: 1760393195:0;./bazel-bin/gaussian_splatting/standalone_gs_processor /data/robot/bags/house11_map
+: 1760393538:0;fg
+: 1760393549:0;bazel build --config=cuda //gaussian_splatting:standalone_gs_processor
+: 1760393640:0;./bazel-bin/gaussian_splatting/standalone_gs_processor /data/robot/bags/house11_map

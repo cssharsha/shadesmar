@@ -11,9 +11,11 @@ namespace storage {
 
 MapStore::MapStore(const std::string& map_base_filepath, ProcessRole role)
     : process_role_(role), process_id_(getpid()) {
-    if (!map_base_filepath.empty()) {
-        initializeFilePaths(map_base_filepath);
+    if (map_base_filepath.empty()) {
+        LOG(ERROR) << "MapStore: empty map base filepath";
+        throw std::runtime_error("MapStore: empty map base filepath");
     }
+    initializeFilePaths(map_base_filepath);
     metadata_.set_version("1.0-disk");
     metadata_.set_created_by("MapStoreDisk");
     auto* bounds = metadata_.mutable_bounds();
@@ -85,6 +87,17 @@ bool MapStore::initializeFilePaths(const std::string& map_base_filepath) {
     vslam_status_filepath_ = base_filepath_ + "_vslam_status";
     LOG(INFO) << "MapStore initialized with data file: " << data_filepath_ << std::endl;
     return true;
+}
+
+void MapStore::printFilePaths() const {
+    LOG(INFO) << "MapStore file paths:";
+    LOG(INFO) << "  Data: " << data_filepath_;
+    LOG(INFO) << "  Index: " << index_filepath_;
+    LOG(INFO) << "  Metadata: " << metadata_filepath_;
+    LOG(INFO) << "  Splat data: " << splat_data_filepath_;
+    LOG(INFO) << "  Splat index: " << splat_index_filepath_;
+    LOG(INFO) << "  Transform tree: " << transform_tree_filepath_;
+    LOG(INFO) << "  VSLAM status: " << vslam_status_filepath_;
 }
 
 bool MapStore::openDataFileForAppend(std::fstream& file_stream) {
@@ -334,7 +347,7 @@ KeyFramePtr MapStore::getKeyFrame(uint64_t id) const {
     if (it == keyframe_locations_.end()) {
         // Apply conditional auto-sync based on process role to avoid intra-process races
         if (shouldAutoSync()) {
-            LOG(INFO) << "Cross-process read: syncing index for keyframe " << id;
+            // LOG(INFO) << "Cross-process read: syncing index for keyframe " << id;
             const_cast<MapStore*>(this)->syncIndexFromDisk();
 
             // Try again after sync
@@ -408,14 +421,14 @@ std::optional<types::Keypoint> MapStore::getKeyPoint(uint32_t id) const {
         }
     }
 
-    LOG(INFO) << "Reading keypoint " << id << " from location: " << it->second.offset();
+    // LOG(INFO) << "Reading keypoint " << id << " from location: " << it->second.offset();
     auto keypoint_opt =
         readProtoMessage<proto::Keypoint, types::Keypoint>(it->second, types::Keypoint::fromProto);
     if (keypoint_opt) {
         cacheKeyPoint(id, keypoint_opt.value());
         auto kp_proto = keypoint_opt.value();
-        LOG(INFO) << "Keypoint: " << kp_proto.needs_triangulation
-                  << " Position: " << kp_proto.position.transpose();
+        // LOG(INFO) << "Keypoint: " << kp_proto.needs_triangulation
+        //           << " Position: " << kp_proto.position.transpose();
     }
     return keypoint_opt;
 }
@@ -716,8 +729,8 @@ bool MapStore::writePendingDataToDisk() {
                 keypoint_locations_[keypoint_id] = location;
                 LOG(INFO) << "Wrote keypoint " << keypoint_id << " at "
                           << " location: " << location.offset()
-                          << "Needs triangulation: " << kp_proto.needs_triangulation()
-                          << "Position: " << kp_proto.position().x() << ","
+                          << " Needs triangulation: " << kp_proto.needs_triangulation()
+                          << " Position: " << kp_proto.position().x() << ","
                           << kp_proto.position().y() << "," << kp_proto.position().z();
 
                 // Update shared memory index (use first location's keyframe_id if available)
@@ -845,8 +858,8 @@ void MapStore::cacheKeyFrameInternal(uint64_t id, const KeyFramePtr& keyframe) c
     keyframe_lru_list_.push_front(id);
     keyframe_lru_map_[id] = keyframe_lru_list_.begin();
 
-    LOG(INFO) << "Cached keyframe " << id << " (cache size: " << keyframe_cache_.size() << "/"
-              << max_cache_size_ << ")";
+    // LOG(INFO) << "Cached keyframe " << id << " (cache size: " << keyframe_cache_.size() << "/"
+    //           << max_cache_size_ << ")";
 }
 
 void MapStore::cacheFactor(uint64_t id, const types::Factor& factor) const {
@@ -872,7 +885,7 @@ void MapStore::evictLRUKeyFrame() const {
     keyframe_lru_map_.erase(lru_id);
     keyframe_cache_.erase(lru_id);
 
-    LOG(INFO) << "Evicted keyframe " << lru_id << " from cache (LRU)";
+    // LOG(INFO) << "Evicted keyframe " << lru_id << " from cache (LRU)";
 }
 
 std::vector<uint64_t> MapStore::getFactorIdsForKeyFrame(uint64_t keyframe_id) const {
@@ -1423,8 +1436,8 @@ bool MapStore::syncIndexFromDisk() {
     // Rebuild transient indices to include new data
     rebuildTransientIndices();
 
-    LOG(INFO) << "Index synced from " << index_filepath_ << ". Added " << new_keyframes
-              << " keyframes, " << new_factors << " factors, " << new_keypoints << " keypoints";
+    // LOG(INFO) << "Index synced from " << index_filepath_ << ". Added " << new_keyframes
+    //           << " keyframes, " << new_factors << " factors, " << new_keypoints << " keypoints";
     return true;
 }
 
@@ -1443,8 +1456,8 @@ void MapStore::rebuildTransientIndices() {
     }
 
     // Rebuild factor-keyframe associations by loading all factors
-    LOG(INFO) << "Rebuilding factor-keyframe associations from " << factor_locations_.size()
-              << " factors";
+    // LOG(INFO) << "Rebuilding factor-keyframe associations from " << factor_locations_.size()
+    //           << " factors";
     for (const auto& [factor_id, location] : factor_locations_) {
         auto factor_opt =
             readProtoMessage<proto::Factor, types::Factor>(location, types::Factor::fromProto);
@@ -1463,12 +1476,12 @@ void MapStore::rebuildTransientIndices() {
     for (const auto& [keyframe_id, factor_ids] : keyframe_to_factor_ids_) {
         total_associations += factor_ids.size();
     }
-    LOG(INFO) << "Rebuilt factor-keyframe associations: " << keyframe_to_factor_ids_.size()
-              << " keyframes with " << total_associations << " total factor associations";
-
-    // Rebuild Gaussian splat indexes from all loaded batches
-    LOG(INFO) << "Rebuilding Gaussian splat indexes from " << splat_batch_locations_.size()
-              << " batches";
+    // LOG(INFO) << "Rebuilt factor-keyframe associations: " << keyframe_to_factor_ids_.size()
+    //           << " keyframes with " << total_associations << " total factor associations";
+    //
+    // // Rebuild Gaussian splat indexes from all loaded batches
+    // LOG(INFO) << "Rebuilding Gaussian splat indexes from " << splat_batch_locations_.size()
+    //           << " batches";
     for (const auto& [batch_id, location] : splat_batch_locations_) {
         auto batch_opt = getGaussianSplatBatch(batch_id);
         if (batch_opt) {
@@ -1479,8 +1492,8 @@ void MapStore::rebuildTransientIndices() {
     }
 
     updateSplatMetadata();
-    LOG(INFO) << "Rebuilt Gaussian splat indexes: " << splat_id_to_location_.size()
-              << " splats from " << splat_batch_locations_.size() << " batches";
+    // LOG(INFO) << "Rebuilt Gaussian splat indexes: " << splat_id_to_location_.size()
+    //           << " splats from " << splat_batch_locations_.size() << " batches";
 }
 
 void MapStore::clearDataAndIndices() {
@@ -2148,7 +2161,7 @@ void MapStore::evictMapPointToDisk(uint32_t map_point_id) {
         // Remove from in-memory cache
         keypoint_cache_.erase(it);
 
-        LOG(INFO) << "Evicted map point " << map_point_id << " to disk";
+        // LOG(INFO) << "Evicted map point " << map_point_id << " to disk";
     }
 }
 
@@ -2277,14 +2290,14 @@ bool MapStore::addGaussianSplatBatch(const types::GaussianSplatBatch& batch) {
 std::optional<types::GaussianSplatBatch> MapStore::getGaussianSplatBatch(uint32_t batch_id) const {
     // First check cache using splat mutex
     {
-        LOG(INFO) << "Tring to get sp bat " << batch_id;
+        // LOG(INFO) << "Tring to get sp bat " << batch_id;
         // std::shared_lock<std::shared_mutex> splat_lock(splat_mutex_);
         auto cache_it = splat_batch_cache_.find(batch_id);
         if (cache_it != splat_batch_cache_.end()) {
             return cache_it->second;
         }
-        LOG(INFO) << "Tring to get sp bat from disk " << batch_id
-                  << " from the current size of locations: " << splat_batch_locations_.size();
+        // LOG(INFO) << "Tring to get sp bat from disk " << batch_id
+        //           << " from the current size of locations: " << splat_batch_locations_.size();
 
         // Check if batch exists on disk
         auto location_it = splat_batch_locations_.find(batch_id);
@@ -2322,6 +2335,14 @@ bool MapStore::hasGaussianSplatBatch(uint32_t batch_id) const {
 
     // Check if exists on disk
     return splat_batch_locations_.find(batch_id) != splat_batch_locations_.end();
+}
+
+std::vector<uint32_t> MapStore::getAllGaussianSplatBatchIds() const {
+    std::vector<uint32_t> batch_ids;
+    for (const auto& [batch_id, location] : splat_batch_locations_) {
+        batch_ids.push_back(batch_id);
+    }
+    return batch_ids;
 }
 
 std::vector<types::GaussianSplatBatch> MapStore::getAllGaussianSplatBatches() const {
@@ -2806,8 +2827,9 @@ void MapStore::updateSplatIndexes(const types::GaussianSplatBatch& batch) {
         return;
     }
 
-    LOG(INFO) << "Updating splat indexes for batch " << batch.batch_id << " with " << batch.size()
-              << " splats";
+    // LOG(INFO) << "Updating splat indexes for batch " << batch.batch_id << " with " <<
+    // batch.size()
+    //           << " splats";
 
     // Update individual splat index and keypoint reverse index
     for (size_t i = 0; i < batch.splats.size(); ++i) {
@@ -2830,13 +2852,13 @@ void MapStore::updateSplatIndexes(const types::GaussianSplatBatch& batch) {
     // Update total splat count
     total_splat_count_ += batch.size();
 
-    LOG(INFO) << "Updated splat indexes: " << splat_id_to_location_.size()
-              << " total splats indexed, next available ID: " << next_available_splat_id_;
+    // LOG(INFO) << "Updated splat indexes: " << splat_id_to_location_.size()
+    //           << " total splats indexed, next available ID: " << next_available_splat_id_;
 }
 
 void MapStore::clearSplatIndexes() {
-    LOG(INFO) << "Clearing splat indexes (" << splat_id_to_location_.size() << " splats, "
-              << keypoint_to_splat_ids_.size() << " keypoints)";
+    // LOG(INFO) << "Clearing splat indexes (" << splat_id_to_location_.size() << " splats, "
+    //           << keypoint_to_splat_ids_.size() << " keypoints)";
 
     splat_id_to_location_.clear();
     keypoint_to_splat_ids_.clear();
@@ -2879,11 +2901,11 @@ void MapStore::updateSplatMetadata() {
         splat_meta->set_max_batch_id(0);
     }
 
-    LOG(INFO) << "Updated splat metadata - Splats: " << splat_meta->total_splat_count()
-              << ", Batches: " << splat_meta->total_batch_count() << ", Splat ID range: ["
-              << splat_meta->min_splat_id() << ", " << splat_meta->max_splat_id() << "]"
-              << ", Batch ID range: [" << splat_meta->min_batch_id() << ", "
-              << splat_meta->max_batch_id() << "]";
+    // LOG(INFO) << "Updated splat metadata - Splats: " << splat_meta->total_splat_count()
+    //           << ", Batches: " << splat_meta->total_batch_count() << ", Splat ID range: ["
+    //           << splat_meta->min_splat_id() << ", " << splat_meta->max_splat_id() << "]"
+    //           << ", Batch ID range: [" << splat_meta->min_batch_id() << ", "
+    //           << splat_meta->max_batch_id() << "]";
 }
 
 bool MapStore::writeSplatBatchToDisk(uint32_t batch_id) {

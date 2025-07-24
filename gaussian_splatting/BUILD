@@ -13,8 +13,16 @@ cc_library(
 # Keyframe batch processing
 cc_library(
     name = "keyframe_batch",
-    srcs = ["training/keyframe_batch.cpp"],
-    hdrs = ["training/keyframe_batch.hpp"],
+    srcs = [
+        "training/keyframe_batch.cpp",
+        "training/keyframe_tensor.cpp",
+        "training/gaussian_tensors.cpp",
+    ],
+    hdrs = [
+        "training/keyframe_batch.hpp",
+        "training/keyframe_tensor.hpp",
+        "training/gaussian_tensors.hpp",
+    ],
     deps = [
         ":training_config",
         "//core/types",
@@ -48,14 +56,17 @@ cc_library(
     hdrs = ["training/batch_trainer.hpp"],
     deps = [
         ":training_config",
-        ":batch_gpu_manager",
+        ":utils",
         ":parameter_transforms",
         ":loss_functions",
         ":densification_controller",
+        ":rasterizer",
+        ":strategy",
         "//core/types",
         "//core/storage",
         "@libtorch//:torch",
         "//common:logging",
+        ":training_visualizer",
     ],
 )
 
@@ -70,27 +81,95 @@ cc_library(
     ],
 )
 
+# Fused SSIM
+cuda_library(
+    name = "fused_ssim",
+    srcs = [
+        "optimization/ssim/fused_ssim.cpp",
+        "optimization/ssim/ssim.cu",
+    ],
+    hdrs = [
+        "optimization/ssim/fused_ssim.hpp",
+        "optimization/ssim/ssim.h",
+    ],
+    deps = [
+        "@libtorch//:torch",
+        "//common:logging",
+    ],
+    copts = [
+        "--std=c++17"
+    ],
+)
+
 # Loss functions
 cc_library(
     name = "loss_functions",
     srcs = ["optimization/loss_functions.cpp"],
     hdrs = ["optimization/loss_functions.hpp"],
     deps = [
+        ":fused_ssim",
+        ":utils",
         "@libtorch//:torch",
         "//common:logging",
     ],
 )
 
-# GPU batch manager
+# Optimizer
 cc_library(
-    name = "batch_gpu_manager",
-    srcs = ["utils/batch_gpu_manager.cpp"],
-    hdrs = ["utils/batch_gpu_manager.hpp"],
+    name = "optimizer",
+    srcs = ["optimization/optimizer.cpp"],
+    hdrs = ["optimization/optimizer.hpp"],
+    deps = [
+        "@libtorch//:torch",
+        ":keyframe_batch",
+    ],
+)
+
+# Strategy
+cc_library(
+    name = "strategy",
+    srcs = [
+        "optimization/scheduler.cpp",
+        "optimization/strategy.cpp",
+    ],
+    hdrs = [
+        "optimization/scheduler.hpp",
+        "optimization/strategy.hpp",
+    ],
+    deps = [
+        ":keyframe_batch",
+        ":optimizer",
+        ":rasterizer",
+        "@libtorch//:torch",
+    ],
+)
+
+cc_library(
+    name = "utils",
+    srcs = [
+        "utils/batch_gpu_manager.cpp",
+        "utils/initializers.cpp",
+        "utils/image_utils.cpp",
+        "utils/point_cloud_utils.cpp",
+    ],
+    hdrs = [
+        "utils/batch_gpu_manager.hpp",
+        "utils/initializers.hpp",
+        "utils/torch_utils.hpp",
+        "utils/image_utils.hpp",
+        "utils/point_cloud_utils.hpp",
+    ],
     deps = [
         ":training_config",
+        ":keyframe_batch",
         "//core/types",
+        "//core/storage",
         "@libtorch//:torch",
         "//common:logging",
+        "@opencv//:core",
+        "@opencv//:imgproc",
+        "@opencv//:imgcodecs",
+        "@pcl//:kdtree",
     ],
 )
 
@@ -101,7 +180,7 @@ cc_library(
     hdrs = ["optimization/densification_controller.hpp"],
     deps = [
         ":training_config",
-        ":batch_gpu_manager",
+        ":utils",
         "@libtorch//:torch",
         "//common:logging",
     ],
@@ -139,39 +218,55 @@ cuda_library(
 
 cc_library(
     name = "rasterizer",
-    srcs = ["rendering/rasterizer.cpp"],
-    hdrs = ["rendering/rasterizer.hpp"],
+    srcs = [
+        "rendering/rasterizer.cpp",
+    ],
+    hdrs = [
+        "rendering/rasterizer.hpp",
+    ],
     deps = [
+        ":utils",
+        ":keyframe_batch",
         "//core/types",
         "//common:logging",
         "@libtorch//:torch",
         "@eigen",
+        "//gaussian_splatting/gsplat:gsplat",
     ],
 )
 
-# Training Gaussian Splat Processor
-cc_library(
-    name = "training_gs_processor",
-    srcs = ["training_gs_processor.cpp"],
-    hdrs = ["training_gs_processor.hpp"],
+cc_test(
+    name = "projection_test",
+    srcs = ["rendering/test/projection_test.cpp"],
     deps = [
-        ":training_config",
-        ":keyframe_batch",
-        ":training_visualizer",
-        ":batch_trainer",
-        ":densification_controller",
-        ":bilateral_grid",
-        ":spherical_harmonics",
         ":rasterizer",
-        "//core/storage",
-        "//core/types",
-        "//utils:stf",
-        "@libtorch//:torch",
-        "@opencv//:core",
-        "@opencv//:imgproc",
-        "//common:logging",
+        "@com_google_googletest//:gtest_main",
     ],
 )
+
+# # Training Gaussian Splat Processor
+# cc_library(
+#     name = "training_gs_processor",
+#     srcs = ["training_gs_processor.cpp"],
+#     hdrs = ["training_gs_processor.hpp"],
+#     deps = [
+#         ":training_config",
+#         ":keyframe_batch",
+#         ":training_visualizer",
+#         ":batch_trainer",
+#         ":densification_controller",
+#         ":bilateral_grid",
+#         ":spherical_harmonics",
+#         ":rasterizer",
+#         "//core/storage",
+#         "//core/types",
+#         "//utils:stf",
+#         "@libtorch//:torch",
+#         "@opencv//:core",
+#         "@opencv//:imgproc",
+#         "//common:logging",
+#     ],
+# )
 
 # Streaming Gaussian Splat Processor
 cc_library(
@@ -186,6 +281,7 @@ cc_library(
         ":densification_controller",
         ":bilateral_grid",
         ":rasterizer",
+        ":utils",
         "//core/storage",
         "//core/types",
         "//utils:stf",
@@ -207,7 +303,7 @@ cc_library(
         ":batch_trainer",
         ":parameter_transforms",
         ":loss_functions",
-        ":batch_gpu_manager",
+        ":utils",
         ":densification_controller",
         ":bilateral_grid",
         ":spherical_harmonics",
@@ -219,24 +315,59 @@ cc_library(
         "//common:logging",
         "@eigen",
         "@libtorch//:torch",
+        "//gaussian_splatting/gsplat:gsplat",
     ],
 )
 
-# Training processor test
-cc_test(
-    name = "training_gs_processor_test",
-    srcs = ["training_gs_processor_test.cpp"],
+cc_library(
+    name = "standalone_gs",
+    srcs = ["standalone_gs_processor.cpp"],
+    hdrs = ["standalone_gs_processor.hpp"],
     deps = [
-        ":training_gs_processor",
-        "@com_google_googletest//:gtest_main",
+        ":training_config",
+        ":keyframe_batch",
+        ":training_visualizer",
+        ":batch_trainer",
+        ":densification_controller",
+        ":bilateral_grid",
+        ":rasterizer",
+        ":utils",
+        "//core/storage",
+        "//core/types",
+        "//utils:stf",
+        "@libtorch//:torch",
+        "@opencv//:core",
+        "@opencv//:imgproc",
+        "@eigen",
+        "//common:logging",
     ],
 )
+# # Training processor test
+# cc_test(
+#     name = "training_gs_processor_test",
+#     srcs = ["training_gs_processor_test.cpp"],
+#     deps = [
+#         ":training_gs_processor",
+#         "@com_google_googletest//:gtest_main",
+#     ],
+# )
 
 cc_binary(
     name = "gs_processor",
     srcs = ["gs_processor_main.cpp"],
     deps = [
         ":gaussian_splatting",
+        "//viz:visualize_gs_rerun",
+        "//core/storage",
+        "//common:logging",
+    ],
+)
+
+cc_binary(
+    name = "standalone_gs_processor",
+    srcs = ["gs_processor_standalone_main.cpp"],
+    deps = [
+        ":standalone_gs",
         "//viz:visualize_gs_rerun",
         "//core/storage",
         "//common:logging",

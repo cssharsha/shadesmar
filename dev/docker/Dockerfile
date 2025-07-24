@@ -127,10 +127,53 @@ RUN mkdir -p /usr/share/vulkan/icd.d/ && \
         } \
     }' > /usr/share/vulkan/icd.d/nvidia_icd.json
 
-# Create non-root user
+RUN apt-get update && apt-get -y install \
+    git \
+    cmake \
+    ninja-build \
+    build-essential \
+    libboost-program-options-dev \
+    libboost-graph-dev \
+    libboost-system-dev \
+    libeigen3-dev \
+    libfreeimage-dev \
+    libmetis-dev \
+    libgoogle-glog-dev \
+    libgtest-dev \
+    libgmock-dev \
+    libsqlite3-dev \
+    libglew-dev \
+    qtbase5-dev \
+    libqt5opengl5-dev \
+    libcgal-dev \
+    libceres-dev \
+    libcurl4-openssl-dev \
+    libmkl-full-dev
+
+RUN git clone https://github.com/colmap/colmap.git && \
+        cd colmap && \
+        mkdir build && cd build &&\
+        cmake .. -GNinja -DBLA_VENDOR=Intel10_64lp -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86" && \
+        ninja && \
+        ninja install
+
+# Install Open3D dependencies and build from source
+RUN apt-get update && apt-get install -y \
+    xorg-dev \
+    libxrandr-dev \
+    libxinerama-dev \
+    libxcursor-dev \
+    libxi-dev \
+    libglu1-mesa-dev \
+    libassimp-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update -y && apt-get install -y libpcl-dev
+
+# Create non-root user matching host user
 ARG USERNAME=developer
 ARG USER_UID=1000
-ARG USER_GID=$USER_UID
+ARG USER_GID=1000
 RUN groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
     && apt-get update \

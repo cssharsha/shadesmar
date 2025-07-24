@@ -28,6 +28,15 @@ message GaussianSplat {
     
     // Timestamp when this splat was created
     double timestamp = 8;
+
+    // 3D scaling vector
+    Vector3 scale = 9;
+
+    // Rotation as a quaternion (w, x, y, z)
+    Quaternion rotation = 10;
+
+    // Spherical harmonics coefficients (excluding DC term, which is color)
+    repeated float sh_coefficients = 11;
 }
 
 message GaussianSplatBatch {

@@ -15,10 +15,11 @@ namespace kitti {
 
 namespace fs = std::filesystem;
 
-KittiReader::KittiReader(const Config& config,
-                         core::storage::MapStore& store,
+KittiReader::KittiReader(const Config& config, core::storage::MapStore& store,
                          std::shared_ptr<viz::RerunVisualizer> visualizer)
-    : config_(config), store_(store), visualizer_(visualizer),
+    : config_(config),
+      store_(store),
+      visualizer_(visualizer),
       graph_adapter_(internal_graph_, store) {
     tf_tree_ = std::make_shared<stf::TransformTree>();
     graph_adapter_.setKeyframeDistanceThreshold(config_.keyframe_distance_threshold);

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <fstream>
 #include <functional>
 #include <list>
@@ -35,7 +36,7 @@ using KeyFramePtr = types::KeyFrame::Ptr;
 class MapStore {
 public:
     using SplatWriteCompletionCallback = std::function<void(uint32_t batch_id, bool success)>;
-    
+
     MapStore(const std::string& map_base_filepth, ProcessRole role = ProcessRole::DUAL);
     ~MapStore();
 
@@ -87,7 +88,7 @@ public:
     std::optional<types::Factor> getFactor(uint64_t id) const;  // Optional in case not found
     std::optional<types::Keypoint> getKeyPoint(uint32_t id) const;
     std::optional<types::GaussianSplatBatch> getGaussianSplatBatch(uint32_t batch_id) const;
-    
+
     // Individual splat querying methods
     std::optional<types::GaussianSplat> getGaussianSplat(uint32_t splat_id) const;
     std::vector<types::GaussianSplat> getGaussianSplatsByKeypoint(uint32_t keypoint_id) const;
@@ -100,6 +101,7 @@ public:
     std::vector<KeyFramePtr> getAllKeyFrames() const;
     std::vector<types::Factor> getAllFactors() const;
     std::vector<types::Keypoint> getAllKeyPoints() const;
+    std::vector<uint32_t> getAllGaussianSplatBatchIds() const;
     std::vector<types::GaussianSplatBatch> getAllGaussianSplatBatches() const;
 
     // Transform tree storage for cross-process access
@@ -123,7 +125,7 @@ public:
 
     bool saveChanges();
     bool syncSplatBatchesToDisk();  // Force immediate sync of pending splat batches
-    
+
     // Splat-specific storage methods (independent of main MapStore sync)
     bool writeSplatBatchToDisk(uint32_t batch_id);
     bool loadSplatBatchIndex();
@@ -192,6 +194,7 @@ public:
     }
     bool shouldAutoSync() const;
     bool hasUncommittedKeyFrame(uint64_t id) const;
+    void printFilePaths() const;
 
 private:
     std::mutex file_operations_mutex_;         // Protect all file operations from concurrent access
@@ -304,24 +307,24 @@ private:
     struct SplatLocation {
         uint32_t batch_id;
         uint32_t position_in_batch;
-        
+
         SplatLocation() : batch_id(0), position_in_batch(0) {}
         SplatLocation(uint32_t bid, uint32_t pos) : batch_id(bid), position_in_batch(pos) {}
     };
-    
+
     // Individual splat index: splat_id → location in batch
     std::unordered_map<uint32_t, SplatLocation> splat_id_to_location_;
-    
+
     // Keypoint-to-splat reverse index: keypoint_id → vector of splat_ids
     std::unordered_map<uint32_t, std::vector<uint32_t>> keypoint_to_splat_ids_;
-    
+
     // Splat metadata tracking
     uint32_t next_available_splat_id_ = 1;
     uint32_t total_splat_count_ = 0;
-    
+
     // Separate mutex for Gaussian splat operations
     mutable std::shared_mutex splat_mutex_;
-    
+
     // Splat write completion callback instance
     SplatWriteCompletionCallback splat_write_completion_callback_;
     std::mutex splat_callback_mutex_;
@@ -349,7 +352,7 @@ private:
     void updateMetadataBounds(const types::Pose& pose);
     void rebuildTransientIndices();
     void updateBounds();
-    
+
     // Gaussian splat indexing maintenance
     void updateSplatIndexes(const types::GaussianSplatBatch& batch);
     void clearSplatIndexes();

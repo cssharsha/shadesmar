@@ -50,6 +50,10 @@ test --test_output=all
 build:compdb --aspects=@hedron_compile_commands//:aspects.bzl%compilation_database_aspect
 build:compdb --output_groups=compilation_database_files
 
+# Consistent symlink behavior for host-container compatibility
+build --symlink_prefix=bazel-
+build --experimental_convenience_symlinks=normal
+
 build --noenable_bzlmod
 
 build --features=-header_modules

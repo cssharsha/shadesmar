@@ -1,0 +1,431 @@
+#include <torch/torch.h>
+
+#include <Ops.h>  // mind the gsplat header!
+#include <logging/logging.hpp>
+
+#include "gaussian_splatting/gsplat/gsplat/cuda/include/Ops.h"
+#include "gaussian_splatting/rendering/rasterizer.hpp"
+#include "gaussian_splatting/utils/torch_utils.hpp"
+
+namespace gaussian_splatting {
+namespace rendering {
+
+RasterizationOutput DifferentiableRasterizer::rasterize(const GaussianTensors& gaussians,
+                                                        const torch::Tensor& camera_pose,
+                                                        const torch::Tensor& camera_intrinsics,
+                                                        int image_width, int image_height) {
+    std::cout << "Tensor devices and types in rasterize function:" << std::endl;
+    std::cout << "  positions: " << gaussians.get_positions().device() << ", "
+              << gaussians.get_positions().dtype() << ", " << gaussians.get_positions().sizes()
+              << std::endl;
+    std::cout << "  scales: " << gaussians.get_scales().device() << ", "
+              << gaussians.get_scales().dtype() << ", " << gaussians.get_scales().sizes()
+              << std::endl;
+    std::cout << "  rotations: " << gaussians.get_rotations().device() << ", "
+              << gaussians.get_rotations().dtype() << ", " << gaussians.get_rotations().sizes()
+              << std::endl;
+    std::cout << "  colors: " << gaussians.get_colors().device() << ", "
+              << gaussians.get_colors().dtype() << ", " << gaussians.get_colors().sizes()
+              << std::endl;
+    std::cout << "  opacities: " << gaussians.get_opacities().device() << ", "
+              << gaussians.get_opacities().dtype() << ", " << gaussians.get_opacities().sizes()
+              << std::endl;
+    std::cout << "  sh_coefficients: " << gaussians.get_sh_coefficients().device() << ", "
+              << gaussians.get_sh_coefficients().dtype() << ", "
+              << gaussians.get_sh_coefficients().sizes() << std::endl;
+    std::cout << "  camera_pose: " << camera_pose.device() << ", " << camera_pose.dtype() << ", "
+              << camera_pose.sizes() << std::endl;
+    std::cout << "  camera_intrinsics: " << camera_intrinsics.device() << ", "
+              << camera_intrinsics.dtype() << ", " << camera_intrinsics.sizes() << std::endl;
+    // Step 1: Project 3D Gaussians to 2D
+    auto projection_outputs = ProjectGaussians::apply(
+        gaussians.get_positions(), gaussians.get_rotations(), gaussians.get_scales(),
+        gaussians.get_opacities(), camera_pose, camera_intrinsics);
+    std::cout << "Applied projections" << std::endl;
+
+    auto radii = projection_outputs[0].to(torch::kInt32);
+    auto xys = projection_outputs[1];
+    // Need grads for tiling apply and rasterizing
+    auto xys_with_grad = xys.contiguous();
+    xys_with_grad.set_requires_grad(true);
+    xys_with_grad.retain_grad();
+    std::cout << "xys dim: " << xys.sizes();
+    auto xys_cpu = xys.to(torch::kCPU);
+    auto xyzs_cpu = gaussians.get_positions().to(torch::kCPU);
+    std::cout << "means3d: " << xyzs_cpu.sizes() << std::endl;
+    auto camera_pose_cpu = camera_pose.to(torch::kCPU);
+    std::cout << "Printing a first projection: " << xyzs_cpu[0] << "\n to " << xys_cpu[0][0]
+              << "\n with pose: " << camera_pose_cpu[0] << std::endl;
+
+    auto depths = projection_outputs[2];
+    auto conics = projection_outputs[3];
+    auto compensations = projection_outputs[4];
+
+    std::cout << "Calling sph harmonics" << std::endl;
+
+    auto camera_pose_inv = torch::inverse(camera_pose);
+    auto camera_translation = camera_pose_inv.index(
+        {torch::indexing::Slice(), torch::indexing::Slice(torch::indexing::None, 3), 3});
+    auto dirs = gaussians.get_positions().unsqueeze(0) - camera_translation.unsqueeze(1);
+    auto radii_masks = (radii > 0).all(-1);
+    auto shcolors = gaussians.get_colors();
+    auto sh_coeffs = gaussians.get_sh_coefficients();
+    auto sh_degree = sh_coeffs.size(1);
+    std::cout << "shcolors: " << shcolors.sizes() << "sh coeffs: " << sh_coeffs.sizes()
+              << std::endl;
+    sh_coeffs = torch::cat({shcolors, sh_coeffs}, 1);
+    // sh_coeffs = sh_coeffs.unsqueeze(0).expand({dirs.size(0), sh_coeffs.size(0),
+    // sh_coeffs.size(1)});
+    auto sh_degree_tensor =
+        torch::tensor({1}, torch::TensorOptions().dtype(torch::kInt32).device(dirs.device()));
+    std::cout << "SH degree: " << sh_degree_tensor << " sh coeffs: " << sh_coeffs.sizes()
+              << " dirs: " << dirs.sizes() << std::endl;
+
+    // auto colors = EvaluateSphericalHarmonics::apply(sh_degree_tensor, dirs, sh_coeffs,
+    // radii_masks); auto colors = torch::zeros_like(dirs);
+    // auto colors = sh_coeffs;
+    auto colors = shcolors;
+
+    std::cout << "Applied sp harmonics" << std::endl;
+
+    // Step 3: Rasterize the 2D Gaussians
+    // First, compute the number of tiles hit by each Gaussian.
+    auto block_size = 16;
+    auto num_tiles_x = (image_width + block_size - 1) / block_size;
+    auto num_tiles_y = (image_height + block_size - 1) / block_size;
+
+    // Debug checks before calling gsplat::intersect_tile
+    std::cout << "Tensor checks before intersect_tile:" << std::endl;
+    std::cout << "  xys_with_grad: " << xys_with_grad.device() << ", " << xys_with_grad.dtype()
+              << ", " << xys_with_grad.sizes() << std::endl;
+    std::cout << "  radii: " << radii.device() << ", " << radii.dtype() << ", " << radii.sizes()
+              << std::endl;
+    std::cout << "  depths: " << depths.device() << ", " << depths.dtype() << ", " << depths.sizes()
+              << std::endl;
+    std::cout << "  block_size: " << block_size << ", num_tiles_x: " << num_tiles_x
+              << ", num_tiles_y: " << num_tiles_y << std::endl;
+
+    TORCH_CHECK(xys_with_grad.is_cuda(), "xys_with_grad must be on CUDA");
+    TORCH_CHECK(radii.is_cuda(), "radii must be on CUDA");
+    TORCH_CHECK(depths.is_cuda(), "depths must be on CUDA");
+    TORCH_CHECK(xys_with_grad.is_contiguous(), "xys_with_grad must be contiguous");
+    TORCH_CHECK(radii.is_contiguous(), "radii must be contiguous");
+    TORCH_CHECK(depths.is_contiguous(), "depths must be contiguous");
+
+    auto intersections =
+        gsplat::intersect_tile(xys_with_grad, radii, depths, {}, {}, xys_with_grad.size(0),
+                               block_size, num_tiles_x, num_tiles_y, true, false);
+    auto tiles_per_gauss = std::get<0>(intersections);
+    auto intersetion_ids = std::get<1>(intersections);
+    auto flatten_ids = std::get<2>(intersections);
+    std::cout << "Did some interset tile stuff" << std::endl;
+
+    auto intersetion_offsets =
+        gsplat::intersect_offset(intersetion_ids, xys_with_grad.size(0), num_tiles_x, num_tiles_y);
+    intersetion_offsets =
+        intersetion_offsets.reshape({xys_with_grad.size(0), num_tiles_y, num_tiles_x});
+    std::cout << "Finished some interset offset" << std::endl;
+
+    auto rasterization_outputs = RasterizeGaussians::apply(
+        xys_with_grad, conics, colors, gaussians.get_opacities(), intersetion_offsets, flatten_ids,
+        image_height, image_width, block_size);
+    std::cout << "Finished saterize gauss applu: " << rasterization_outputs.size() << std::endl;
+
+    RasterizationOutput output;
+    output.rendered_image = rasterization_outputs[0];
+    output.rendered_image = output.rendered_image.permute({0, 3, 1, 2});
+    output.alpha_channel = rasterization_outputs[1];
+    // output.radii = radii.squeeze(0).max(-1);
+    output.radii = radii;
+    output.means2d = xys_with_grad;
+    output.depths = depths.squeeze(0);
+    output.visibility = (radii > 0);
+    auto img_width = camera_intrinsics[0][0][2].item<float>() * 2;
+    auto img_height = camera_intrinsics[0][1][2].item<float>() * 2;
+    output.width = image_width;
+    output.height = image_height;
+
+    std::cout << "Output: " << output.rendered_image.sizes() << ", " << output.alpha_channel.sizes()
+              << ", " << output.radii.sizes() << std::endl;
+
+    return output;
+}
+
+torch::autograd::variable_list ProjectGaussians::forward(
+    torch::autograd::AutogradContext* ctx, const torch::Tensor& positions,
+    const torch::Tensor& rotations, const torch::Tensor& scales, const torch::Tensor& opacities,
+    const torch::Tensor& camera_pose, const torch::Tensor& camera_intrinsics) {
+    std::cout << "ProjectGaussians!!" << std::endl;
+
+    // std::cout << "Camera intrinsics: " << camera_intrinsics.dim() << ": " << camera_intrinsics
+    //           << std::endl;
+    //
+    auto img_height = camera_intrinsics[0][1][2].item<float>() * 2;
+    auto img_width = camera_intrinsics[0][0][2].item<float>() * 2;
+    const float eps2d = .3f;
+    const float near_plane = .01f;
+    const float far_plane = 10000.f;
+    const float radius_clip = .0f;
+    const float tile_size = 16;
+    std::cout << "Img: " << img_height << "|" << img_width << std::endl;
+
+    auto hyper_params =
+        torch::tensor({img_height, img_width, eps2d, near_plane, far_plane, radius_clip, tile_size},
+                      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+
+    std::cout << "Initialized hyper params" << std::endl;
+
+    // auto projection_outputs = gsplat::projection_ewa_3dgs_fused_fwd(
+    //     positions, {}, rotations, scales, opacities, camera_pose, camera_intrinsics,
+    //     hyper_params[1].item<float>(), hyper_params[0].item<float>(),
+    //     hyper_params[2].item<float>(), hyper_params[3].item<float>(),
+    //     hyper_params[4].item<float>(), hyper_params[5].item<float>(), false,
+    //     gsplat::CameraModelType::PINHOLE);
+    gsplat::testFunc();
+    auto projection_outputs = gsplat::projection_ewa_3dgs_fused_fwd(
+        positions, {}, rotations, scales, opacities, camera_pose, camera_intrinsics, img_width,
+        img_height, .3f, .01f, 10000.f, .0f, false, gsplat::CameraModelType::PINHOLE);
+
+    std::cout << "Finished calling gsplat fwd" << std::endl;
+
+    // This also gives the batch_id and camera_id. Might be required somewhere.
+    auto radii = std::get<0>(projection_outputs).contiguous();
+    auto means2d = std::get<1>(projection_outputs).contiguous();
+    auto depths = std::get<2>(projection_outputs).contiguous();
+    auto conics = std::get<3>(projection_outputs).contiguous();
+    auto compensations = std::get<4>(projection_outputs).contiguous();
+    std::cout << "Finished the projection outputs copy" << std::endl;
+
+    if (!compensations.defined()) {
+        compensations = at::empty({0});
+    }
+
+    // TORCH_CHECK(radii.dim() == 3 && radii.size(0) == C && radii.size(1) == N && radii.size(2) ==
+    // 2,
+    //             "radii must be [C, N, 2], got ", radii.sizes());
+    // TORCH_CHECK(
+    //     means2d.dim() == 3 && means2d.size(0) == C && means2d.size(1) == N && means2d.size(2) ==
+    //     2, "means2d must be [C, N, 2], got ", means2d.sizes());
+    // TORCH_CHECK(depths.dim() == 2 && depths.size(0) == C && depths.size(1) == N,
+    //             "depths must be [C, N], got ", depths.sizes());
+    // TORCH_CHECK(
+    //     conics.dim() == 3 && conics.size(0) == C && conics.size(1) == N && conics.size(2) == 3,
+    //     "conics must be [C, N, 3], got ", conics.sizes());
+    //
+    // // Device checks for outputs
+    // TORCH_CHECK(radii.is_cuda(), "radii must be on CUDA");
+    // TORCH_CHECK(means2d.is_cuda(), "means2d must be on CUDA");
+    // TORCH_CHECK(depths.is_cuda(), "depths must be on CUDA");
+    // TORCH_CHECK(conics.is_cuda(), "conics must be on CUDA");
+
+    // Save for backward
+    ctx->save_for_backward({positions, rotations, scales, opacities, camera_pose, camera_intrinsics,
+                            hyper_params, radii, conics, compensations});
+    std::cout << "Finished saving the context" << std::endl;
+
+    return {radii, means2d, depths, conics, compensations};
+}
+
+torch::autograd::variable_list ProjectGaussians::backward(
+    torch::autograd::AutogradContext* ctx, const torch::autograd::variable_list& grad_outputs) {
+    auto saved = ctx->get_saved_variables();
+    auto& positions = saved[0];
+    auto& rotations = saved[1];
+    auto& scales = saved[2];
+    auto& opacities = saved[3];
+    auto& camera_pose = saved[3];
+    auto& camera_intrinsics = saved[4];
+    auto& hyper_params = saved[5];
+    auto& radii = saved[6];
+    auto& conics = saved[7];
+    auto& compensations = saved[8];
+
+    auto height = hyper_params[0].item<float>();
+    auto width = hyper_params[0].item<float>();
+    auto eps2d = hyper_params[0].item<float>();
+
+    auto grad_radii = grad_outputs[0];
+    auto grad_xys = grad_outputs[1];
+    auto grad_depths = grad_outputs[2];
+    auto grad_conics = grad_outputs[3];
+    auto grad_compensations = grad_outputs[4];
+
+    c10::optional<at::Tensor> grad_compensations_opt;
+    if (grad_compensations.defined() && grad_compensations.numel() > 0) {
+        grad_compensations_opt = grad_compensations.to(torch::kCUDA).contiguous();
+    }
+
+    c10::optional<at::Tensor> compensations_opt;
+    if (compensations.defined() && compensations.numel() > 0) {
+        compensations_opt = compensations;
+    }
+
+    auto projection_grads = gsplat::projection_ewa_3dgs_fused_bwd(
+        positions, {}, rotations, scales, camera_pose, camera_intrinsics, width, height, eps2d,
+        gsplat::CameraModelType::PINHOLE, radii, conics, compensations_opt, grad_xys, grad_depths,
+        grad_conics, grad_compensations_opt, ctx->needs_input_grad(4));
+
+    auto grad_positions = std::get<0>(projection_grads).contiguous();
+    auto grad_rotations = std::get<2>(projection_grads).contiguous();
+    auto grad_scales = std::get<3>(projection_grads).contiguous();
+    auto grad_camera_pose = std::get<4>(projection_grads).contiguous();
+
+    torch::Tensor grad_opacities;
+    if (opacities.defined() && grad_compensations_opt.has_value() &&
+        compensations_opt.has_value()) {
+        grad_opacities =
+            (grad_compensations_opt.value() * compensations_opt.value() / opacities.unsqueeze(0))
+                .sum(0);
+    }
+
+    if (!ctx->needs_input_grad(0)) {
+        grad_positions = torch::Tensor();
+    }
+    if (!ctx->needs_input_grad(1)) {  // quats
+        grad_rotations = torch::Tensor();
+    }
+    if (!ctx->needs_input_grad(2)) {  // scales
+        grad_scales = torch::Tensor();
+    }
+    if (!ctx->needs_input_grad(3)) {  // opacities
+        grad_opacities = torch::Tensor();
+    }
+    if (!ctx->needs_input_grad(4)) {  // viewmat
+        grad_camera_pose = torch::Tensor();
+    }
+    return {grad_positions,   grad_rotations,  grad_scales,
+            grad_camera_pose, torch::Tensor(), torch::Tensor()};
+}
+
+torch::Tensor EvaluateSphericalHarmonics::forward(torch::autograd::AutogradContext* ctx,
+                                                  torch::Tensor sh_degree_tensor,
+                                                  torch::Tensor dirs, torch::Tensor coeffs,
+                                                  torch::Tensor masks) {
+    const int sh_degree = sh_degree_tensor.item<int>();
+    const int num_sh_coeffs = (sh_degree + 1) * (sh_degree + 1);
+
+    auto batch_dims = dirs.sizes().slice(0, dirs.dim() - 1);
+
+    auto dirs_flat = dirs.reshape({-1, 3});
+    auto coeffs_flat = coeffs.reshape({-1, coeffs.size(-2), 3});
+    auto masks_flat = masks.reshape({-1});
+    std::cout << "Flattened stuff: dirs: " << dirs_flat.sizes()
+              << " coeffs_flat: " << coeffs_flat.sizes() << " masks: " << masks_flat.sizes()
+              << std::endl;
+    std::cout << "Some comparisons: " << (sh_degree + 1) * (sh_degree + 1)
+              << " coeffs: " << coeffs.size(-2) << std::endl;
+
+    auto colors = gsplat::spherical_harmonics_fwd(sh_degree, dirs_flat, coeffs_flat, masks_flat);
+
+    auto output_shape = dirs.sizes().vec();
+    output_shape[output_shape.size() - 1] = 3;  // Ensure last dimension is 3
+    colors = colors.reshape(output_shape).contiguous();
+
+    ctx->save_for_backward(
+        {dirs, coeffs, masks, torch::tensor(sh_degree), torch::tensor(coeffs.size(-2))});
+
+    return {colors};
+}
+
+torch::autograd::variable_list EvaluateSphericalHarmonics::backward(
+    torch::autograd::AutogradContext* ctx, const torch::autograd::variable_list& grad_outputs) {
+    auto saved = ctx->get_saved_variables();
+    auto dirs = saved[0];
+    auto coeffs = saved[1];
+    auto masks = saved[2];
+    auto sh_degree = saved[3].item<int>();
+    auto num_bases = saved[4].item<int>();
+
+    // Flatten again. Take a look into the kernel later why it
+    // is the case.
+
+    auto dirs_flat = dirs.reshape({-1, 3});
+    auto coeffs_flat = coeffs.reshape({-1, num_bases, 3});
+    auto masks_flat = masks.reshape({-1});
+
+    auto grad_colors = grad_outputs[0];
+    auto grad_colors_flat = grad_colors.reshape({-1, 3});
+
+    // Compute v_dirs based on needs_input_grad(1) (dirs is second input)
+    bool compute_grad_dirs = ctx->needs_input_grad(1);
+
+    auto sh_grads =
+        gsplat::spherical_harmonics_bwd(num_bases, sh_degree, dirs_flat, coeffs_flat, masks_flat,
+                                        grad_colors_flat, compute_grad_dirs);
+
+    auto grad_coeffs = std::get<0>(sh_grads);
+    auto grad_dirs = std::get<1>(sh_grads);
+
+    // Reshape gradients back to original shapes
+    if (grad_dirs.defined()) {
+        grad_dirs = grad_dirs.reshape(dirs.sizes());
+    }
+    if (grad_coeffs.defined()) {
+        grad_coeffs = grad_coeffs.reshape(coeffs.sizes());
+    }
+
+    // Check gradient requirements
+    if (!ctx->needs_input_grad(1)) {
+        grad_dirs = torch::Tensor();
+    }
+    if (!ctx->needs_input_grad(2)) {
+        grad_coeffs = torch::Tensor();
+    }
+
+    // Return gradients in same order as inputs: sh_degree_tensor, dirs, coeffs, masks
+    return {torch::Tensor(), grad_dirs, grad_coeffs, torch::Tensor()};
+}
+
+std::vector<torch::Tensor> RasterizeGaussians::forward(
+    torch::autograd::AutogradContext* ctx, const torch::Tensor& xys, const torch::Tensor& conics,
+    const torch::Tensor& colors, const torch::Tensor& opacities,
+    const torch::Tensor& intersetion_offsets, const torch::Tensor& flatten_ids, int image_height,
+    int image_width, int tile_size) {
+    auto rasterizer_results = gsplat::rasterize_to_pixels_3dgs_fwd(
+        xys, conics, colors, opacities, {}, {}, image_width, image_height, tile_size,
+        intersetion_offsets, flatten_ids);
+
+    auto rendered_image = std::get<0>(rasterizer_results);
+    auto rendered_alpha = std::get<1>(rasterizer_results);
+    auto last_ids = std::get<2>(rasterizer_results);
+
+    ctx->save_for_backward({xys, conics, colors, opacities, intersetion_offsets, flatten_ids,
+                            rendered_alpha, last_ids, torch::tensor(image_width),
+                            torch::tensor(image_height), torch::tensor(tile_size)});
+    return {rendered_image, rendered_alpha};
+}
+
+torch::autograd::variable_list RasterizeGaussians::backward(
+    torch::autograd::AutogradContext* ctx, const torch::autograd::variable_list& grad_outputs) {
+    auto saved_tensors = ctx->get_saved_variables();
+    auto xys = saved_tensors[0];
+    auto conics = saved_tensors[1];
+    auto colors = saved_tensors[2];
+    auto opacities = saved_tensors[3];
+    auto intersetion_offsets = saved_tensors[4];
+    auto flatten_ids = saved_tensors[5];
+    auto rendered_alpha = saved_tensors[6];
+    auto last_ids = saved_tensors[7];
+    auto img_width = saved_tensors[8].item<int>();
+    auto img_height = saved_tensors[9].item<int>();
+    auto tile_size = saved_tensors[10].item<int>();
+
+    // Need to check the backwards grad chain graph!
+    auto grad_image = grad_outputs[0];
+    auto grad_alphas = grad_outputs[1];
+
+    auto rasterize_grads = gsplat::rasterize_to_pixels_3dgs_bwd(
+        xys, conics, colors, opacities, {}, {}, img_width, img_height, tile_size,
+        intersetion_offsets, flatten_ids, rendered_alpha, last_ids, grad_image, grad_alphas, false);
+
+    auto grad_xys_abs = std::get<0>(rasterize_grads);
+    auto grad_xys = std::get<1>(rasterize_grads);
+    auto grad_conics = std::get<1>(rasterize_grads);
+    auto grad_colors = std::get<1>(rasterize_grads);
+    auto grad_opacities = std::get<1>(rasterize_grads);
+
+    return {grad_xys, grad_conics, grad_colors, grad_opacities};
+}
+
+}  // namespace rendering
+}  // namespace gaussian_splatting

@@ -83,7 +83,7 @@ EOF
 chmod +x ~/.continue_setup.sh
 
 # Switch to zsh and continue setup
-sudo chsh -s $(which zsh) developer
+sudo chsh -s $(which zsh) $USER
 echo "source ~/.continue_setup.sh" >> ~/.zshrc
 echo "source ~/.cargo/env" >> ~/.zshrc
 exec zsh -l

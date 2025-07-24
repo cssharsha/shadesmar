@@ -16,4 +16,5 @@ message Keypoint {
   Vector3 position = 2;
   repeated Location locations = 3;
   bool needs_triangulation = 4;
+  Vector3 color = 5;
 }
