@@ -92,6 +92,21 @@ public:
     std::vector<core::types::GaussianSplat> toSplats();
     uint32_t check_stuff = 0;
 
+    // Partial loading support for bounding box optimization
+    // Load only a subset of splats specified by indices
+    bool fromSplatsSubset(const std::vector<core::types::GaussianSplat>& all_splats,
+                          const std::vector<int>& indices);
+
+    // Sync GPU changes back to CPU subset
+    // Updates only the splats at the specified global indices
+    void syncToCPU(std::vector<core::types::GaussianSplat>& cpu_splats,
+                   const std::vector<int>& global_indices);
+
+    // Extract a subset of splats for partial loading
+    static std::vector<core::types::GaussianSplat> extractSubset(
+        const std::vector<core::types::GaussianSplat>& all_splats,
+        const std::vector<int>& indices);
+
 private:
     torch::Tensor positions;
     torch::Tensor covariances;

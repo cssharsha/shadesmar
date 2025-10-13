@@ -166,11 +166,13 @@ bool StandaloneGs::loadAndTrain() {
             auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
             std::string entity_path = "/rendered/" + std::to_string(kf->id);
 
-            // TODO: Optimize this - copySplatsToBatch causes GPU->CPU->GPU transfer every
-            // iteration! Only visualize splats periodically to avoid memory overhead
-            batch_trainer_->copySplatsToBatch(splat_batch.splats);
-            std::cout << "Splats: " << splat_batch.splats.size() << std::endl;
-            training_visualizer_->visualizeCurrentSplats(splat_batch, 0);
+            // Only visualize splats periodically to avoid memory overhead
+            // Visualization happens every visualization_interval iterations
+            if (iteration % training_config_.visualization_interval == 0) {
+                batch_trainer_->copySplatsToBatch(splat_batch.splats);
+                std::cout << "Splats: " << splat_batch.splats.size() << std::endl;
+                training_visualizer_->visualizeCurrentSplats(splat_batch, 0);
+            }
 
             training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(), entity_path);
             training_visualizer_->logImage(entity_path, rendered_image, 0);

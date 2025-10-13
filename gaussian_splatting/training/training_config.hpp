@@ -38,11 +38,17 @@ struct TrainingConfig {
     // Densification
     float densify_grad_threshold = 0.0002f;
     float densify_size_threshold = 20.0f;
-    
+
+    // Bounding box optimization
+    float bounding_box_radius = 5.0f;  // Radius in meters for loading splats around keyframes
+    int sync_interval = 10;             // Sync GPU→CPU every N iterations
+    int visualization_interval = 20;    // Visualize every N*2 iterations
+
     // Validation
     bool isValid() const {
-        return initial_width > 0 && initial_height > 0 && 
-               max_iterations_per_batch > 0 && learning_rate > 0.0f;
+        return initial_width > 0 && initial_height > 0 &&
+               max_iterations_per_batch > 0 && learning_rate > 0.0f &&
+               bounding_box_radius > 0.0f && sync_interval > 0;
     }
 };
 

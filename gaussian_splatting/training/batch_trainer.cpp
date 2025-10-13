@@ -62,31 +62,32 @@ BatchTrainer::~BatchTrainer() {
 
 void BatchTrainer::setupTraining(const core::types::GaussianSplatBatch& batch) {
     clearCurrentBatch();
-    current_gaussian_tensors_.fromSplats(batch.splats);
 
-    // Move tensors to GPU BEFORE setting requires_grad and initializing optimizer
-    // This ensures the optimizer holds references to GPU tensors, not CPU tensors
-    // IMPORTANT: Must move to device BEFORE setting requires_grad to keep tensors as leaves
-    if (torch::cuda::is_available()) {
-        current_gaussian_tensors_.to(torch::kCUDA);
-    }
+    // Store full dataset on CPU
+    cpu_gaussian_splats_ = batch.splats;
 
-    // Set requires_grad AFTER moving to GPU so tensors remain as leaf nodes
-    current_gaussian_tensors_.setRequiresGrad(true);
+    // Build KD-tree for spatial queries
+    buildSplatKDTree();
 
-    auto optimizer = std::make_unique<optimization::Optimizer>();
-    optimizer->initialize(current_gaussian_tensors_);
-    // Set the proper gamma
-    auto scheduler = std::make_unique<optimization::Scheduler>(optimizer->getOptimizer(), 0.5);
-    strategy_ = std::make_unique<optimization::Strategy>(std::move(optimizer), std::move(scheduler),
-                                                         &current_gaussian_tensors_);
+    // Initialize index manager with total count
+    index_manager_.setTotalGlobalSplats(cpu_gaussian_splats_.size());
+
+    LOG(INFO) << "Setup training with " << cpu_gaussian_splats_.size()
+              << " splats on CPU (GPU loading deferred to per-keyframe)";
+
+    // Note: GPU loading is now deferred to loadActiveSubsetForKeyframe()
+    // Strategy will be initialized in trainKeyframe() after loading active subset
 }
 
 void BatchTrainer::copySplatsToBatch(std::vector<core::types::GaussianSplat>& splats) {
     std::cout << "Copying splats to batch" << std::endl;
+
+    // First sync GPU→CPU to ensure latest changes are in cpu_gaussian_splats_
+    syncGPUToCPU();
+
     std::cout << "Copying splats back to batch" << std::endl;
-    splats.resize(current_gaussian_tensors_.get_positions().size(0));
-    splats = current_gaussian_tensors_.toSplats();
+    // Return the full CPU dataset
+    splats = cpu_gaussian_splats_;
 }
 
 void BatchTrainer::trainingThreadLoop() {
@@ -307,6 +308,21 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
         return false;
     }
 
+    // Load active subset for this keyframe (only on first iteration or when needed)
+    if (iteration == 0 || !gpu_gaussian_tensors_.isValid()) {
+        if (!loadActiveSubsetForKeyframe(keyframe)) {
+            LOG(ERROR) << "Failed to load active subset for keyframe " << keyframe->id;
+            return false;
+        }
+
+        // Initialize strategy with the active subset and index manager
+        auto optimizer = std::make_unique<optimization::Optimizer>();
+        optimizer->initialize(gpu_gaussian_tensors_);
+        auto scheduler = std::make_unique<optimization::Scheduler>(optimizer->getOptimizer(), 0.5);
+        strategy_ = std::make_unique<optimization::Strategy>(std::move(optimizer), std::move(scheduler),
+                                                             &gpu_gaussian_tensors_, &index_manager_);
+    }
+
     // Log GPU memory before training
     if (iteration % 10 == 0) {
         size_t free_mem, total_mem;
@@ -314,24 +330,25 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
         LOG(INFO) << "GPU Memory before iteration " << iteration << ": "
                   << (total_mem - free_mem) / (1024.0 * 1024.0) << " MB used, "
                   << free_mem / (1024.0 * 1024.0) << " MB free";
-        LOG(INFO) << "Gaussian splat count: " << current_gaussian_tensors_.get_positions().size(0);
+        LOG(INFO) << "Active splat count: " << gpu_gaussian_tensors_.get_positions().size(0)
+                  << " / " << cpu_gaussian_splats_.size() << " total";
     }
 
     // Load keyframe data (already on CPU from loadFromKeyframe)
     current_keyframe_tensor_.loadFromKeyframe(keyframe);
     LOG(INFO) << "Loaded keyframe tensor";
 
-    // Move only the keyframe tensor to GPU (gaussian tensors already on GPU from setupTraining)
+    // Move only the keyframe tensor to GPU
     current_keyframe_tensor_.to(torch::kCUDA);
 
     // Ensure gaussian tensors are on GPU (should be no-op if already there)
-    if (!current_gaussian_tensors_.get_positions().is_cuda()) {
+    if (!gpu_gaussian_tensors_.get_positions().is_cuda()) {
         LOG(WARNING) << "Gaussian tensors not on GPU, moving now";
-        current_gaussian_tensors_.to(torch::kCUDA);
+        gpu_gaussian_tensors_.to(torch::kCUDA);
     }
 
     LOG(INFO) << "Current device: " << current_keyframe_tensor_.getDevice().type();
-    current_gaussian_tensors_.check_stuff = 10;
+    gpu_gaussian_tensors_.check_stuff = 10;
 
     LOG(INFO) << "pose on gpu: " << current_keyframe_tensor_.getCameraPose().is_cuda();
     LOG(INFO) << "intrinsics on gpu: " << current_keyframe_tensor_.getCameraIntrinsic().is_cuda();
@@ -363,22 +380,29 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
 
     std::cout << "Doing scale loss" << std::endl;
     auto scale_loss = optimization::LossFunctions::computeScaleRegularizationLoss(
-        current_gaussian_tensors_.get_scales());
-    std::cout << "current_gaussian_tensors_.get_scales(): "
-              << current_gaussian_tensors_.get_scales().is_cuda() << std::endl;
+        gpu_gaussian_tensors_.get_scales());
+    std::cout << "gpu_gaussian_tensors_.get_scales(): "
+              << gpu_gaussian_tensors_.get_scales().is_cuda() << std::endl;
     scale_loss.backward();
 
     auto opacity_loss = optimization::LossFunctions::computeOpacityRegularizationLoss(
-        current_gaussian_tensors_.get_opacities());
+        gpu_gaussian_tensors_.get_opacities());
     opacity_loss.backward();
 
     {
         torch::NoGradGuard no_grad;
 
-        std::cout << "Before pose backward: " << current_gaussian_tensors_.check_stuff << std::endl;
+        std::cout << "Before pose backward: " << gpu_gaussian_tensors_.check_stuff << std::endl;
         // Pass the actual iteration to strategy
         strategy_->postBackward(render_result, iteration);
         strategy_->step(iteration);
+    }
+
+    // Periodic GPU→CPU sync
+    sync_counter_++;
+    if (sync_counter_ >= config_.sync_interval) {
+        syncGPUToCPU();
+        sync_counter_ = 0;
     }
 
     // Synchronize CUDA to ensure all operations complete
@@ -559,15 +583,15 @@ void BatchTrainer::setupOptimizer() {
 }
 
 rendering::RasterizationOutput BatchTrainer::renderKeyframe() {
-    if (!current_gaussian_tensors_.isValid() || !current_keyframe_tensor_.isValid()) {
+    if (!gpu_gaussian_tensors_.isValid() || !current_keyframe_tensor_.isValid()) {
         LOG(ERROR) << "Cannot render batch: invalid GPU data or keyframe batch "
-                   << current_gaussian_tensors_.isValid() << " "
+                   << gpu_gaussian_tensors_.isValid() << " "
                    << current_keyframe_tensor_.isValid();
         return rendering::RasterizationOutput();
     }
 
     auto rasterisation_output =
-        rasterizer_->rasterize(current_gaussian_tensors_, current_keyframe_tensor_);
+        rasterizer_->rasterize(gpu_gaussian_tensors_, current_keyframe_tensor_);
     return rasterisation_output;
 }
 
@@ -629,6 +653,95 @@ rendering::RasterizationOutput BatchTrainer::renderBatch() {
 //     current_gaussian_tensors_.get_rotations() =
 //         param_transforms_->normalizeRotations(current_gaussian_tensors_.get_rotations());
 // }
+
+void BatchTrainer::buildSplatKDTree() {
+    LOG(INFO) << "Building KD-tree from " << cpu_gaussian_splats_.size() << " splats";
+
+    // Reset existing KD-tree
+    splat_kdtree_.reset();
+
+    // Add all splat positions to the KD-tree
+    for (const auto& splat : cpu_gaussian_splats_) {
+        splat_kdtree_.addPoint(static_cast<float>(splat.position.x()),
+                               static_cast<float>(splat.position.y()),
+                               static_cast<float>(splat.position.z()));
+    }
+
+    // Build the KD-tree for efficient spatial queries
+    splat_kdtree_.setupKDTree();
+
+    LOG(INFO) << "KD-tree built with " << splat_kdtree_.size() << " points";
+}
+
+bool BatchTrainer::loadActiveSubsetForKeyframe(const core::storage::KeyFramePtr& keyframe) {
+    if (cpu_gaussian_splats_.empty()) {
+        LOG(ERROR) << "No CPU splats available to load";
+        return false;
+    }
+
+    // Get keyframe position in world frame
+    Eigen::Vector3d keyframe_position = keyframe->T_world_body.translation();
+
+    LOG(INFO) << "Loading active subset for keyframe " << keyframe->id
+              << " at position (" << keyframe_position.x() << ", "
+              << keyframe_position.y() << ", " << keyframe_position.z() << ")";
+
+    // Query KD-tree for all splats within bounding box radius
+    std::vector<int> active_indices = splat_kdtree_.queryBoundingBox(
+        keyframe_position, config_.bounding_box_radius);
+
+    if (active_indices.empty()) {
+        LOG(WARNING) << "No splats found within " << config_.bounding_box_radius
+                     << "m of keyframe " << keyframe->id;
+        return false;
+    }
+
+    LOG(INFO) << "Found " << active_indices.size() << " splats within bounding box";
+
+    // Load subset to GPU tensors
+    if (!gpu_gaussian_tensors_.fromSplatsSubset(cpu_gaussian_splats_, active_indices)) {
+        LOG(ERROR) << "Failed to load splat subset to GPU";
+        return false;
+    }
+
+    // Move tensors to GPU
+    if (torch::cuda::is_available()) {
+        gpu_gaussian_tensors_.to(torch::kCUDA);
+    }
+
+    // Set requires_grad after moving to GPU (to keep as leaf nodes)
+    gpu_gaussian_tensors_.setRequiresGrad(true);
+
+    // Initialize index manager with active indices
+    index_manager_.setActiveIndices(active_indices);
+    index_manager_.setTotalGlobalSplats(cpu_gaussian_splats_.size());
+
+    LOG(INFO) << "Successfully loaded " << active_indices.size()
+              << " active splats to GPU for keyframe " << keyframe->id;
+
+    return true;
+}
+
+void BatchTrainer::syncGPUToCPU() {
+    if (!gpu_gaussian_tensors_.isValid()) {
+        LOG(WARNING) << "GPU tensors invalid, skipping sync";
+        return;
+    }
+
+    LOG(INFO) << "Syncing GPU changes back to CPU ("
+              << index_manager_.getActiveCount() << " active splats)";
+
+    // Get the current active global indices
+    const auto& active_indices = index_manager_.getActiveGlobalIndices();
+
+    // Sync GPU tensors back to CPU splats
+    gpu_gaussian_tensors_.syncToCPU(cpu_gaussian_splats_, active_indices);
+
+    // Clear dirty flags after successful sync
+    index_manager_.clearDirtyFlags();
+
+    LOG(INFO) << "GPU→CPU sync complete";
+}
 
 }  // namespace training
 }  // namespace gaussian_splatting

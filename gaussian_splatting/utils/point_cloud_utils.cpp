@@ -80,5 +80,29 @@ Eigen::Vector3f PointCloudUtils::computeScaleFromKNN(const Eigen::Vector3f& posi
     return scale;
 }
 
+std::vector<int> PointCloudUtils::queryBoundingBox(const Eigen::Vector3d& center, float radius) {
+    std::vector<int> result_indices;
+
+    if (cloud_->points.empty()) {
+        return result_indices;
+    }
+
+    pcl::PointXYZ search_point;
+    search_point.x = static_cast<float>(center.x());
+    search_point.y = static_cast<float>(center.y());
+    search_point.z = static_cast<float>(center.z());
+
+    std::vector<int> k_indices;
+    std::vector<float> k_sqr_distances;
+
+    // Radius search returns all points within the specified radius
+    // Note: radiusSearch expects radius, but internally uses squared distance
+    if (kdtree_.radiusSearch(search_point, radius, k_indices, k_sqr_distances) > 0) {
+        result_indices = k_indices;
+    }
+
+    return result_indices;
+}
+
 }  // namespace utils
 }  // namespace gaussian_splatting

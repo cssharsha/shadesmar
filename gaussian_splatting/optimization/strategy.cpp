@@ -218,6 +218,12 @@ void Strategy::duplicateSplats(const torch::Tensor& is_duplicated) {
     if (count_.defined()) {
         count_ = torch::cat({count_, count_.index_select(0, sampled_idxs)});
     }
+
+    // Update index manager if using bounding box optimization
+    if (index_manager_) {
+        int next_global_id = index_manager_->getTotalGlobalSplats();
+        index_manager_->afterDuplicate(num_to_duplicate, next_global_id);
+    }
 }
 
 void Strategy::splitSplats(torch::Tensor& is_split) {
@@ -396,6 +402,12 @@ void Strategy::splitSplats(torch::Tensor& is_split) {
         count_ = torch::cat({count_.index_select(0, rest_idxs),
                              count_.index_select(0, sampled_idxs).repeat(make_repeats(count_))});
     }
+
+    // Update index manager if using bounding box optimization
+    if (index_manager_) {
+        int next_global_id = index_manager_->getTotalGlobalSplats();
+        index_manager_->afterSplit(num_to_split, split_size, next_global_id);
+    }
 }
 
 void Strategy::pruneSplats(int iter) {
@@ -478,6 +490,19 @@ void Strategy::removeSplats(const torch::Tensor& is_prune) {
     }
     if (count_.defined()) {
         count_ = count_.index_select(0, sampled_idxs);
+    }
+
+    // Update index manager if using bounding box optimization
+    if (index_manager_) {
+        // Convert sampled_idxs tensor to std::vector<int>
+        std::vector<int> kept_indices;
+        kept_indices.reserve(sampled_idxs.size(0));
+        auto indices_cpu = sampled_idxs.to(torch::kCPU);
+        auto indices_accessor = indices_cpu.accessor<int64_t, 1>();
+        for (int64_t i = 0; i < indices_accessor.size(0); ++i) {
+            kept_indices.push_back(static_cast<int>(indices_accessor[i]));
+        }
+        index_manager_->afterPrune(kept_indices);
     }
 }
 

@@ -252,4 +252,128 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
     return splats;
 }
 
+bool GaussianTensors::fromSplatsSubset(const std::vector<core::types::GaussianSplat>& all_splats,
+                                       const std::vector<int>& indices) {
+    if (indices.empty()) {
+        LOG(WARNING) << "Empty indices provided to fromSplatsSubset";
+        return false;
+    }
+
+    // Extract subset
+    std::vector<core::types::GaussianSplat> subset_splats;
+    subset_splats.reserve(indices.size());
+
+    for (int idx : indices) {
+        if (idx >= 0 && idx < all_splats.size()) {
+            subset_splats.push_back(all_splats[idx]);
+        } else {
+            LOG(ERROR) << "Invalid index " << idx << " in subset (total: " << all_splats.size()
+                       << ")";
+        }
+    }
+
+    LOG(INFO) << "Loading subset of " << subset_splats.size() << " splats from total "
+              << all_splats.size();
+
+    // Use existing fromSplats method
+    return fromSplats(subset_splats);
+}
+
+void GaussianTensors::syncToCPU(std::vector<core::types::GaussianSplat>& cpu_splats,
+                                const std::vector<int>& global_indices) {
+    if (!isValid()) {
+        LOG(WARNING) << "Cannot sync invalid GaussianTensors to CPU";
+        return;
+    }
+
+    if (global_indices.size() != positions.size(0)) {
+        LOG(ERROR) << "Index count mismatch: " << global_indices.size()
+                   << " indices vs " << positions.size(0) << " GPU splats";
+        return;
+    }
+
+    torch::NoGradGuard no_grad;
+
+    // Copy tensors to CPU
+    auto positions_cpu = positions.to(torch::kCPU);
+    auto opacities_cpu = opacities.to(torch::kCPU);
+    auto scales_cpu = scales.to(torch::kCPU);
+    auto rotations_cpu = rotations.to(torch::kCPU);
+    auto sh_0_cpu = sh_0.to(torch::kCPU);
+
+    // Get data pointers
+    const auto* positions_ptr = positions_cpu.data_ptr<float>();
+    const auto* opacities_ptr = opacities_cpu.data_ptr<float>();
+    const auto* scales_ptr = scales_cpu.data_ptr<float>();
+    const auto* rotations_ptr = rotations_cpu.data_ptr<float>();
+
+    // Reconstruct colors from SH
+    constexpr float C0 = 0.28209479177387814f;
+    torch::Tensor reconstructed_colors = sh_0_cpu.squeeze(1) * C0 + 0.5f;
+    reconstructed_colors = reconstructed_colors.clamp(0.0f, 1.0f);
+    const auto* colors_ptr = reconstructed_colors.data_ptr<float>();
+
+    LOG(INFO) << "Syncing " << global_indices.size() << " GPU splats back to CPU";
+
+    // Update CPU splats at specified global indices
+    for (size_t local_idx = 0; local_idx < global_indices.size(); ++local_idx) {
+        int global_idx = global_indices[local_idx];
+
+        if (global_idx < 0 || global_idx >= cpu_splats.size()) {
+            LOG(ERROR) << "Invalid global index " << global_idx << " (CPU size: "
+                       << cpu_splats.size() << ")";
+            continue;
+        }
+
+        auto& splat = cpu_splats[global_idx];
+
+        // Update position
+        splat.position = Eigen::Vector3d(
+            static_cast<double>(positions_ptr[local_idx * 3 + 0]),
+            static_cast<double>(positions_ptr[local_idx * 3 + 1]),
+            static_cast<double>(positions_ptr[local_idx * 3 + 2]));
+
+        // Update color
+        splat.color = Eigen::Vector3f(
+            colors_ptr[local_idx * 3 + 0],
+            colors_ptr[local_idx * 3 + 1],
+            colors_ptr[local_idx * 3 + 2]);
+
+        // Update opacity (convert from logit space)
+        float opacity_logit = opacities_ptr[local_idx];
+        splat.opacity = 1.0f / (1.0f + std::exp(-opacity_logit));
+
+        // Update scale (stored in log space in GPU)
+        splat.scale = Eigen::Vector3d(
+            static_cast<double>(scales_ptr[local_idx * 3 + 0]),
+            static_cast<double>(scales_ptr[local_idx * 3 + 1]),
+            static_cast<double>(scales_ptr[local_idx * 3 + 2]));
+
+        // Update rotation
+        splat.rotation = Eigen::Quaterniond(
+            static_cast<double>(rotations_ptr[local_idx * 4 + 0]),
+            static_cast<double>(rotations_ptr[local_idx * 4 + 1]),
+            static_cast<double>(rotations_ptr[local_idx * 4 + 2]),
+            static_cast<double>(rotations_ptr[local_idx * 4 + 3])).normalized();
+    }
+
+    LOG(INFO) << "Successfully synced GPU changes to CPU storage";
+}
+
+std::vector<core::types::GaussianSplat> GaussianTensors::extractSubset(
+    const std::vector<core::types::GaussianSplat>& all_splats,
+    const std::vector<int>& indices) {
+
+    std::vector<core::types::GaussianSplat> subset;
+    subset.reserve(indices.size());
+
+    for (int idx : indices) {
+        if (idx >= 0 && idx < all_splats.size()) {
+            subset.push_back(all_splats[idx]);
+        }
+    }
+
+    return subset;
+}
+
 }  // namespace gaussian_splatting

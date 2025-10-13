@@ -11,6 +11,8 @@
 #include "../optimization/loss_functions.hpp"
 #include "../optimization/parameter_transforms.hpp"
 #include "../utils/batch_gpu_manager.hpp"
+#include "../utils/point_cloud_utils.hpp"
+#include "../utils/splat_index_manager.hpp"
 #include "core/storage/map_store.hpp"
 #include "core/types/gaussian_splat.hpp"
 #include "gaussian_splatting/optimization/strategy.hpp"
@@ -76,11 +78,20 @@ public:
         keyframe_train_queue_cv_.notify_one();
     }
     void setBatchForTraining(const core::types::GaussianSplatBatch& batch) {
-        current_gaussian_tensors_.fromSplats(batch.splats);
+        cpu_gaussian_splats_ = batch.splats;
+        buildSplatKDTree();
     }
     void setupTraining(const core::types::GaussianSplatBatch& batch);
 
+    // Load active subset for the given keyframe into GPU
+    bool loadActiveSubsetForKeyframe(const core::storage::KeyFramePtr& keyframe);
+
+    // Sync GPU changes back to CPU (called periodically)
+    void syncGPUToCPU();
+
 private:
+    // Build KD-tree from CPU splats for spatial queries
+    void buildSplatKDTree();
     TrainingConfig config_;
     std::shared_ptr<core::storage::MapStore> map_store_;
     std::shared_ptr<stf::TransformTree> tf_tree_;
@@ -94,11 +105,17 @@ private:
     std::unique_ptr<rendering::DifferentiableRasterizer> rasterizer_;
 
     // Current training state
-    GaussianTensors current_gaussian_tensors_;
+    // Dual storage for bounding box optimization:
+    std::vector<core::types::GaussianSplat> cpu_gaussian_splats_;  // Full dataset on CPU
+    GaussianTensors gpu_gaussian_tensors_;                         // Active subset on GPU
+    utils::SplatIndexManager index_manager_;                       // CPU↔GPU index mapping
+    utils::PointCloudUtils splat_kdtree_;                          // KD-tree for spatial queries
+
     training::KeyframeBatch current_keyframe_batch_;
     training::KeyframeTensor current_keyframe_tensor_;
     uint32_t current_batch_id_ = 0;
     bool is_training_ = false;
+    int sync_counter_ = 0;  // Track iterations for periodic CPU↔GPU sync
 
     // Optimization state
     std::unique_ptr<torch::optim::Adam> optimizer_;

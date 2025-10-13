@@ -22,6 +22,12 @@ public:
                         std::vector<float>& distances);
     Eigen::Vector3f computeScaleFromKNN(const Eigen::Vector3f& position);
 
+    // Bounding box query - returns indices of all points within radius of center
+    std::vector<int> queryBoundingBox(const Eigen::Vector3d& center, float radius);
+
+    // Get total number of points in the cloud
+    size_t size() const { return cloud_->points.size(); }
+
 private:
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_;
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtree_;

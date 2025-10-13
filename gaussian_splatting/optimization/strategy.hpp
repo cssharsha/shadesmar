@@ -5,6 +5,7 @@
 #include "gaussian_splatting/optimization/optimizer.hpp"
 #include "gaussian_splatting/optimization/scheduler.hpp"
 #include "gaussian_splatting/rendering/rasterizer.hpp"
+#include "gaussian_splatting/utils/splat_index_manager.hpp"
 
 namespace gaussian_splatting {
 namespace optimization {
@@ -29,10 +30,11 @@ public:
     // have means2d tensor which should retain its grad?
     // void stepPreBackward();
     Strategy(std::unique_ptr<Optimizer> optimizer, std::unique_ptr<Scheduler> scheduler,
-             GaussianTensors* gaussians)
+             GaussianTensors* gaussians, utils::SplatIndexManager* index_manager = nullptr)
         : optimizer_(std::move(optimizer)),
           scheduler_(std::move(scheduler)),
-          gaussians_(gaussians) {}
+          gaussians_(gaussians),
+          index_manager_(index_manager) {}
 
     void postBackward(rendering::RasterizationOutput& r_output, int iter);
     void step(int iter);
@@ -64,6 +66,7 @@ private:
     std::unique_ptr<optimization::Optimizer> optimizer_;
     std::unique_ptr<optimization::Scheduler> scheduler_;
     GaussianTensors* gaussians_;
+    utils::SplatIndexManager* index_manager_;  // Optional index manager for bounding box optimization
 };
 
 }  // namespace optimization
