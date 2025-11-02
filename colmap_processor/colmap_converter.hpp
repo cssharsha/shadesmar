@@ -62,6 +62,13 @@ private:
     std::string map_path_;
     colmap::Reconstruction reconstruction_;
     core::storage::MapStore map_store_;
+
+    // Binary reconstruction support
+    bool use_binary_ = false;  // True if binary files are available and loaded
+
+    // Store 2D points from images.txt when binary is not available
+    // Map: image_id -> vector of 2D points (indexed by point2D_idx)
+    std::unordered_map<uint64_t, std::vector<Eigen::Vector2d>> image_to_points2d_;
 };
 
 }  // namespace gs

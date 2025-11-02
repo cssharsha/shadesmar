@@ -15,6 +15,7 @@ struct Config {
 
     // File paths
     std::string map_base_path;
+    std::string debug_output_path = "";  // If empty, derived from map_base_path + "/debug/"
     std::string training_viz_recording_id = "streaming_gs_training";
     std::string training_viz_host = "127.0.0.1";
     int training_viz_port = 9876;

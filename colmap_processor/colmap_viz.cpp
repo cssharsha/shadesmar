@@ -15,7 +15,7 @@ void ColmapViz::initialize() {
     }
 
     try {
-        map_store_ = std::make_shared<core::storage::MapStore>("/data/south-building/map/map",
+        map_store_ = std::make_shared<core::storage::MapStore>("/data/gscudasb/map/map",
                                                                core::storage::ProcessRole::READER);
 
         if (!map_store_) {

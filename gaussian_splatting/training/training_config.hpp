@@ -9,6 +9,7 @@ namespace training {
 struct TrainingConfig {
     std::string camera_frame_ = "camera";
     std::string base_link_ = "base_link";
+    std::string debug_output_path = "/tmp/debug/";  // Path for debug image outputs
     // Conservative initial resolution
     int initial_width = 512;
     int initial_height = 384;

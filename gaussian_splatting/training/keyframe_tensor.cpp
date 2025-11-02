@@ -104,6 +104,42 @@ void KeyframeTensor::loadFromKeyframe(const core::storage::KeyFramePtr& keyframe
         torch::from_blob(mat.data, {mat.rows, mat.cols, mat.channels()}, torch::kUInt8);
     auto img_chw = img_tensor_u8.permute({2, 0, 1});
     image_ = img_chw.to(torch::kFloat32).div_(255.0).clone();  // clone to own memory
+
+    // Get actual image dimensions from the loaded image
+    int actual_height = mat.rows;
+    int actual_width = mat.cols;
+    const auto& camera_info = keyframe->getCameraInfo();
+
+    // Validate that image resolution matches camera info or is approximately half (downsampled 2x)
+    if (actual_width != camera_info.width || actual_height != camera_info.height) {
+        // Check if it's approximately half resolution (2x downsampling with rounding)
+        // Account for rounding: ceil(original/2) or floor(original/2)
+        int expected_width_from_actual = (camera_info.width + 1) / 2;  // ceil(width/2)
+        int expected_height_from_actual = (camera_info.height + 1) / 2;  // ceil(height/2)
+
+        if (actual_width == expected_width_from_actual && actual_height == expected_height_from_actual) {
+            LOG(WARNING) << "Image is downsampled 2x: actual=" << actual_width << "x" << actual_height
+                         << " vs camera_info=" << camera_info.width << "x" << camera_info.height;
+            // Scale down camera intrinsics by factor of 2
+            image_width_ = actual_width;
+            image_height_ = actual_height;
+        } else {
+            throw std::runtime_error(
+                "Image resolution mismatch: actual=" + std::to_string(actual_width) + "x" +
+                std::to_string(actual_height) + " vs camera_info=" +
+                std::to_string(camera_info.width) + "x" + std::to_string(camera_info.height) +
+                ". Expected equal or approximately half resolution (2x downsampling with rounding). " +
+                "Expected from camera_info: " + std::to_string(expected_width_from_actual) + "x" +
+                std::to_string(expected_height_from_actual));
+        }
+    } else {
+        // Resolution matches exactly
+        image_width_ = actual_width;
+        image_height_ = actual_height;
+    }
+
+    camera_intrinsic_ = convertCameraIntrinsicsToTensor(camera_info, device_);
+    LOG(INFO) << "Converted camera pose and intrinsics";
 }
 
 torch::Tensor KeyframeTensor::convertCameraPoseToTensor(const Eigen::Isometry3d& pose,
@@ -137,14 +173,20 @@ torch::Tensor KeyframeTensor::convertCameraIntrinsicsToTensor(
 
     assert(camera_info.k.size() == 9);
 
-    intrinsics[0][0][0] = static_cast<common::scalar_t>(camera_info.k[0]);  // fx
-    intrinsics[0][1][1] = static_cast<common::scalar_t>(camera_info.k[4]);  // fy
-    intrinsics[0][0][2] = static_cast<common::scalar_t>(camera_info.k[2]);  // cx
-    intrinsics[0][1][2] = static_cast<common::scalar_t>(camera_info.k[5]);  // cy
-    intrinsics[0][2][2] = static_cast<common::scalar_t>(1.0);                // homogeneous coordinate
+    // Calculate scaling factor based on actual vs camera_info resolution
+    double scale_x = static_cast<double>(image_width_) / camera_info.width;
+    double scale_y = static_cast<double>(image_height_) / camera_info.height;
 
-    image_width_ = camera_info.width;
-    image_height_ = camera_info.height;
+    // Scale intrinsics to match the actual image resolution
+    intrinsics[0][0][0] = static_cast<common::scalar_t>(camera_info.k[0] * scale_x);  // fx
+    intrinsics[0][1][1] = static_cast<common::scalar_t>(camera_info.k[4] * scale_y);  // fy
+    intrinsics[0][0][2] = static_cast<common::scalar_t>(camera_info.k[2] * scale_x);  // cx
+    intrinsics[0][1][2] = static_cast<common::scalar_t>(camera_info.k[5] * scale_y);  // cy
+    intrinsics[0][2][2] = static_cast<common::scalar_t>(1.0);                          // homogeneous coordinate
+
+    LOG(INFO) << "Scaled intrinsics by " << scale_x << "x" << scale_y
+              << " from " << camera_info.width << "x" << camera_info.height
+              << " to " << image_width_ << "x" << image_height_;
 
     return intrinsics;
 }

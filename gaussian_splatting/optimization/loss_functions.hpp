@@ -12,6 +12,7 @@ public:
         float lambda_dssim = 0.2f;
         float scale_regularization_weight = 0.1f;
         float opacity_regularization_weight = 0.1f;
+        std::string debug_output_path = "/tmp/debug/";  // Default path
     } config;
 
     static torch::Tensor computePhotometricLoss(const torch::Tensor& rendered_image,

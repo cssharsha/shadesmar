@@ -67,8 +67,8 @@ bool RerunVisualizer::initialize(bool save_to_file) {
             LOG(INFO) << "RerunVisualizer initialized. Logging to "
                       << (save_to_file ? "file." : "spawned/connected viewer.");
         }
-        // rec_.log_static("/", rerun::ViewCoordinates::RDF);
-        rec_.log_static("/", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
+        rec_.log_static("/", rerun::ViewCoordinates::RDF);
+        // rec_.log_static("/", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
         return is_connected_;
     } catch (const std::exception& e) {
         LOG(ERROR) << "Exception during RerunVisualizer::initialize: " << e.what();
@@ -689,12 +689,16 @@ rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cl
         points.push_back(p.cast<float>());
     }
 
+    // Rerun expects colors as uint8 [0, 255] not normalized floats
+    std::vector<rerun::Color> rerun_colors;
+    rerun_colors.reserve(cloud.colors.size());
     for (const auto& c : cloud.colors) {
-        colors.push_back(c.cast<float>());
+        rerun_colors.push_back(rerun::Color(
+            static_cast<uint8_t>(c.x()), static_cast<uint8_t>(c.y()), static_cast<uint8_t>(c.z())));
         std::cout << "Color: " << c.transpose() << std::endl;
     }
 
-    return rerun::Points3D(points).with_colors(colors);
+    return rerun::Points3D(points).with_colors(rerun_colors);
 }
 
 rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cloud,
@@ -719,11 +723,15 @@ rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cl
         points.push_back(transformed_point.cast<float>());
     }
 
+    // Rerun expects colors as uint8 [0, 255] not normalized floats
+    std::vector<rerun::Color> rerun_colors;
+    rerun_colors.reserve(cloud.colors.size());
     for (const auto& c : cloud.colors) {
-        colors.push_back(c.cast<float>());
+        rerun_colors.push_back(rerun::Color(
+            static_cast<uint8_t>(c.x()), static_cast<uint8_t>(c.y()), static_cast<uint8_t>(c.z())));
     }
 
-    return rerun::Points3D(points).with_colors(colors);
+    return rerun::Points3D(points).with_colors(rerun_colors);
 }
 
 void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianSplat>& splats,
@@ -849,7 +857,7 @@ void RerunVisualizer::logLoss(const std::string& entity_path, double value, int 
 }
 
 void RerunVisualizer::logLoss(const std::string& entity_path, double value, int iteration,
-                               uint8_t r, uint8_t g, uint8_t b) {
+                              uint8_t r, uint8_t g, uint8_t b) {
     if (!is_connected_) {
         return;
     }
@@ -859,8 +867,7 @@ void RerunVisualizer::logLoss(const std::string& entity_path, double value, int 
         rec_.set_time_sequence("iteration", iteration);
 
         // Log the scalar value with color
-        rec_.log(entity_path, rerun::Scalar(value),
-                 rerun::SeriesLine().with_color({r, g, b}));
+        rec_.log(entity_path, rerun::Scalar(value), rerun::SeriesLine().with_color({r, g, b}));
 
     } catch (const std::exception& e) {
         LOG(ERROR) << "Failed to log loss to " << entity_path << ": " << e.what();

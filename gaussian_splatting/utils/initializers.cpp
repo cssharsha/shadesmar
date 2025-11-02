@@ -121,7 +121,7 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
 
         // Initialize opacity and confidence
         // splat.opacity = computeInitialOpacity(keypoint);
-        auto init_opacity = 0.1f;
+        auto init_opacity = 0.5f;
         splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
         splat.confidence = computeInitialConfidence(keypoint);
         splat.timestamp = current_timestamp;
@@ -244,7 +244,8 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
     // Progress bar for keypoints loaded
     size_t keypoints_loaded = 0;
     size_t keypoints_total = keypoints.size();
-    std::cout << "Loading " << keypoints_total << " filtered keypoints with color extraction" << std::endl;
+    std::cout << "Loading " << keypoints_total << " filtered keypoints with color extraction"
+              << std::endl;
     const int barWidth = 50;
     point_cloud_utils.setupKDTree();
 

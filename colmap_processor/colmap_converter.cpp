@@ -17,7 +17,21 @@ ColmapConverter::ColmapConverter(const std::string& colmap_path, const std::stri
     : colmap_path_(colmap_path),
       map_path_(map_path),
       map_store_(map_path, core::storage::ProcessRole::DUAL) {
-    reconstruction_.ReadBinary(colmap_path_);
+    // Check if binary files exist
+    std::string cameras_bin = colmap_path_ + "/cameras.bin";
+    std::string images_bin = colmap_path_ + "/images.bin";
+    std::string points_bin = colmap_path_ + "/points3D.bin";
+
+    if (std::filesystem::exists(cameras_bin) &&
+        std::filesystem::exists(images_bin) &&
+        std::filesystem::exists(points_bin)) {
+        LOG(INFO) << "Binary reconstruction files found, loading binary format";
+        reconstruction_.ReadBinary(colmap_path_);
+        use_binary_ = true;
+    } else {
+        LOG(INFO) << "Binary reconstruction files not found, will use text-only parsing";
+        use_binary_ = false;
+    }
     map_store_.syncIndexFromDisk();
 }
 
@@ -35,7 +49,23 @@ ColmapConverter::ColmapConverter(const std::string& colmap_path)
     T_R_C_.orientation = Eigen::Quaterniond(T_R_C.rotation());
     T_R_C_.position = T_R_C.translation();
     LOG(INFO) << "T_R_C: " << T_R_C.matrix();
-    reconstruction_.ReadBinary(colmap_path_);
+
+    // Check if binary files exist
+    std::string cameras_bin = colmap_path_ + "/cameras.bin";
+    std::string images_bin = colmap_path_ + "/images.bin";
+    std::string points_bin = colmap_path_ + "/points3D.bin";
+
+    if (std::filesystem::exists(cameras_bin) &&
+        std::filesystem::exists(images_bin) &&
+        std::filesystem::exists(points_bin)) {
+        LOG(INFO) << "Binary reconstruction files found, loading binary format";
+        reconstruction_.ReadBinary(colmap_path_);
+        use_binary_ = true;
+    } else {
+        LOG(INFO) << "Binary reconstruction files not found, will use text-only parsing";
+        use_binary_ = false;
+    }
+
     LOG(INFO) << "Converter to start new map from: " << colmap_path_;
     map_store_.syncIndexFromDisk();
     map_store_.printFilePaths();
@@ -374,8 +404,59 @@ bool ColmapConverter::parseCameraInfo(std::stringstream& line,
         }
         std::cout << "Current read string: " << val_str << std::endl;
         camera_info.d.push_back(std::stod(val_str));
+    } else if (val_str == "PINHOLE") {
+        // PINHOLE model: fx, fy, cx, cy (no distortion)
+        if (!std::getline(line, val_str, ' ')) {
+            LOG(ERROR) << "Failed to parse camera info line ";
+            return false;
+        }
+        std::cout << "Current read string: " << val_str << std::endl;
+        camera_info.width = std::stoi(val_str);
+        if (!std::getline(line, val_str, ' ')) {
+            LOG(ERROR) << "Failed to parse height ";
+            return false;
+        }
+        std::cout << "Current read string: " << val_str << std::endl;
+        camera_info.height = std::stoi(val_str);
+
+        // Parse fx
+        if (!std::getline(line, val_str, ' ')) {
+            LOG(ERROR) << "Failed to parse fx ";
+            return false;
+        }
+        std::cout << "Current read string: " << val_str << std::endl;
+        camera_info.k = std::vector<double>(9, 0.0);
+        camera_info.k.at(0) = std::stod(val_str);  // fx
+
+        // Parse fy
+        if (!std::getline(line, val_str, ' ')) {
+            LOG(ERROR) << "Failed to parse fy ";
+            return false;
+        }
+        std::cout << "Current read string: " << val_str << std::endl;
+        camera_info.k.at(4) = std::stod(val_str);  // fy
+
+        // Parse cx
+        if (!std::getline(line, val_str, ' ')) {
+            LOG(ERROR) << "Failed to parse cx ";
+            return false;
+        }
+        std::cout << "Current read string: " << val_str << std::endl;
+        camera_info.k.at(2) = std::stod(val_str);  // cx
+
+        // Parse cy
+        if (!std::getline(line, val_str)) {
+            LOG(ERROR) << "Failed to parse cy ";
+            return false;
+        }
+        std::cout << "Current read string: " << val_str << std::endl;
+        camera_info.k.at(5) = std::stod(val_str);  // cy
+        camera_info.k.at(8) = 1.0;  // Set bottom-right element to 1
+
+        // PINHOLE has no distortion coefficients
+        camera_info.d.clear();
     } else {
-        LOG(ERROR) << "Unsupported camera model: ";
+        LOG(ERROR) << "Unsupported camera model: " << val_str;
         return false;
     }
 
@@ -529,11 +610,46 @@ bool ColmapConverter::parseImageFile(
 
         LOG(INFO) << "Parsed image: " << kf->id << " with pose: " << kf->pose.position.transpose()
                   << " with timestamp: " << kf->pose.timestamp;
-        keyframes[kf->id] = std::move(kf);
+
+        uint64_t image_id = kf->id;
+        keyframes[image_id] = std::move(kf);
         std::cout << "Added keyframe to map: " << keyframes.size() << std::endl;
-        // Skip the next line since it contains points
+
+        // Read the next line which contains 2D points (POINTS2D[])
+        // Format: X Y POINT3D_ID X Y POINT3D_ID ... (triplets)
         std::getline(image_file_stream, line);
-        // std::cout << "Read line: " << line << std::endl;
+
+        // If binary is not available, parse and store the 2D points
+        if (!use_binary_) {
+            std::stringstream points_stream(line);
+            std::vector<Eigen::Vector2d> points2d;
+            std::string val_str;
+
+            while (points_stream.good()) {
+                // Read X coordinate
+                if (!std::getline(points_stream, val_str, ' ') || val_str.empty()) {
+                    break;
+                }
+                double x = std::stod(val_str);
+
+                // Read Y coordinate
+                if (!std::getline(points_stream, val_str, ' ') || val_str.empty()) {
+                    break;
+                }
+                double y = std::stod(val_str);
+
+                // Skip POINT3D_ID (we don't need it for lookup)
+                if (!std::getline(points_stream, val_str, ' ')) {
+                    break;
+                }
+
+                points2d.push_back(Eigen::Vector2d(x, y));
+            }
+
+            image_to_points2d_[image_id] = std::move(points2d);
+            std::cout << "Stored " << image_to_points2d_[image_id].size()
+                      << " 2D points for image " << image_id << std::endl;
+        }
     }
     std::cout << "Finished reading images" << std::endl;
     debugFinishImagesAggregate();
@@ -609,16 +725,30 @@ bool ColmapConverter::parsePointLine(std::stringstream& point_file) {
             return false;
         }
         auto point2D_idx = std::stoi(val_str);
-        // The point2D_idx is the zero based index of the point in the image but
-        // in order to get the correct pixel you'd have to read from the image.txt
-        // second line and then match it with here which all seeemed a tiny bit
-        // convoluted, so Im just using the recnstruction_ to get the pixel
-        auto pixel = reconstruction_.Image(loc.keyframe_id).Point2D(point2D_idx);
-        loc.x = pixel.xy.x();
-        loc.y = pixel.xy.y();
+
+        // Get the 2D pixel coordinates either from binary reconstruction or text-based lookup
+        if (use_binary_) {
+            // Binary reconstruction available - use it directly
+            auto pixel = reconstruction_.Image(loc.keyframe_id).Point2D(point2D_idx);
+            loc.x = pixel.xy.x();
+            loc.y = pixel.xy.y();
+        } else {
+            // No binary - use parsed 2D points from images.txt
+            auto it = image_to_points2d_.find(loc.keyframe_id);
+            if (it != image_to_points2d_.end() && point2D_idx < it->second.size()) {
+                const auto& point2d = it->second[point2D_idx];
+                loc.x = point2d.x();
+                loc.y = point2d.y();
+            } else {
+                LOG(ERROR) << "Failed to find 2D point for image " << loc.keyframe_id
+                           << " point2D_idx " << point2D_idx;
+                continue;  // Skip this location
+            }
+        }
 
         std::cout << "Added location: " << loc.keyframe_id << " " << loc.frame_id << " " << loc.x
                   << " " << loc.y << std::endl;
+        keypoint.locations.emplace_back(std::move(loc));
     }
     std::cout << "Keypoint: " << keypoint.id() << " has " << keypoint.locations.size()
               << " locations" << std::endl;

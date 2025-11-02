@@ -14,14 +14,13 @@ void printUsage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <map_base_path> [OPTIONS]\n";
     std::cout << "  map_base_path: Base path for map data files (e.g., /data/robot/map)\n";
     std::cout << "\nOptions:\n";
-    std::cout << "  --no-spatial-partitioning  Train all splats together without spatial partitioning\n";
+    std::cout
+        << "  --no-spatial-partitioning  Train all splats together without spatial partitioning\n";
     std::cout << "  --spatial-partitioning     Use spatial partitioning (default)\n";
     std::cout << "\nExamples:\n";
-    std::cout << "  " << program_name
-              << " /data/robot/house11_map\n";
+    std::cout << "  " << program_name << " /data/robot/house11_map\n";
     std::cout << "    # Use spatial partitioning (default)\n";
-    std::cout << "  " << program_name
-              << " /data/robot/house11_map --no-spatial-partitioning\n";
+    std::cout << "  " << program_name << " /data/robot/house11_map --no-spatial-partitioning\n";
     std::cout << "    # Train all splats together without partitioning\n";
 }
 
@@ -39,7 +38,8 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
         if (arg == "--no-spatial-partitioning") {
             use_spatial_partitioning = false;
-            std::cout << "Spatial partitioning disabled - training all splats together" << std::endl;
+            std::cout << "Spatial partitioning disabled - training all splats together"
+                      << std::endl;
         } else if (arg == "--spatial-partitioning") {
             use_spatial_partitioning = true;
             std::cout << "Spatial partitioning enabled" << std::endl;
@@ -56,7 +56,8 @@ int main(int argc, char* argv[]) {
     gaussian_splatting::Config config;
     config.map_base_path = map_base_path;
     config.base_link = "base_link";
-    config.camera_frame = "camera_color_optical_frame";
+    // config.camera_frame = "camera_color_optical_frame";
+    config.camera_frame = "camera";
     config.use_spatial_partitioning = use_spatial_partitioning;
 
     // Create and initialize training processor

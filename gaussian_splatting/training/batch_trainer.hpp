@@ -104,7 +104,7 @@ private:
     // Optimization state
     std::unique_ptr<torch::optim::Adam> optimizer_;
     std::vector<torch::Tensor> optimizable_params_;
-    std::unique_ptr<optimization::Strategy> strategy_;
+    std::unique_ptr<optimization::DefaultStrategy> strategy_;
 
     // Setup optimization parameters
     void setupOptimizer();

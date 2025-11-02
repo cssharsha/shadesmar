@@ -145,17 +145,21 @@ cc_library(
     srcs = [
         "optimization/scheduler.cpp",
         "optimization/strategy.cpp",
+        "optimization/strategy_policies.cpp",
     ],
     hdrs = [
         "optimization/scheduler.hpp",
         "optimization/strategy.hpp",
+        "optimization/strategy_policies.hpp",
     ],
     deps = [
         ":tensor_config",
         ":keyframe_batch",
         ":optimizer",
         ":rasterizer",
+        "//gaussian_splatting/gsplat:gsplat",
         "@libtorch//:torch",
+        "//common:logging",
     ],
 )
 
@@ -166,6 +170,7 @@ cc_library(
         "utils/initializers.cpp",
         "utils/image_utils.cpp",
         "utils/point_cloud_utils.cpp",
+        "utils/splat_logger.cpp",
     ],
     hdrs = [
         "utils/batch_gpu_manager.hpp",
@@ -173,6 +178,7 @@ cc_library(
         "utils/torch_utils.hpp",
         "utils/image_utils.hpp",
         "utils/point_cloud_utils.hpp",
+        "utils/splat_logger.hpp",
     ],
     deps = [
         ":training_config",

@@ -37,6 +37,11 @@ BatchTrainer::BatchTrainer(const TrainingConfig& config,
     LOG(INFO) << "Inited param transforms";
     loss_functions_ = std::make_unique<optimization::LossFunctions>();
     LOG(INFO) << "Inteed loss func";
+
+    // Configure loss functions with debug output path
+    optimization::LossFunctions::config.debug_output_path = config_.debug_output_path;
+    LOG(INFO) << "Set loss functions debug output path to: " << config_.debug_output_path;
+
     rasterizer_ = std::make_unique<rendering::DifferentiableRasterizer>();
     LOG(INFO) << "Inted rasterizer";
 
@@ -79,8 +84,8 @@ void BatchTrainer::setupTraining(const core::types::GaussianSplatBatch& batch) {
     optimizer->initialize(current_gaussian_tensors_);
     // Set the proper gamma
     auto scheduler = std::make_unique<optimization::Scheduler>(optimizer->getOptimizer(), 0.5);
-    strategy_ = std::make_unique<optimization::Strategy>(std::move(optimizer), std::move(scheduler),
-                                                         &current_gaussian_tensors_);
+    strategy_ = std::make_unique<optimization::DefaultStrategy>(std::move(optimizer), std::move(scheduler),
+                                                                &current_gaussian_tensors_);
 }
 
 void BatchTrainer::copySplatsToBatch(std::vector<core::types::GaussianSplat>& splats) {

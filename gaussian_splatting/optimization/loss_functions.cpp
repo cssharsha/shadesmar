@@ -24,12 +24,10 @@ torch::Tensor LossFunctions::computePhotometricLoss(const torch::Tensor& rendere
     {
         torch::NoGradGuard no_grad;
         utils::writeImageToDirectory(utils::tensorToMat(rendered_image.to(torch::kCPU), false),
-                                     // "/data/south-building/debug/",
-                                     "/data/robot/bags/house11/debug/",
+                                     config.debug_output_path,
                                      append + "loss_rendered_image.png");
         utils::writeImageToDirectory(utils::tensorToMat(ground_truth_image.to(torch::kCPU), false),
-                                     // "/data/south-building/debug/",
-                                     "/data/robot/bags/house11/debug/",
+                                     config.debug_output_path,
                                      append + "loss_ground_truth_image.png");
     }
 
@@ -44,8 +42,7 @@ torch::Tensor LossFunctions::computePhotometricLoss(const torch::Tensor& rendere
                   << std::endl;
 
         utils::writeImageToDirectory(utils::tensorToMat(ssim_loss_tensor.to(torch::kCPU)[0], false),
-                                     // "/data/south-building/debug/",
-                                     "/data/robot/bags/house11/debug/", append + "ssim_loss.png");
+                                     config.debug_output_path, append + "ssim_loss.png");
     }
 
     auto loss = (1.f - config.lambda_dssim) * l1_loss + config.lambda_dssim * ssim_loss;

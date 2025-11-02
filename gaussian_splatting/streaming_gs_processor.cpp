@@ -1,11 +1,15 @@
 #include <logging/logging.hpp>
 #include <memory>
 #include <unordered_set>
+#include <algorithm>
+#include <random>
+#include <numeric>
 
 #include "core/storage/map_store.hpp"
 #include "gaussian_splatting/training/batch_trainer.hpp"
 #include "gaussian_splatting/utils/image_utils.hpp"
 #include "gaussian_splatting/utils/initializers.hpp"
+#include "gaussian_splatting/utils/splat_logger.hpp"
 
 #include "gaussian_splatting/streaming_gs_processor.hpp"
 
@@ -64,9 +68,17 @@ StreamingGS::StreamingGS(Config& config) : config_(config) {
     training_config_.base_link_ = config_.base_link;
     training_config_.camera_frame_ = config_.camera_frame;
 
+    // Set debug output path - derive from map_base_path if not specified
+    if (config_.debug_output_path.empty()) {
+        training_config_.debug_output_path = config_.map_base_path + "/debug/";
+    } else {
+        training_config_.debug_output_path = config_.debug_output_path;
+    }
+
     LOG(INFO) << "Training configuration set: " << training_config_.initial_width << "x"
               << training_config_.initial_height
               << ", max iterations: " << training_config_.max_iterations_per_batch;
+    LOG(INFO) << "Debug output path: " << training_config_.debug_output_path;
     std::cout << "Using shared recording ID: " << config_.training_viz_recording_id << std::endl;
     // initializeStore();
 }
@@ -82,12 +94,14 @@ void StreamingGS::initializeStore() {
         }
 
         map_store_->syncIndexFromDisk();
-        tf_tree_ = map_store_->getTransformTree();
-        if (!tf_tree_) {
-            std::cerr << "Failed to load tf tree" << std::endl;
-            exit(0);
-        }
-        tf_tree_->printTree();
+        // tf_tree_ = map_store_->getTransformTree();
+        // if (!tf_tree_) {
+        //     std::cerr << "Failed to load tf tree" << std::endl;
+        //     exit(0);
+        // }
+        // tf_tree_->printTree();
+        tf_tree_ = std::make_shared<stf::TransformTree>();
+        tf_tree_->setTransform("base_link", "camera", Eigen::Isometry3d::Identity());
 
         batch_trainer_ =
             std::make_unique<training::BatchTrainer>(training_config_, map_store_, tf_tree_);
@@ -217,30 +231,43 @@ bool StreamingGS::loadAndTrain() {
             training::TrainingResults results;
             const int num_epochs = 200;
 
-            std::cout << "Training for " << num_epochs << " epochs" << std::endl;
+            std::cout << "Training for " << num_epochs << " epochs with "
+                      << all_keyframes.size() << " keyframes" << std::endl;
 
-            // Training loop: run for num_epochs iterations
-            for (int iteration = 0; iteration < num_epochs; ++iteration) {
-                // Randomly select a keyframe from all keyframes
-                int random_idx = std::rand() % all_keyframes.size();
-                auto& kf = all_keyframes[random_idx];
+            std::random_device rd;
+            std::mt19937 rng(rd());
 
-                batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
+            // Training loop: run for num_epochs epochs
+            for (int epoch = 0; epoch < num_epochs; ++epoch) {
+                // Create a shuffled copy of keyframe indices for this epoch
+                std::vector<size_t> keyframe_indices(all_keyframes.size());
+                std::iota(keyframe_indices.begin(), keyframe_indices.end(), 0);
+                std::shuffle(keyframe_indices.begin(), keyframe_indices.end(), rng);
 
-                if (iteration % 10 == 0) {
-                    std::cout << "Epoch " << iteration << "/" << num_epochs << std::endl;
-                }
+                // Iterate through all keyframes in random order
+                for (size_t kf_idx = 0; kf_idx < all_keyframes.size(); ++kf_idx) {
+                    auto& kf = all_keyframes[keyframe_indices[kf_idx]];
+                    int iteration = epoch * all_keyframes.size() + kf_idx;
 
-                // Visualize results periodically
-                if (iteration % 5 == 0) {
-                    auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
-                    std::string entity_path = "/camera/unified";
+                    batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
 
-                    batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
-                    training_visualizer_->visualizeCurrentSplats(full_splat_batch, iteration);
-                    training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(),
-                                                            entity_path);
-                    training_visualizer_->logImage(entity_path, rendered_image, iteration);
+                    if (iteration % 10 == 0) {
+                        std::cout << "Epoch " << epoch << "/" << num_epochs
+                                  << " - Keyframe " << (kf_idx + 1) << "/"
+                                  << all_keyframes.size() << std::endl;
+                    }
+
+                    // Visualize results periodically
+                    if (iteration % 5 == 0) {
+                        auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
+                        std::string entity_path = "/camera/unified";
+
+                        batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
+                        training_visualizer_->visualizeCurrentSplats(full_splat_batch, iteration);
+                        training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(),
+                                                                entity_path);
+                        training_visualizer_->logImage(entity_path, rendered_image, iteration);
+                    }
                 }
             }
 
@@ -312,30 +339,41 @@ bool StreamingGS::loadAndTrain() {
                 std::cout << "Training for " << num_epochs << " epochs with "
                           << region_keyframes.size() << " keyframes" << std::endl;
 
-                // Training loop: run for num_epochs iterations
-                for (int iteration = 0; iteration < num_epochs; ++iteration) {
-                    // Randomly select a keyframe from this region
-                    int random_idx = std::rand() % region_keyframes.size();
-                    auto& kf = region_keyframes[random_idx];
+                std::random_device rd;
+                std::mt19937 rng(rd());
 
-                    batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
+                // Training loop: run for num_epochs epochs
+                for (int epoch = 0; epoch < num_epochs; ++epoch) {
+                    // Create a shuffled copy of keyframe indices for this epoch
+                    std::vector<size_t> keyframe_indices(region_keyframes.size());
+                    std::iota(keyframe_indices.begin(), keyframe_indices.end(), 0);
+                    std::shuffle(keyframe_indices.begin(), keyframe_indices.end(), rng);
 
-                    if (iteration % 10 == 0) {
-                        std::cout << "Region " << (region_idx + 1) << " - Epoch " << iteration
-                                  << "/" << num_epochs << std::endl;
-                    }
+                    // Iterate through all keyframes in random order
+                    for (size_t kf_idx = 0; kf_idx < region_keyframes.size(); ++kf_idx) {
+                        auto& kf = region_keyframes[keyframe_indices[kf_idx]];
+                        int iteration = epoch * region_keyframes.size() + kf_idx;
 
-                    // Visualize results periodically
-                    if (iteration % 5 == 0) {
-                        auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
-                        std::string entity_path = "/camera/region_" + std::to_string(region_idx);
+                        batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
 
-                        batch_trainer_->copySplatsToBatch(region_splat_batch.splats);
-                        training_visualizer_->visualizeCurrentSplats(region_splat_batch,
-                                                                     region_idx);
-                        training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(),
-                                                                entity_path);
-                        training_visualizer_->logImage(entity_path, rendered_image, region_idx);
+                        if (iteration % 10 == 0) {
+                            std::cout << "Region " << (region_idx + 1) << " - Epoch " << epoch
+                                      << "/" << num_epochs << " - Keyframe " << (kf_idx + 1) << "/"
+                                      << region_keyframes.size() << std::endl;
+                        }
+
+                        // Visualize results periodically
+                        if (iteration % 5 == 0) {
+                            auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
+                            std::string entity_path = "/camera/region_" + std::to_string(region_idx);
+
+                            batch_trainer_->copySplatsToBatch(region_splat_batch.splats);
+                            training_visualizer_->visualizeCurrentSplats(region_splat_batch,
+                                                                         region_idx);
+                            training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(),
+                                                                    entity_path);
+                            training_visualizer_->logImage(entity_path, rendered_image, region_idx);
+                        }
                     }
                 }
 
@@ -555,8 +593,11 @@ bool StreamingGS::streamAndTrain() {
 
             // Initialize gaussian splats for all keypoints
             core::types::GaussianSplatBatch full_splat_batch;
-            if (!intializeSplatsFromKeypoints(valid_keypoints, map_store_, batch_id_,
-                                              current_timestamp, full_splat_batch, next_splat_id_,
+            // if (!intializeSplatsFromKeypoints(valid_keypoints, map_store_, batch_id_,
+            //                                   current_timestamp, full_splat_batch,
+            //                                   next_splat_id_, point_cloud_utils)) {
+            if (!intializeSplatsFromKeypoints(valid_keypoints, batch_id_, current_timestamp,
+                                              full_splat_batch, next_splat_id_,
                                               point_cloud_utils)) {
                 std::cout << "Unable to initialize gaussian splats" << std::endl;
                 return false;
@@ -573,41 +614,77 @@ bool StreamingGS::streamAndTrain() {
             training_visualizer_->visualizeCurrentSplats(full_splat_batch, 0);
 
             // Train with all keyframes for N epochs
-            const int num_epochs = 200;
+            const int num_epochs = 2000;
             training::TrainingResults results;
 
-            std::cout << "Training for " << num_epochs << " epochs" << std::endl;
+            std::cout << "Training for " << num_epochs << " epochs with "
+                      << keyframes_with_color.size() << " keyframes" << std::endl;
 
-            for (int iteration = 0; iteration < num_epochs; ++iteration) {
-                // Randomly select a keyframe from all keyframes
-                int random_idx = std::rand() % keyframes_with_color.size();
-                auto& kf = keyframes_with_color[random_idx];
+            std::random_device rd;
+            std::mt19937 rng(rd());
 
-                batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
+            for (int epoch = 0; epoch < num_epochs; ++epoch) {
+                // Create a shuffled copy of keyframe indices for this epoch
+                std::vector<size_t> keyframe_indices(keyframes_with_color.size());
+                std::iota(keyframe_indices.begin(), keyframe_indices.end(), 0);
+                std::shuffle(keyframe_indices.begin(), keyframe_indices.end(), rng);
 
-                if (iteration % 10 == 0) {
-                    std::cout << "Epoch " << iteration << "/" << num_epochs << std::endl;
-                }
+                // Iterate through all keyframes in random order
+                for (size_t kf_idx = 0; kf_idx < keyframes_with_color.size(); ++kf_idx) {
+                    auto& kf = keyframes_with_color[keyframe_indices[kf_idx]];
+                    int iteration = epoch * keyframes_with_color.size() + kf_idx;
 
-                // Visualize results periodically
-                if (iteration % 5 == 0) {
-                    auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
-                    std::string entity_path = "/camera/unified";
+                    batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
 
-                    batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
-                    training_visualizer_->visualizeCurrentSplats(full_splat_batch, iteration);
-                    auto transform_result =
-                        tf_tree_->getTransform(config_.base_link, config_.camera_frame);
-                    auto camera_pose = kf->pose.getEigenIsometry() * transform_result.transform;
-                    core::types::Pose pose;
-                    pose.position = camera_pose.translation();
-                    pose.orientation = camera_pose.rotation();
-                    training_visualizer_->visualizeKeyframe(pose, kf->getCameraInfo(), entity_path);
-                    training_visualizer_->logImage(entity_path, rendered_image, iteration);
+                    if (iteration % 10 == 0) {
+                        std::cout << "Epoch " << epoch << "/" << num_epochs
+                                  << " - Keyframe " << (kf_idx + 1) << "/"
+                                  << keyframes_with_color.size() << std::endl;
+                    }
+
+                    // Visualize results periodically
+                    if (iteration % 5 == 0) {
+                        auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
+                        std::string entity_path = "/camera/unified";
+
+                        batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
+                        training_visualizer_->visualizeCurrentSplats(full_splat_batch, iteration);
+                        auto transform_result =
+                            tf_tree_->getTransform(config_.base_link, config_.camera_frame);
+                        auto camera_pose = kf->pose.getEigenIsometry() * transform_result.transform;
+                        core::types::Pose pose;
+                        pose.position = camera_pose.translation();
+                        pose.orientation = camera_pose.rotation();
+                        training_visualizer_->visualizeKeyframe(pose, kf->getCameraInfo(), entity_path);
+                        training_visualizer_->logImage(entity_path, rendered_image, iteration);
+                    }
+
+                    // Log splat state to CSV at first iteration and every 50 iterations
+                    if (iteration == 0 || (iteration % 50 == 0 && iteration > 0)) {
+                        batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
+                        std::string csv_filename = "splats_iter_" + std::to_string(iteration) + ".csv";
+                        LOG(INFO) << "Logging " << full_splat_batch.splats.size()
+                                  << " splats to " << training_config_.debug_output_path << csv_filename;
+                        utils::SplatLogger::writeSplatsToCSV(full_splat_batch.splats,
+                                                              training_config_.debug_output_path,
+                                                              csv_filename);
+                    }
                 }
             }
 
             std::cout << "\n=== Finished training all splats ===" << std::endl;
+
+            // Log final splat state to CSV
+            batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
+            std::string splat_log_path = training_config_.debug_output_path;
+            std::string csv_filename = "splats_final.csv";
+            LOG(INFO) << "Logging " << full_splat_batch.splats.size()
+                      << " splats to " << splat_log_path << csv_filename;
+            if (!utils::SplatLogger::writeSplatsToCSV(full_splat_batch.splats,
+                                                       splat_log_path,
+                                                       csv_filename)) {
+                LOG(ERROR) << "Failed to write splats to CSV";
+            }
 
         } else {
             // Use batching (original behavior)
@@ -687,40 +764,52 @@ bool StreamingGS::streamAndTrain() {
                 }
 
                 // Train this batch
-                const int num_epochs = 200;
+                const int num_epochs =
+                    (20000 + batch_keyframes.size() - 1) / batch_keyframes.size();
                 training::TrainingResults results;
 
                 std::cout << "Training batch for " << num_epochs << " epochs with "
                           << batch_keyframes.size() << " keyframes" << std::endl;
 
-                for (int iteration = 0; iteration < num_epochs; ++iteration) {
-                    // Randomly select a keyframe from this batch
-                    int random_idx = std::rand() % batch_keyframes.size();
-                    auto& kf = batch_keyframes[random_idx];
+                std::random_device rd;
+                std::mt19937 rng(rd());
 
-                    batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
+                for (int epoch = 0; epoch < num_epochs; ++epoch) {
+                    // Create a shuffled copy of keyframe indices for this epoch
+                    std::vector<size_t> keyframe_indices(batch_keyframes.size());
+                    std::iota(keyframe_indices.begin(), keyframe_indices.end(), 0);
+                    std::shuffle(keyframe_indices.begin(), keyframe_indices.end(), rng);
 
-                    if (iteration % 10 == 0) {
-                        std::cout << "Batch " << (batch_idx + 1) << " - Epoch " << iteration << "/"
-                                  << num_epochs << std::endl;
-                    }
+                    // Iterate through all keyframes in random order
+                    for (size_t kf_idx = 0; kf_idx < batch_keyframes.size(); ++kf_idx) {
+                        auto& kf = batch_keyframes[keyframe_indices[kf_idx]];
+                        int iteration = epoch * batch_keyframes.size() + kf_idx;
 
-                    // Visualize results periodically
-                    if (iteration % 5 == 0) {
-                        auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
-                        std::string entity_path = "/camera/batch_" + std::to_string(batch_idx);
+                        batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
 
-                        batch_trainer_->copySplatsToBatch(batch_splat_batch.splats);
-                        training_visualizer_->visualizeCurrentSplats(batch_splat_batch, batch_idx);
-                        auto transform_result =
-                            tf_tree_->getTransform(config_.base_link, config_.camera_frame);
-                        auto camera_pose = kf->pose.getEigenIsometry() * transform_result.transform;
-                        core::types::Pose pose;
-                        pose.position = camera_pose.translation();
-                        pose.orientation = camera_pose.rotation();
-                        training_visualizer_->visualizeKeyframe(pose, kf->getCameraInfo(),
-                                                                entity_path);
-                        training_visualizer_->logImage(entity_path, rendered_image, batch_idx);
+                        if (iteration % 10 == 0) {
+                            std::cout << "Batch " << (batch_idx + 1) << " - Epoch " << epoch << "/"
+                                      << num_epochs << " - Keyframe " << (kf_idx + 1) << "/"
+                                      << batch_keyframes.size() << std::endl;
+                        }
+
+                        // Visualize results periodically
+                        if (iteration % 5 == 0) {
+                            auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
+                            std::string entity_path = "/camera/batch_" + std::to_string(batch_idx);
+
+                            batch_trainer_->copySplatsToBatch(batch_splat_batch.splats);
+                            training_visualizer_->visualizeCurrentSplats(batch_splat_batch, batch_idx);
+                            auto transform_result =
+                                tf_tree_->getTransform(config_.base_link, config_.camera_frame);
+                            auto camera_pose = kf->pose.getEigenIsometry() * transform_result.transform;
+                            core::types::Pose pose;
+                            pose.position = camera_pose.translation();
+                            pose.orientation = camera_pose.rotation();
+                            training_visualizer_->visualizeKeyframe(pose, kf->getCameraInfo(),
+                                                                    entity_path);
+                            training_visualizer_->logImage(entity_path, rendered_image, batch_idx);
+                        }
                     }
                 }
 

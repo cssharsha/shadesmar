@@ -4,11 +4,14 @@
 #include <memory>
 #include "gaussian_splatting/optimization/optimizer.hpp"
 #include "gaussian_splatting/optimization/scheduler.hpp"
+#include "gaussian_splatting/optimization/strategy_policies.hpp"
 #include "gaussian_splatting/rendering/rasterizer.hpp"
 
 namespace gaussian_splatting {
 namespace optimization {
 
+// Strategy class template with pluggable grow and prune policies
+template <typename GrowPolicy = DefaultGrowPolicy, typename PrunePolicy = DefaultPrunePolicy>
 class Strategy {
 public:
     static struct Config {
@@ -24,28 +27,63 @@ public:
         double prune_scale2d = 0.15;
     } config;
 
-    // Not really required since in the gsplat code it only
-    // calls info[self.key_for_gradient].retain_grad(). We
-    // have means2d tensor which should retain its grad?
-    // void stepPreBackward();
     Strategy(std::unique_ptr<Optimizer> optimizer, std::unique_ptr<Scheduler> scheduler,
              GaussianTensors* gaussians)
         : optimizer_(std::move(optimizer)),
           scheduler_(std::move(scheduler)),
-          gaussians_(gaussians) {}
+          gaussians_(gaussians),
+          grow_policy_(),
+          prune_policy_() {}
+
+    Strategy(std::unique_ptr<Optimizer> optimizer, std::unique_ptr<Scheduler> scheduler,
+             GaussianTensors* gaussians, GrowPolicy grow_policy, PrunePolicy prune_policy)
+        : optimizer_(std::move(optimizer)),
+          scheduler_(std::move(scheduler)),
+          gaussians_(gaussians),
+          grow_policy_(std::move(grow_policy)),
+          prune_policy_(std::move(prune_policy)) {}
 
     void postBackward(rendering::RasterizationOutput& r_output, int iter);
     void step(int iter);
 
+    // Public accessors for policies to use
+    torch::Tensor& getGrad2d() {
+        return grad2d_;
+    }
+    torch::Tensor& getRadii() {
+        return radii_;
+    }
+    torch::Tensor& getCount() {
+        return count_;
+    }
+    optimization::Optimizer* getOptimizer() {
+        return optimizer_.get();
+    }
+    torch::optim::Optimizer* getActualOptimizer() {
+        return optimizer_->getOptimizer();
+    }
+    GaussianTensors* getGaussians() {
+        return gaussians_;
+    }
+    const Config& getConfig() const {
+        return config;
+    }
+
+    // Helper methods that policies can use
+    void duplicateSplats(const torch::Tensor& is_duplicated);
+    void splitSplats(torch::Tensor& is_split);
+    void removeSplats(const torch::Tensor& is_prune);
+
 private:
     void updateState(rendering::RasterizationOutput& r_output);
 
-    void growSplats(int iter);
-    void duplicateSplats(const torch::Tensor& is_duplicated);
-    void splitSplats(torch::Tensor& is_split);
+    void growSplats(int iter) {
+        grow_policy_(this, iter);
+    }
 
-    void pruneSplats(int iter);
-    void removeSplats(const torch::Tensor& is_prune);
+    void pruneSplats(int iter) {
+        prune_policy_(this, iter);
+    }
 
     bool isRefining(int iter) const {
         // Don't refine at iteration 0 or before refine_start_iteration
@@ -64,7 +102,14 @@ private:
     std::unique_ptr<optimization::Optimizer> optimizer_;
     std::unique_ptr<optimization::Scheduler> scheduler_;
     GaussianTensors* gaussians_;
+
+    GrowPolicy grow_policy_;
+    PrunePolicy prune_policy_;
 };
+
+// Type aliases for different strategies
+using DefaultStrategy = Strategy<DefaultGrowPolicy, DefaultPrunePolicy>;
+using MCMCStrategy = Strategy<MCMCGrowPolicy, MCMCPrunePolicy>;
 
 }  // namespace optimization
 
