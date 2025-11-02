@@ -18,7 +18,9 @@ namespace training {
 class KeyframeTensor {
 public:
     explicit KeyframeTensor(std::shared_ptr<core::storage::MapStore>& map_store,
-                            std::shared_ptr<stf::TransformTree>& tf_tree);
+                            std::shared_ptr<stf::TransformTree>& tf_tree,
+                            std::string base_link = "base_link",
+                            std::string camera_frame = "camera");
 
     bool isValid() const;
 

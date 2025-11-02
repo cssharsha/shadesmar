@@ -1,6 +1,7 @@
 #include "loss_functions.hpp"
 #include <iterator>
 #include <logging/logging.hpp>
+#include "gaussian_splatting/common/tensor_config.hpp"
 #include "gaussian_splatting/optimization/ssim/fused_ssim.hpp"
 #include "gaussian_splatting/utils/image_utils.hpp"
 
@@ -23,10 +24,12 @@ torch::Tensor LossFunctions::computePhotometricLoss(const torch::Tensor& rendere
     {
         torch::NoGradGuard no_grad;
         utils::writeImageToDirectory(utils::tensorToMat(rendered_image.to(torch::kCPU), false),
-                                     "/data/south-building/debug/",
+                                     // "/data/south-building/debug/",
+                                     "/data/robot/bags/house11/debug/",
                                      append + "loss_rendered_image.png");
         utils::writeImageToDirectory(utils::tensorToMat(ground_truth_image.to(torch::kCPU), false),
-                                     "/data/south-building/debug/",
+                                     // "/data/south-building/debug/",
+                                     "/data/robot/bags/house11/debug/",
                                      append + "loss_ground_truth_image.png");
     }
 
@@ -41,7 +44,8 @@ torch::Tensor LossFunctions::computePhotometricLoss(const torch::Tensor& rendere
                   << std::endl;
 
         utils::writeImageToDirectory(utils::tensorToMat(ssim_loss_tensor.to(torch::kCPU)[0], false),
-                                     "/data/south-building/debug/", append + "ssim_loss.png");
+                                     // "/data/south-building/debug/",
+                                     "/data/robot/bags/house11/debug/", append + "ssim_loss.png");
     }
 
     auto loss = (1.f - config.lambda_dssim) * l1_loss + config.lambda_dssim * ssim_loss;
@@ -50,7 +54,9 @@ torch::Tensor LossFunctions::computePhotometricLoss(const torch::Tensor& rendere
 
 torch::Tensor LossFunctions::computeScaleRegularizationLoss(const torch::Tensor& scale) {
     if (config.scale_regularization_weight > 0.f) {
-        auto l1_scale = scale.mean();
+        // Apply exp to convert from log space to actual scale values
+        auto actual_scales = torch::exp(scale);
+        auto l1_scale = actual_scales.mean();
         return config.scale_regularization_weight * l1_scale;
     }
 
@@ -59,7 +65,9 @@ torch::Tensor LossFunctions::computeScaleRegularizationLoss(const torch::Tensor&
 
 torch::Tensor LossFunctions::computeOpacityRegularizationLoss(const torch::Tensor& opacities) {
     if (config.opacity_regularization_weight > 0.f) {
-        auto l1_opacity = opacities.mean();
+        // Apply sigmoid to convert from logit space to [0,1] probability space
+        auto opacity_probs = torch::sigmoid(opacities);
+        auto l1_opacity = opacity_probs.mean();
         return config.opacity_regularization_weight * l1_opacity;
     }
 
@@ -80,9 +88,9 @@ torch::Tensor LossFunctions::computeD_SSIMLoss(const torch::Tensor& rendered,
 torch::Tensor LossFunctions::computeCombinedLoss(const torch::Tensor& rendered,
                                                  const torch::Tensor& ground_truth, float lambda) {
     auto l1_loss = computeL1Loss(rendered, ground_truth);
-    std::cout << "l1_loss: " << l1_loss.item<float>() << std::endl;
+    std::cout << "l1_loss: " << common::itemAs(l1_loss) << std::endl;
     auto d_ssim_loss = computeD_SSIMLoss(rendered, ground_truth);
-    std::cout << "D_SSIM loss: " << d_ssim_loss.item<float>() << std::endl;
+    std::cout << "D_SSIM loss: " << common::itemAs(d_ssim_loss) << std::endl;
 
     return (1.0f - lambda) * l1_loss + lambda * d_ssim_loss;
 }
@@ -94,7 +102,7 @@ torch::Tensor LossFunctions::computeSSIM(const torch::Tensor& img1, const torch:
 
     auto mu1 = torch::mean(img1);
     auto mu2 = torch::mean(img2);
-    std::cout << "Image 1 mu: " << mu1.item<float>() << " image2 mu: " << mu2.item<float>()
+    std::cout << "Image 1 mu: " << common::itemAs(mu1) << " image2 mu: " << common::itemAs(mu2)
               << std::endl;
 
     auto mu1_sq = mu1 * mu1;
@@ -104,9 +112,9 @@ torch::Tensor LossFunctions::computeSSIM(const torch::Tensor& img1, const torch:
     auto sigma1_sq = torch::mean((img1 - mu1) * (img1 - mu1));
     auto sigma2_sq = torch::mean((img2 - mu2) * (img2 - mu2));
     auto sigma12 = torch::mean((img1 - mu1) * (img2 - mu2));
-    std::cout << "Image 1 sigma: " << sigma1_sq.item<float>()
-              << " image2 sigma: " << sigma2_sq.item<float>()
-              << "sigma12: " << sigma12.item<float>() << std::endl;
+    std::cout << "Image 1 sigma: " << common::itemAs(sigma1_sq)
+              << " image2 sigma: " << common::itemAs(sigma2_sq)
+              << "sigma12: " << common::itemAs(sigma12) << std::endl;
 
     float c1 = 0.01f * 0.01f;
     float c2 = 0.03f * 0.03f;
@@ -114,7 +122,7 @@ torch::Tensor LossFunctions::computeSSIM(const torch::Tensor& img1, const torch:
     auto numerator = (2 * mu1_mu2 + c1) * (2 * sigma12 + c2);
     auto denominator = (mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2);
 
-    std::cout << "Total loss: " << numerator.item<float>() << "/" << denominator.item<float>()
+    std::cout << "Total loss: " << common::itemAs(numerator) << "/" << common::itemAs(denominator)
               << std::endl;
 
     return numerator / denominator;

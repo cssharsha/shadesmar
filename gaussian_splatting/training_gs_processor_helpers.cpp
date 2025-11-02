@@ -497,7 +497,7 @@ float TrainingGaussianSplatProcessor<
 
         torch::Tensor total_loss = alpha * l1_loss + beta * ssim_loss;
 
-        float loss_value = total_loss.item<float>();
+        float loss_value = common::itemAs(total_loss);
 
         return loss_value;
 

@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stf/transform_tree.hpp>
 #include "core/types/gaussian_splat.hpp"
+#include "gaussian_splatting/common/tensor_config.hpp"
 #include "gaussian_splatting/optimization/loss_functions.hpp"
 #include "gaussian_splatting/optimization/optimizer.hpp"
 #include "gaussian_splatting/optimization/scheduler.hpp"
@@ -26,7 +27,7 @@ BatchTrainer::BatchTrainer(const TrainingConfig& config,
     : config_(config),
       map_store_(map_store),
       tf_tree_(tf_tree),
-      current_keyframe_tensor_(map_store, tf_tree) {
+      current_keyframe_tensor_(map_store, tf_tree, config_.base_link_, config_.camera_frame_) {
     LOG(INFO) << "Initializing BatchTrainer";
 
     // Initialize components
@@ -83,8 +84,8 @@ void BatchTrainer::setupTraining(const core::types::GaussianSplatBatch& batch) {
 }
 
 void BatchTrainer::copySplatsToBatch(std::vector<core::types::GaussianSplat>& splats) {
-    std::cout << "Copying splats to batch" << std::endl;
-    std::cout << "Copying splats back to batch" << std::endl;
+    LOG(INFO) << "Copying splats to batch";
+    LOG(INFO) << "Copying splats back to batch";
     splats.resize(current_gaussian_tensors_.get_positions().size(0));
     splats = current_gaussian_tensors_.toSplats();
 }
@@ -298,16 +299,15 @@ void write_graph_to_disk(const torch::Tensor& tensor, const std::string& filenam
 }
 
 bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
-                                 TrainingResults& result, int iteration) {
+                                 TrainingResults& result, int iteration,
+                                 std::shared_ptr<visualization::RerunTrainingVisualizer> viz) {
     LOG(INFO) << "Training keyframe " << keyframe->id << " at iteration " << iteration;
 
-    // Load gaussian tensor and keyframe tensor to GPU
     if (!torch::cuda::is_available()) {
         LOG(ERROR) << "CUDA not available";
         return false;
     }
 
-    // Log GPU memory before training
     if (iteration % 10 == 0) {
         size_t free_mem, total_mem;
         cudaMemGetInfo(&free_mem, &total_mem);
@@ -317,14 +317,11 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
         LOG(INFO) << "Gaussian splat count: " << current_gaussian_tensors_.get_positions().size(0);
     }
 
-    // Load keyframe data (already on CPU from loadFromKeyframe)
     current_keyframe_tensor_.loadFromKeyframe(keyframe);
     LOG(INFO) << "Loaded keyframe tensor";
 
-    // Move only the keyframe tensor to GPU (gaussian tensors already on GPU from setupTraining)
     current_keyframe_tensor_.to(torch::kCUDA);
 
-    // Ensure gaussian tensors are on GPU (should be no-op if already there)
     if (!current_gaussian_tensors_.get_positions().is_cuda()) {
         LOG(WARNING) << "Gaussian tensors not on GPU, moving now";
         current_gaussian_tensors_.to(torch::kCUDA);
@@ -336,6 +333,38 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
     LOG(INFO) << "pose on gpu: " << current_keyframe_tensor_.getCameraPose().is_cuda();
     LOG(INFO) << "intrinsics on gpu: " << current_keyframe_tensor_.getCameraIntrinsic().is_cuda();
 
+    // Debug: Check Gaussian splat properties before rendering
+    {
+        torch::NoGradGuard no_grad;
+        auto positions = current_gaussian_tensors_.get_positions();
+        auto opacities = current_gaussian_tensors_.get_opacities();
+        auto scales = current_gaussian_tensors_.get_scales();
+
+        LOG(INFO) << "=== Some more debug info (Iteration " << iteration << ") ===";
+        LOG(INFO) << "Number of splats: " << positions.size(0);
+        LOG(INFO) << "Positions - min: " << common::itemAs(positions.min())
+                  << ", max: " << common::itemAs(positions.max())
+                  << ", mean: " << common::itemAs(positions.mean());
+        LOG(INFO) << "Opacities (logit) - min: " << common::itemAs(opacities.min())
+                  << ", max: " << common::itemAs(opacities.max())
+                  << ", mean: " << common::itemAs(opacities.mean());
+
+        auto opacity_probs = torch::sigmoid(opacities);
+        LOG(INFO) << "Opacities (sigmoid) - min: " << common::itemAs(opacity_probs.min())
+                  << ", max: " << common::itemAs(opacity_probs.max())
+                  << ", mean: " << common::itemAs(opacity_probs.mean());
+
+        LOG(INFO) << "Scales (log) - min: " << common::itemAs(scales.min())
+                  << ", max: " << common::itemAs(scales.max())
+                  << ", mean: " << common::itemAs(scales.mean());
+
+        auto actual_scales = torch::exp(scales);
+        LOG(INFO) << "Scales (exp) - min: " << common::itemAs(actual_scales.min())
+                  << ", max: " << common::itemAs(actual_scales.max())
+                  << ", mean: " << common::itemAs(actual_scales.mean());
+        LOG(INFO) << "=================================";
+    }
+
     auto render_result = renderKeyframe();
     if (!render_result.success) {
         LOG(ERROR) << "Failed to render keyframe " << keyframe->id;
@@ -344,11 +373,9 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
     result.rendered_image = render_result.rendered_image;
 
     // Set retain_grad to true. This is what the gsplat example
-    // does, so setting it here. The autograd understanding is missing
-    // (my knowledge of autograd is limited)
+    // does which is set in the preBackward step, so setting it here.
     render_result.means2d.retain_grad();
 
-    // The rendered image is "batched" but the ground truth image is not
     auto ground_truth = current_keyframe_tensor_.getImage();
     ground_truth = ground_truth.unsqueeze(0);
 
@@ -357,28 +384,181 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
 
     auto photometric_loss = optimization::LossFunctions::computePhotometricLoss(
         render_result.rendered_image, ground_truth, keyframe->id);
+    LOG(INFO) << "Photometric loss: " << common::itemAs(photometric_loss);
 
-    std::cout << "Doint photometric loss" << std::endl;
+    // Log photometric loss to Rerun for time series plot (RED)
+    if (viz) {
+        viz->logLoss("training/loss/photometric", common::itemAs(photometric_loss), iteration,
+                     255, 0, 0);  // Red
+    }
+
+    LOG(INFO) << "Doint photometric loss";
     photometric_loss.backward();
 
-    std::cout << "Doing scale loss" << std::endl;
+    LOG(INFO) << "Doing scale loss";
     auto scale_loss = optimization::LossFunctions::computeScaleRegularizationLoss(
         current_gaussian_tensors_.get_scales());
-    std::cout << "current_gaussian_tensors_.get_scales(): "
-              << current_gaussian_tensors_.get_scales().is_cuda() << std::endl;
+    LOG(INFO) << "Scale loss: " << common::itemAs(scale_loss);
+    LOG(INFO) << "current_gaussian_tensors_.get_scales(): "
+              << current_gaussian_tensors_.get_scales().is_cuda();
+
+    // Log scale loss to Rerun for time series plot (GREEN)
+    if (viz) {
+        viz->logLoss("training/loss/scale", common::itemAs(scale_loss), iteration,
+                     0, 255, 0);  // Green
+    }
+
     scale_loss.backward();
 
     auto opacity_loss = optimization::LossFunctions::computeOpacityRegularizationLoss(
         current_gaussian_tensors_.get_opacities());
+    LOG(INFO) << "Opacity loss: " << common::itemAs(opacity_loss);
+
+    // Log opacity loss to Rerun for time series plot (BLUE)
+    if (viz) {
+        viz->logLoss("training/loss/opacity", common::itemAs(opacity_loss), iteration,
+                     0, 0, 255);  // Blue
+    }
+
     opacity_loss.backward();
+
+    // Log total loss to Rerun for time series plot (MAGENTA)
+    if (viz) {
+        float total_loss =
+            common::itemAs(photometric_loss) + common::itemAs(scale_loss) + common::itemAs(opacity_loss);
+        viz->logLoss("training/loss/total", total_loss, iteration,
+                     255, 0, 255);  // Magenta
+    }
+
+    // Debug: Check gradient magnitudes after backward pass
+    {
+        torch::NoGradGuard no_grad;
+        LOG(INFO) << "=== Gradient Debug Info (Iteration " << iteration << ") ===";
+
+        auto& positions = current_gaussian_tensors_.get_positions();
+        auto& opacities = current_gaussian_tensors_.get_opacities();
+        auto& scales = current_gaussian_tensors_.get_scales();
+        auto& rotations = current_gaussian_tensors_.get_rotations();
+        auto& sh_0 = current_gaussian_tensors_.get_sh_0();
+        auto& sh_N = current_gaussian_tensors_.get_sh_N();
+
+        if (positions.grad().defined() && positions.grad().numel() > 0) {
+            auto pos_grad_norm = common::itemAs(positions.grad().norm());
+            auto pos_grad_mean = common::itemAs(positions.grad().abs().mean());
+            LOG(INFO) << "Positions grad - norm: " << pos_grad_norm
+                      << ", mean abs: " << pos_grad_mean;
+        } else {
+            LOG(WARNING) << "Positions grad is NOT defined or empty!";
+        }
+
+        if (opacities.grad().defined() && opacities.grad().numel() > 0) {
+            auto opacity_grad_norm = common::itemAs(opacities.grad().norm());
+            auto opacity_grad_mean = common::itemAs(opacities.grad().abs().mean());
+            LOG(INFO) << "Opacities grad - norm: " << opacity_grad_norm
+                      << ", mean abs: " << opacity_grad_mean;
+        } else {
+            LOG(WARNING) << "Opacities grad is NOT defined or empty!";
+        }
+
+        if (scales.grad().defined() && scales.grad().numel() > 0) {
+            auto scale_grad_norm = common::itemAs(scales.grad().norm());
+            auto scale_grad_mean = common::itemAs(scales.grad().abs().mean());
+            LOG(INFO) << "Scales grad - norm: " << scale_grad_norm
+                      << ", mean abs: " << scale_grad_mean;
+        } else {
+            LOG(WARNING) << "Scales grad is NOT defined or empty!";
+        }
+
+        if (rotations.grad().defined() && rotations.grad().numel() > 0) {
+            auto rot_grad_norm = common::itemAs(rotations.grad().norm());
+            auto rot_grad_mean = common::itemAs(rotations.grad().abs().mean());
+            LOG(INFO) << "Rotations grad - norm: " << rot_grad_norm
+                      << ", mean abs: " << rot_grad_mean;
+        } else {
+            LOG(WARNING) << "Rotations grad is NOT defined or empty!";
+        }
+
+        if (sh_0.grad().defined() && sh_0.grad().numel() > 0) {
+            auto sh0_grad_norm = common::itemAs(sh_0.grad().norm());
+            auto sh0_grad_mean = common::itemAs(sh_0.grad().abs().mean());
+            LOG(INFO) << "SH_0 grad - norm: " << sh0_grad_norm << ", mean abs: " << sh0_grad_mean;
+        } else {
+            LOG(WARNING) << "SH_0 grad is NOT defined or empty!";
+        }
+
+        if (sh_N.grad().defined() && sh_N.grad().numel() > 0) {
+            auto shN_grad_norm = common::itemAs(sh_N.grad().norm());
+            auto shN_grad_mean = common::itemAs(sh_N.grad().abs().mean());
+            LOG(INFO) << "SH_N grad - norm: " << shN_grad_norm << ", mean abs: " << shN_grad_mean;
+        } else {
+            LOG(WARNING) << "SH_N grad is NOT defined or empty!";
+        }
+
+        LOG(INFO) << "=================================";
+    }
+
+    // Log tensor addresses BEFORE postBackward to check if they change
+    LOG(INFO) << "=== Tensor Addresses BEFORE postBackward ===";
+    LOG(INFO) << "Positions: " << current_gaussian_tensors_.get_positions().data_ptr();
+    LOG(INFO) << "Scales: " << current_gaussian_tensors_.get_scales().data_ptr();
+    LOG(INFO) << "Opacities: " << current_gaussian_tensors_.get_opacities().data_ptr();
+    LOG(INFO) << "Positions grad: " << current_gaussian_tensors_.get_positions().grad().data_ptr();
+    LOG(INFO) << "Scales grad: " << current_gaussian_tensors_.get_scales().grad().data_ptr();
+    LOG(INFO) << "============================================";
 
     {
         torch::NoGradGuard no_grad;
 
-        std::cout << "Before pose backward: " << current_gaussian_tensors_.check_stuff << std::endl;
-        // Pass the actual iteration to strategy
-        strategy_->postBackward(render_result, iteration);
+        LOG(INFO) << "Before pose backward: " << current_gaussian_tensors_.check_stuff;
+
+        // Store values before optimizer step
+        auto positions_before = current_gaussian_tensors_.get_positions().clone();
+        auto opacities_before = current_gaussian_tensors_.get_opacities().clone();
+        auto scales_before = current_gaussian_tensors_.get_scales().clone();
+
+        // IMPORTANT: Match gsplat order: backward() -> optimizer.step() -> step_post_backward()
+        // Optimizer step MUST happen BEFORE densification, otherwise densification
+        // replaces tensors and destroys gradients (causing crash at iteration 50+)
         strategy_->step(iteration);
+
+        LOG(INFO) << "=== After optimizer step ===";
+
+        // Densification happens AFTER optimizer step (when it's safe to replace tensors)
+        // This may grow/prune splats, changing tensor sizes
+        strategy_->postBackward(render_result, iteration);
+
+        LOG(INFO) << "=== After densification (postBackward) ===";
+        LOG(INFO) << "Positions: " << current_gaussian_tensors_.get_positions().data_ptr();
+        LOG(INFO) << "Scales: " << current_gaussian_tensors_.get_scales().data_ptr();
+        LOG(INFO) << "Opacities: " << current_gaussian_tensors_.get_opacities().data_ptr();
+        LOG(INFO) << "============================================";
+
+        // Check if parameters actually changed
+        // Note: Skip this check if densification changed tensor sizes
+        auto positions_after = current_gaussian_tensors_.get_positions();
+        auto opacities_after = current_gaussian_tensors_.get_opacities();
+        auto scales_after = current_gaussian_tensors_.get_scales();
+
+        LOG(INFO) << "=== Parameter Change Check ===";
+        if (positions_after.size(0) == positions_before.size(0)) {
+            // Sizes match - densification didn't happen, so we can compare
+            float pos_diff = common::itemAs((positions_after - positions_before).abs().max());
+            float opacity_diff = common::itemAs((opacities_after - opacities_before).abs().max());
+            float scale_diff = common::itemAs((scales_after - scales_before).abs().max());
+
+            LOG(INFO) << "Max position change: " << pos_diff;
+            LOG(INFO) << "Max opacity change: " << opacity_diff;
+            LOG(INFO) << "Max scale change: " << scale_diff;
+        } else {
+            // Sizes changed - densification happened
+            LOG(INFO) << "Splat count changed: " << positions_before.size(0)
+                      << " -> " << positions_after.size(0);
+            LOG(INFO) << "Skipping parameter diff (densification occurred)";
+        }
+        LOG(INFO) << "Positions tensor address: " << positions_after.data_ptr();
+        LOG(INFO) << "Opacities tensor address: " << opacities_after.data_ptr();
+        LOG(INFO) << "Scales tensor address: " << scales_after.data_ptr();
+        LOG(INFO) << "==============================";
     }
 
     // Synchronize CUDA to ensure all operations complete
@@ -447,14 +627,14 @@ bool BatchTrainer::performTrainingStep(
 
         auto view_loss =
             loss_functions_->computeCombinedLoss(view_rendered, view_gt, config_.d_ssim_lambda);
-        if (std::isnan(view_loss.item<float>()) || std::isinf(view_loss.item<float>())) {
+        if (std::isnan(common::itemAs(view_loss)) || std::isinf(common::itemAs(view_loss))) {
             continue;
         }
         total_loss += view_loss;
-        std::cout << "View loss combined: " << view_loss.item<float>()
-                  << " total loss utn: " << total_loss.item<float>() << std::endl;
+        LOG(INFO) << "View loss combined: " << common::itemAs(view_loss)
+                  << " total loss utn: " << common::itemAs(total_loss);
     }
-    std::cout << "=====================\n";
+    LOG(INFO) << "=====================";
     LOG(INFO) << "Total loss combined: " << total_loss;
     // --- Write the Computation Graph to Disk ---
     if (total_loss.grad_fn()) {
@@ -466,7 +646,7 @@ bool BatchTrainer::performTrainingStep(
         LOG(WARNING) << "Total loss tensor does not have a grad_fn. Cannot write graph.";
     }
     current_gaussian_tensors_.printGradInfo();
-    std::cout << "=====================\n";
+    LOG(INFO) << "=====================";
 
     // Output comparison images every 100 iterations
     if (iteration % 99 == 0) {

@@ -1,5 +1,6 @@
 #pragma once
 
+// #include <2d/klt_tracker.hpp>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include "2d/gtsam_reconstruction.hpp"
 #include "2d/orb_tracker.hpp"
 #include "2d/reconstruction.hpp"
+#include "2d/sift_tracker.hpp"
 #include "core/graph/factor_graph.hpp"
 #include "core/graph/keyframe_manager.hpp"
 #include "core/storage/map_store.hpp"
@@ -123,6 +125,10 @@ public:
         return imu_measurements_;
     }
 
+    // void setVisualization(std::shared_ptr<viz::RerunVisualizer> visualizer) {
+    //     visualizer_ = visualizer;
+    // }
+
 private:
     std::deque<std::pair<types::ImuData, double>> imu_measurements_;
     Eigen::Vector3d preintegrated_position_;
@@ -141,6 +147,8 @@ private:
     double gyro_noise_density_;
     double accel_bias_random_walk_;
     double gyro_bias_random_walk_;
+
+    // std::shared_ptr<viz::RerunVisualizer> visualizer_;
 
     void integrateStep(const Eigen::Vector3d& accel, const Eigen::Vector3d& gyro, double dt,
                        const types::ImuData& imu_data) {
@@ -226,6 +234,8 @@ struct GraphCallbacks {
     std::function<void(const core::storage::MapStore&, uint64_t current_keyframe_id,
                        uint64_t previous_keyframe_id)>
         on_storage_updated;
+    std::function<void(const core::types::KeyFrame&, std::vector<Eigen::Vector3d>&)>
+        on_tracked_keyframe;
 };
 
 class GraphAdapter {
@@ -390,14 +400,17 @@ public:
     bool triangulateKeypoint(const core::types::Keypoint& keypoint,
                              const std::map<uint32_t, core::types::Keypoint>& map_keypoints,
                              Eigen::Vector3d& triangulated_position);
-    void markTriangulatedKeypointsForDiskSync(const std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+    void markTriangulatedKeypointsForDiskSync(
+        const std::map<uint32_t, core::types::Keypoint>& map_keypoints);
     void updateVSLAMStatusAfterTriangulation(const std::vector<uint64_t>& batch_keyframe_ids);
     void updateSharedMemoryAfterTriangulation();
-    
+
     // Local keypoint management to avoid premature disk publishing
     void storeKeypointsLocallyOnly(const std::map<uint32_t, core::types::Keypoint>& keypoints);
-    void publishKeypointsToMapStore(const std::map<uint32_t, core::types::Keypoint>& keypoints, const std::string& stage);
-    void clearPublishedLocalKeypoints(const std::map<uint32_t, core::types::Keypoint>& published_keypoints);
+    void publishKeypointsToMapStore(const std::map<uint32_t, core::types::Keypoint>& keypoints,
+                                    const std::string& stage);
+    void clearPublishedLocalKeypoints(
+        const std::map<uint32_t, core::types::Keypoint>& published_keypoints);
 
 private:
     FactorGraph& graph_;
@@ -405,6 +418,8 @@ private:
     utils::MessageSynchronizer<types::Image, types::CameraInfo, types::ImuData> synchronizer_;
 
     tracking::image::OrbTracker orb_tracker_;
+    tracking::image::SiftTracker sift_tracker_;
+    // tracking::image::KltTracker klt_tracker_;
     KeyframeManager keyframe_manager_;
     tracking::image::GtsamReconstruct gtsam_reconstructor_;  // GTSAM triangulation
     tracking::image::Reconstruct reconstructor_;             // New triangulation API
@@ -483,7 +498,7 @@ private:
     std::atomic<size_t> keyframes_since_last_optimization_{0};
     std::atomic<bool> optimization_pending_{false};
     std::atomic<bool> optimization_in_progress_{false};
-    
+
     // Local keypoint storage to avoid premature disk publishing
     std::map<uint32_t, core::types::Keypoint> local_map_keypoints_;
     mutable std::shared_mutex local_keypoints_mutex_;

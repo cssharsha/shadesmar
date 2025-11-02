@@ -4,6 +4,7 @@
 #include <iostream>
 #include <logging/logging.hpp>
 #include <vector>
+#include "gaussian_splatting/common/tensor_config.hpp"
 
 namespace gaussian_splatting {
 
@@ -26,29 +27,27 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
     LOG(INFO) << "SH dims: " << sh_dim;
 
     auto long_opts = torch::TensorOptions().dtype(torch::kInt64);
-    // auto double_opts = torch::TensorOptions().dtype(torch::kFloat64);
-    auto double_opts = torch::TensorOptions().dtype(torch::kFloat32);
-    auto double_opts1 = torch::TensorOptions().dtype(torch::kFloat64);
-    auto float_opts = torch::TensorOptions().dtype(torch::kFloat32);
+    auto tensor_opts = common::getTensorOptions();
 
-    positions = torch::empty({num_splats, 3}, double_opts);
-    covariances = torch::empty({num_splats, 3, 3}, double_opts);
-    colors = torch::empty({num_splats, 3}, float_opts);
-    opacities = torch::empty({num_splats, 1}, float_opts);
-    scales = torch::empty({num_splats, 3}, double_opts);
-    rotations = torch::empty({num_splats, 4}, double_opts);
-    confidences = torch::empty({num_splats, 1}, float_opts);
+    // Create tensors with configured precision
+    positions = torch::empty({num_splats, 3}, tensor_opts);
+    covariances = torch::empty({num_splats, 3, 3}, tensor_opts);
+    colors = torch::empty({num_splats, 3}, tensor_opts);
+    opacities = torch::empty({num_splats, 1}, tensor_opts);
+    scales = torch::empty({num_splats, 3}, tensor_opts);
+    rotations = torch::empty({num_splats, 4}, tensor_opts);
+    confidences = torch::empty({num_splats, 1}, tensor_opts);
 
-    auto* positions_ptr = positions.data_ptr<float>();
-    auto* covariances_ptr = covariances.data_ptr<float>();
-    auto* colors_ptr = colors.data_ptr<float>();
-    auto* opacities_ptr = opacities.data_ptr<float>();
-    auto* scales_ptr = scales.data_ptr<float>();
-    auto* rotations_ptr = rotations.data_ptr<float>();
-    auto* confidences_ptr = confidences.data_ptr<float>();
+    auto* positions_ptr = common::dataPtrAs(positions);
+    auto* covariances_ptr = common::dataPtrAs(covariances);
+    auto* colors_ptr = common::dataPtrAs(colors);
+    auto* opacities_ptr = common::dataPtrAs(opacities);
+    auto* scales_ptr = common::dataPtrAs(scales);
+    auto* rotations_ptr = common::dataPtrAs(rotations);
+    auto* confidences_ptr = common::dataPtrAs(confidences);
 
     // Initialize opacities in logit space: logit(0.1)
-    std::cout << "Opacity size: " << opacities.sizes() << std::endl;
+    LOG(INFO) << "Opacity size: " << opacities.sizes();
     for (int64_t i = 0; i < num_splats; ++i) {
         const auto& splat = splats[i];
 
@@ -57,52 +56,48 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
         confidences_ptr[i] = splat.confidence;
 
         // Copy positions (cast from double to float)
-        positions_ptr[i * 3 + 0] = static_cast<float>(splat.position.x());
-        positions_ptr[i * 3 + 1] = static_cast<float>(splat.position.y());
-        positions_ptr[i * 3 + 2] = static_cast<float>(splat.position.z());
+        positions_ptr[i * 3 + 0] = splat.position.x();
+        positions_ptr[i * 3 + 1] = splat.position.y();
+        positions_ptr[i * 3 + 2] = splat.position.z();
 
-        // Copy colors (already float, check if normalization needed)
-        colors_ptr[i * 3 + 0] = splat.color.x();
-        colors_ptr[i * 3 + 1] = splat.color.y();
-        colors_ptr[i * 3 + 2] = splat.color.z();
+        // Copy colors
+        colors_ptr[i * 3 + 0] = static_cast<common::scalar_t>(splat.color.x());
+        colors_ptr[i * 3 + 1] = static_cast<common::scalar_t>(splat.color.y());
+        colors_ptr[i * 3 + 2] = static_cast<common::scalar_t>(splat.color.z());
 
-        // Copy scales (cast from double to float)
-        scales_ptr[i * 3 + 0] = 0.1;
-        scales_ptr[i * 3 + 1] = 0.1;
-        scales_ptr[i * 3 + 2] = 0.1;
+        // Use KNN-computed scales in log-space
+        scales_ptr[i * 3 + 0] = static_cast<common::scalar_t>(std::log(splat.scale.x()));
+        scales_ptr[i * 3 + 1] = static_cast<common::scalar_t>(std::log(splat.scale.y()));
+        scales_ptr[i * 3 + 2] = static_cast<common::scalar_t>(std::log(splat.scale.z()));
+        rotations_ptr[i * 4 + 0] = splat.rotation.w();
+        rotations_ptr[i * 4 + 1] = splat.rotation.x();
+        rotations_ptr[i * 4 + 2] = splat.rotation.y();
+        rotations_ptr[i * 4 + 3] = splat.rotation.z();
 
-        // scales_ptr[i * 3 + 0] = static_cast<float>(splat.scale.x());
-        // scales_ptr[i * 3 + 1] = static_cast<float>(splat.scale.y());
-        // scales_ptr[i * 3 + 2] = static_cast<float>(splat.scale.z());
-        // Copy rotations (cast from double to float)
-        rotations_ptr[i * 4 + 0] = static_cast<float>(splat.rotation.w());
-        rotations_ptr[i * 4 + 1] = static_cast<float>(splat.rotation.x());
-        rotations_ptr[i * 4 + 2] = static_cast<float>(splat.rotation.y());
-        rotations_ptr[i * 4 + 3] = static_cast<float>(splat.rotation.z());
-
-        // Copy covariances (cast from double to float)
+        // Copy covariances
         for (int j = 0; j < 3; j++) {
             for (int k = 0; k < 3; k++) {
-                covariances_ptr[i * 9 + j * 3 + k] = static_cast<float>(splat.covariance(j, k));
+                covariances_ptr[i * 9 + j * 3 + k] =
+                    static_cast<common::scalar_t>(splat.covariance(j, k));
             }
         }
 
         if (i == 0) {
-            std::cout << "Position: " << splat.position.transpose() << std::endl;
-            std::cout << "Tensor position: [" << positions_ptr[0] << ", " << positions_ptr[1]
-                      << ", " << positions_ptr[2] << "]" << std::endl;
-            std::cout << "Color: " << splat.color.transpose() << std::endl;
-            std::cout << "Tensor color: [" << colors_ptr[0] << ", " << colors_ptr[1] << ", "
-                      << colors_ptr[2] << "]" << std::endl;
-            std::cout << "Scale: " << splat.scale.transpose() << std::endl;
-            std::cout << "Tensor scale: [" << scales_ptr[0] << ", " << scales_ptr[1] << ", "
-                      << scales_ptr[2] << "]" << std::endl;
-            std::cout << "Rotation: " << splat.rotation.coeffs().transpose() << std::endl;
-            std::cout << "Tensor rotation: [" << rotations_ptr[0] << ", " << rotations_ptr[1]
-                      << ", " << rotations_ptr[2] << ", " << rotations_ptr[3] << "]" << std::endl;
-            std::cout << "SH coeffs: " << splat.sh_coefficients.transpose() << std::endl;
-            std::cout << "Opacity: " << splat.opacity << std::endl;
-            std::cout << "Tensor opacity: " << opacities_ptr[0] << std::endl;
+            LOG(INFO) << "Position: " << splat.position.transpose();
+            LOG(INFO) << "Tensor position: [" << positions_ptr[0] << ", " << positions_ptr[1]
+                      << ", " << positions_ptr[2] << "]";
+            LOG(INFO) << "Color: " << splat.color.transpose();
+            LOG(INFO) << "Tensor color: [" << colors_ptr[0] << ", " << colors_ptr[1] << ", "
+                      << colors_ptr[2] << "]";
+            LOG(INFO) << "Scale: " << splat.scale.transpose();
+            LOG(INFO) << "Tensor scale: [" << scales_ptr[0] << ", " << scales_ptr[1] << ", "
+                      << scales_ptr[2] << "]";
+            LOG(INFO) << "Rotation: " << splat.rotation.coeffs().transpose();
+            LOG(INFO) << "Tensor rotation: [" << rotations_ptr[0] << ", " << rotations_ptr[1]
+                      << ", " << rotations_ptr[2] << ", " << rotations_ptr[3] << "]";
+            LOG(INFO) << "SH coeffs: " << splat.sh_coefficients.transpose();
+            LOG(INFO) << "Opacity: " << splat.opacity;
+            LOG(INFO) << "Tensor opacity: " << opacities_ptr[0];
         }
     }
     // Setup spherical harmonics from colors
@@ -111,14 +106,14 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
     const int64_t feature_shape = (sh_degree + 1) * (sh_degree + 1);  // 16 for degree 3
 
     // Shape: [N, K, 3] where K is number of SH coefficients
-    auto shs = torch::zeros({colors.size(0), feature_shape, 3}, float_opts);
+    auto shs = torch::zeros({colors.size(0), feature_shape, 3}, tensor_opts);
 
     // Convert RGB to SH DC component: (rgb - 0.5) / C0 where C0 = 0.28209479177387814 (Y_0^0)
     // This matches gsplat's Python implementation in utils.py line 94
-    constexpr float C0 = 0.28209479177387814f;
-    torch::Tensor harmonics_colors = (colors - 0.5f) / C0;
-    std::cout << "Colors: " << colors[0] << std::endl;
-    std::cout << "Harmonics colors: " << harmonics_colors[0] << std::endl;
+    constexpr double C0 = 0.28209479177387814f;
+    torch::Tensor harmonics_colors = (colors - 0.5) / C0;
+    LOG(INFO) << "Colors: " << colors[0];
+    LOG(INFO) << "Harmonics colors: " << harmonics_colors[0];
 
     // Assign DC component (first SH coefficient): shs[:, 0, :] = harmonics_colors
     shs.index_put_({torch::indexing::Slice(), 0, torch::indexing::Slice()}, harmonics_colors);
@@ -137,17 +132,18 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
     // and then getting the median of the distance between each camera
     // and the mean
     auto mean_position = torch::mean(positions, 0);
-    scene_scale = torch::median(torch::norm(positions - mean_position, 2, 1)).item<float>();
+    scene_scale = static_cast<float>(
+        common::itemAs(torch::median(torch::norm(positions - mean_position, 2, 1))));
 
-    std::cout << "Mean position: " << mean_position << std::endl;
-    std::cout << "Scene scale: " << scene_scale << std::endl;
+    LOG(INFO) << "Mean position: " << mean_position;
+    LOG(INFO) << "Scene scale: " << scene_scale;
 
     LOG(INFO) << "Did all the conversions";
     return true;
 }
 
 void GaussianTensors::to(const torch::Device& device) {
-    std::cout << "Converting tensors to device " << device.type() << std::endl;
+    LOG(INFO) << "Converting tensors to device " << device.type();
     // source_keypoint_ids = source_keypoint_ids.to(device);
     if (positions.device() != device) {
         positions = positions.to(device);
@@ -184,10 +180,8 @@ void GaussianTensors::setRequiresGrad(bool requires_grad) {
 
 void GaussianTensors::printGradInfo() const {
     LOG(INFO) << "Printing the grads";
-    std::cout << "Printing the grads" << std::endl;
 
     LOG(INFO) << "Positions: " << positions.grad();
-    std::cout << "Positions: " << positions.grad() << std::endl;
 }
 
 std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
@@ -208,7 +202,7 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
 
     int64_t num_splats = positions_cpu.size(0);
     std::vector<core::types::GaussianSplat> splats(num_splats);
-    std::cout << "Converting " << num_splats << " splats to CPU for visualization" << std::endl;
+    LOG(INFO) << "Converting " << num_splats << " splats to CPU for visualization";
 
     // Convert SH back to colors on CPU: colors = sh_0 * C0 + 0.5
     // sh_0 shape is [N, 1, 3], squeeze to [N, 3]
@@ -219,12 +213,12 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
     reconstructed_colors = reconstructed_colors.clamp(0.0f, 1.0f);
 
     // Get data pointers from the CPU tensors
-    const auto* positions_ptr = positions_cpu.data_ptr<float>();
-    const auto* reconstructed_colors_ptr = reconstructed_colors.data_ptr<float>();
-    const auto* opacities_ptr = opacities_cpu.data_ptr<float>();
-    const auto* scales_ptr = scales_cpu.data_ptr<float>();
-    const auto* rotations_ptr = rotations_cpu.data_ptr<float>();
-    const auto* confidences_ptr = confidences_cpu.data_ptr<float>();
+    const auto* positions_ptr = common::dataPtrAs(positions_cpu);
+    const auto* reconstructed_colors_ptr = common::dataPtrAs(reconstructed_colors);
+    const auto* opacities_ptr = common::dataPtrAs(opacities_cpu);
+    const auto* scales_ptr = common::dataPtrAs(scales_cpu);
+    const auto* rotations_ptr = common::dataPtrAs(rotations_cpu);
+    const auto* confidences_ptr = common::dataPtrAs(confidences_cpu);
 
     for (int64_t i = 0; i < num_splats; ++i) {
         // Convert opacity from logit space back to [0, 1]: sigmoid(x) = 1 / (1 + exp(-x))
@@ -233,32 +227,29 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
         splats[i].confidence = confidences_ptr[i];
 
         // Cast float tensor values to double for positions
-        splats[i].position = Eigen::Vector3d(static_cast<double>(positions_ptr[i * 3 + 0]),
-                                             static_cast<double>(positions_ptr[i * 3 + 1]),
-                                             static_cast<double>(positions_ptr[i * 3 + 2]));
+        splats[i].position = Eigen::Vector3d(positions_ptr[i * 3 + 0], positions_ptr[i * 3 + 1],
+                                             positions_ptr[i * 3 + 2]);
 
         // Colors reconstructed from SH
-        splats[i].color = Eigen::Vector3f(reconstructed_colors_ptr[i * 3 + 0],
-                                          reconstructed_colors_ptr[i * 3 + 1],
-                                          reconstructed_colors_ptr[i * 3 + 2]);
+        splats[i].color = Eigen::Vector3f(static_cast<float>(reconstructed_colors_ptr[i * 3 + 0]),
+                                          static_cast<float>(reconstructed_colors_ptr[i * 3 + 1]),
+                                          static_cast<float>(reconstructed_colors_ptr[i * 3 + 2]));
 
         // Convert scales from log space back to linear: exp(log_scale)
         // This matches Python: scales = torch.exp(self.splats["scales"])
-        splats[i].scale = Eigen::Vector3d(static_cast<double>(scales_ptr[i * 3 + 0]),
-                                          static_cast<double>(scales_ptr[i * 3 + 1]),
-                                          static_cast<double>(scales_ptr[i * 3 + 2]));
+        splats[i].scale =
+            Eigen::Vector3d(std::exp(scales_ptr[i * 3 + 0]),
+                           std::exp(scales_ptr[i * 3 + 1]),
+                           std::exp(scales_ptr[i * 3 + 2]));
         // splats[i].scale = Eigen::Vector3d(2., 2., 2.);
 
         // Cast float tensor values to double for rotations and normalize
-        splats[i].rotation = Eigen::Quaterniond(static_cast<double>(rotations_ptr[i * 4 + 0]),
-                                                static_cast<double>(rotations_ptr[i * 4 + 1]),
-                                                static_cast<double>(rotations_ptr[i * 4 + 2]),
-                                                static_cast<double>(rotations_ptr[i * 4 + 3]))
+        splats[i].rotation = Eigen::Quaterniond(rotations_ptr[i * 4 + 0], rotations_ptr[i * 4 + 1],
+                                                rotations_ptr[i * 4 + 2], rotations_ptr[i * 4 + 3])
                                  .normalized();
     }
 
-    std::cout << "Finished converting " << splats.size() << " splats for visualization"
-              << std::endl;
+    LOG(INFO) << "Finished converting " << splats.size() << " splats for visualization";
 
     // Note: We don't modify the GPU tensors at all, they remain on CUDA with gradients intact
     return splats;

@@ -1,5 +1,9 @@
-#include <cmath>
 #include <stf/transform_utils.hpp>
+
+#include <cmath>
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <core/types/keyframe.hpp>
 #include <logging/logging.hpp>
@@ -30,12 +34,23 @@ Eigen::Isometry3d getRelative(const core::types::KeyFrame& src_frame,
     return getRelativeWithBaseLink(src_frame, trg_frame, tft, "base_link");
 }
 
+Eigen::Isometry3d getRelative1(const core::types::KeyFrame& src_frame,
+                               const core::types::KeyFrame& trg_frame, const TransformTree& tft) {
+    LOG(INFO) << "Asdasd";
+    return getRelativeWithBaseLink1(src_frame, trg_frame, tft, "base_link");
+}
+
 // Legacy function with hardcoded "base_link" - kept for backward compatibility
 Eigen::Isometry3d getRelative(const core::types::Pose& src_pose, const core::types::Pose& trg_pose,
                               const std::string& frame_id, const TransformTree& tft) {
     return getRelativeWithBaseLink(src_pose, trg_pose, frame_id, tft, "base_link");
 }
 
+// Eigen::Isometry3d getRelative1(const core::types::Pose& src_pose, const core::types::Pose&
+// trg_pose,
+//                                const std::string& frame_id, const TransformTree& tft) {
+//     return getRelativeWithBaseLink1(src_pose, trg_pose, frame_id, tft, "base_link");
+// }
 // New configurable function with explicit base_link_frame_id parameter
 Eigen::Isometry3d getRelativeWithBaseLink(const core::types::KeyFrame& src_frame,
                                           const core::types::KeyFrame& trg_frame,
@@ -73,6 +88,38 @@ Eigen::Isometry3d getRelativeWithBaseLink(const core::types::KeyFrame& src_frame
     return T_odom_camera_src.inverse() * T_odom_camera_trg;
 }
 
+Eigen::Isometry3d getRelativeWithBaseLink1(const core::types::KeyFrame& src_frame,
+                                           const core::types::KeyFrame& trg_frame,
+                                           const TransformTree& tft,
+                                           const std::string& base_link_frame_id) {
+    LOG(INFO) << "has value: " << src_frame.color_data.has_value() << " "
+              << trg_frame.color_data.value().frame_id;
+    LOG(INFO) << "base link " << base_link_frame_id << " -> "
+              << trg_frame.color_data.value().frame_id;
+    auto T_base_link_t_camera_src =
+        tft.getTransform(base_link_frame_id, src_frame.color_data.value().frame_id).transform;
+    auto T_odom_base_link_src = src_frame.pose.getEigenIsometry();
+    LOG(INFO) << "src pose: [" << T_odom_base_link_src.translation().transpose() << "]["
+              << getRPY(T_odom_base_link_src).transpose();
+    auto T_odom_base_link_trg = trg_frame.pose.getEigenIsometry();
+    LOG(INFO) << "target pose: [" << T_odom_base_link_trg.translation().transpose() << "]["
+              << getRPY(T_odom_base_link_trg).transpose();
+    auto T_base_link_t_camera_trg =
+        tft.getTransform(base_link_frame_id, trg_frame.color_data.value().frame_id).transform;
+    LOG(INFO) << "T_base_link_t_camera_trg: " << T_base_link_t_camera_trg.translation().transpose()
+              << "][" << getRPY(T_base_link_t_camera_trg).transpose();
+    auto chain = T_odom_base_link_trg * T_base_link_t_camera_trg;
+    LOG(INFO) << "chain: " << chain.translation().transpose() << "][" << getRPY(chain).transpose();
+    chain = T_odom_base_link_src.inverse() * chain;
+    LOG(INFO) << "chain: " << chain.translation().transpose() << "][" << getRPY(chain).transpose();
+    chain = T_base_link_t_camera_src.inverse() * chain;
+    LOG(INFO) << "chain: " << chain.translation().transpose() << "][" << getRPY(chain).transpose();
+    auto T_camera_src_camera_trg = T_base_link_t_camera_src.inverse() *
+                                   T_odom_base_link_src.inverse() * T_odom_base_link_trg *
+                                   T_base_link_t_camera_trg;
+    return T_camera_src_camera_trg;
+}
+
 // New configurable function with explicit base_link_frame_id parameter
 Eigen::Isometry3d getRelativeWithBaseLink(const core::types::Pose& src_pose,
                                           const core::types::Pose& trg_pose,
@@ -87,6 +134,22 @@ Eigen::Isometry3d getRelativeWithBaseLink(const core::types::Pose& src_pose,
     auto T_odom_camera_trg = T_odom_base_link_trg * T_base_link_t_camera;
 
     return T_odom_camera_src.inverse() * T_odom_camera_trg;
+}
+
+Eigen::Vector3d getRelativePosition(const core::types::Pose& src_pose, const std::string& frame_id,
+                                    const TransformTree& tft, const std::string& base_link_frame_id,
+                                    const Eigen::Vector3d& camera_position) {
+    auto T_base_link_src = src_pose.getEigenIsometry();
+    LOG(INFO) << "T_base_link_src: " << T_base_link_src.matrix();
+
+    auto T_base_link_t_camera = tft.getTransform(base_link_frame_id, frame_id).transform;
+    LOG(INFO) << "T_base_link_t_camera: " << T_base_link_t_camera.matrix();
+    auto position_in_base_link = T_base_link_t_camera * camera_position;
+    LOG(INFO) << "position_in_base_link: " << position_in_base_link.matrix();
+    auto position_in_odom = T_base_link_src * position_in_base_link;
+    LOG(INFO) << "position_in_odom: " << position_in_odom.matrix();
+
+    return position_in_odom;
 }
 
 // Functions for transforming poses to different reference frames

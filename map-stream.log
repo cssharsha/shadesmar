@@ -1,0 +1,14 @@
+Spatial partitioning disabled - training all splats together
+Starting Gaussian Splat Processor with map path: /data/south-building/map/map
+Using shared recording ID: streaming_gs_training
+Inited the main
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20251102 04:36:27.947057  2398 map_store.cpp:88] MapStore initialized with data file: /data/south-building/map/map.dat
+I20251102 04:36:27.947099  2398 map_store.cpp:1555] Queue system initialized
+I20251102 04:36:27.947234  2398 map_store.cpp:1570] Write worker thread started
+I20251102 04:36:27.947253  2401 map_store.cpp:1604] Write worker loop started
+I20251102 04:36:27.947273  2398 shared_memory_wrapper.cpp:24] Attached to existing shared memory: /_data_south-building_map_map (size: 444112)
+I20251102 04:36:27.947283  2398 map_store.cpp:2628] Shared memory initialized: _data_south-building_map_map
+I20251102 04:36:27.947291  2398 map_store.cpp:45] MapStore initialized with callback-based write system and single write worker
+I20251102 04:36:28.030592  2398 map_store.cpp:2497] Transform tree file does not exist: /data/south-building/map/map.tf_tree
+Failed to load tf tree

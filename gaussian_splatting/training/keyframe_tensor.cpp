@@ -4,16 +4,23 @@
 #include <cstdint>
 #include <logging/logging.hpp>
 #include <opencv2/opencv.hpp>
+#include "gaussian_splatting/common/tensor_config.hpp"
 
 namespace gaussian_splatting {
 namespace training {
 
 KeyframeTensor::KeyframeTensor(std::shared_ptr<core::storage::MapStore>& map_store,
-                               std::shared_ptr<stf::TransformTree>& tf_tree)
-    : device_(torch::kCPU), map_store_(map_store), tf_tree_(tf_tree) {
+                               std::shared_ptr<stf::TransformTree>& tf_tree, std::string base_link,
+                               std::string camera_frame)
+    : device_(torch::kCPU),
+      map_store_(map_store),
+      tf_tree_(tf_tree),
+      base_link_(base_link),
+      camera_frame_(camera_frame) {
     try {
         auto transform_result = tf_tree_->getTransform(base_link_, camera_frame_);
         base_to_camera_ = transform_result.transform;
+        LOG(INFO) << "Base to camera transform: " << base_to_camera_.matrix();
     } catch (const std::exception& e) {
         LOG(WARNING) << "Failed to get base_link to camera transform: " << e.what()
                      << ", using identity";
@@ -59,7 +66,9 @@ void KeyframeTensor::loadFromKeyframe(const core::storage::KeyFramePtr& keyframe
     clear();
 
     keyframe_id_ = keyframe->id;
-    camera_pose_ = convertCameraPoseToTensor(keyframe->pose.getEigenIsometry(), device_);
+    auto transform_result = tf_tree_->getTransform(base_link_, camera_frame_);
+    auto camera_pose = keyframe->pose.getEigenIsometry() * transform_result.transform;
+    camera_pose_ = convertCameraPoseToTensor(camera_pose, device_);
     camera_intrinsic_ = convertCameraIntrinsicsToTensor(keyframe->getCameraInfo(), device_);
     LOG(INFO) << "Converted camera pose and intrinsics";
 
@@ -104,7 +113,7 @@ torch::Tensor KeyframeTensor::convertCameraPoseToTensor(const Eigen::Isometry3d&
     // LOG(INFO) << base_to_camera_.matrix();
     // auto camera_in_world = pose * base_to_camera_.inverse();
     // Convert 4x4 pose matrix to torch tensor
-    torch::Tensor pose_tensor = torch::zeros({1, 4, 4}, torch::kFloat32);
+    torch::Tensor pose_tensor = torch::zeros({1, 4, 4}, common::getTensorOptions());
     LOG(INFO) << "Camera pose: " << pose.matrix();
     auto camera_in_world = pose.inverse();
     LOG(INFO) << "Camera in world: " << camera_in_world.matrix();
@@ -115,7 +124,7 @@ torch::Tensor KeyframeTensor::convertCameraPoseToTensor(const Eigen::Isometry3d&
     Eigen::Matrix4d pose_matrix = camera_in_world.matrix();
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            pose_tensor[0][i][j] = static_cast<float>(pose_matrix(i, j));
+            pose_tensor[0][i][j] = pose_matrix(i, j);
         }
     }
 
@@ -124,15 +133,15 @@ torch::Tensor KeyframeTensor::convertCameraPoseToTensor(const Eigen::Isometry3d&
 
 torch::Tensor KeyframeTensor::convertCameraIntrinsicsToTensor(
     const core::types::CameraInfo& camera_info, const torch::Device& device) {
-    torch::Tensor intrinsics = torch::zeros({1, 3, 3}, torch::kFloat32);
+    torch::Tensor intrinsics = torch::zeros({1, 3, 3}, common::getTensorOptions());
 
     assert(camera_info.k.size() == 9);
 
-    intrinsics[0][0][0] = camera_info.k[0];  // fx
-    intrinsics[0][1][1] = camera_info.k[4];  // fy
-    intrinsics[0][0][2] = camera_info.k[2];  // cx
-    intrinsics[0][1][2] = camera_info.k[5];  // cy
-    intrinsics[0][2][2] = 1.0;               // homogeneous coordinate
+    intrinsics[0][0][0] = static_cast<common::scalar_t>(camera_info.k[0]);  // fx
+    intrinsics[0][1][1] = static_cast<common::scalar_t>(camera_info.k[4]);  // fy
+    intrinsics[0][0][2] = static_cast<common::scalar_t>(camera_info.k[2]);  // cx
+    intrinsics[0][1][2] = static_cast<common::scalar_t>(camera_info.k[5]);  // cy
+    intrinsics[0][2][2] = static_cast<common::scalar_t>(1.0);                // homogeneous coordinate
 
     image_width_ = camera_info.width;
     image_height_ = camera_info.height;

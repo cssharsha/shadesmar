@@ -1,5 +1,6 @@
 #include "gaussian_splatting/optimization/strategy.hpp"
 #include <logging/logging.hpp>
+#include "gaussian_splatting/common/tensor_config.hpp"
 #include "gaussian_splatting/optimization/optimizer.hpp"
 #include "gaussian_splatting/utils/torch_utils.hpp"
 
@@ -11,7 +12,7 @@ void Strategy::postBackward(rendering::RasterizationOutput& r_output, int iter) 
     // Increment SH degree every 1000 iterations
     torch::NoGradGuard no_grad;
     // TODO: Increase the SH degree. Change it in GaussianTensors
-    std::cout << "Doing postBackward " << iter << std::endl;
+    LOG(INFO) << "Doing postBackward " << iter;
 
     if (iter >= Optimizer::config.max_iterations) {
         return;
@@ -20,7 +21,7 @@ void Strategy::postBackward(rendering::RasterizationOutput& r_output, int iter) 
     updateState(r_output);
 
     if (isRefining(iter)) {
-        std::cout << "Refining" << std::endl;
+        LOG(INFO) << "Refining";
         growSplats(iter);
         pruneSplats(iter);
 
@@ -29,7 +30,7 @@ void Strategy::postBackward(rendering::RasterizationOutput& r_output, int iter) 
         count_.zero_();
         radii_.zero_();
     }
-    std::cout << "Done with posetBackward" << std::endl;
+    LOG(INFO) << "Done with posetBackward";
 
     // TODO: reset the opacity after a certain number of iterations
     // gaussians_->reset_opacities();
@@ -45,13 +46,18 @@ void Strategy::step(int iter) {
 void Strategy::updateState(rendering::RasterizationOutput& r_output) {
     torch::Tensor grads;
     grads = r_output.means2d.grad().clone();
-    std::cout << "Doing updateState" << std::endl;
+
+    // Clear retained gradient immediately after cloning to prevent memory leak.
+    // LibTorch C++ is less aggressive than Python about clearing autograd hooks,
+    // so we explicitly zero it out. Python's garbage collector does this implicitly
+    // when tensors go out of scope, but C++ needs explicit cleanup.
+    r_output.means2d.grad().zero_();
+
+    LOG(INFO) << "Doing updateState";
     if (!torch::isfinite(grads).all().item<bool>()) {
-        std::cout << "Gradient contains NaN or Inf values." << std::endl;
+        LOG(INFO) << "Gradient contains NaN or Inf values.";
         throw std::runtime_error("Gradient contains NaN or Inf values.");
     }
-
-    std::cout << "Cleared grads NaN or Inf check" << std::endl;
 
     // Convert the normalized gradients to pixel space
     const float scale_x = r_output.width / 2.F;
@@ -71,9 +77,9 @@ void Strategy::updateState(rendering::RasterizationOutput& r_output) {
     if (!count_.defined()) {
         count_ = torch::zeros(num_gaussians, torch::kFloat32).to(device);
     }
-    std::cout << "Set all the internal state tensors: grad2d: " << grad2d_.sizes() << ", "
+    LOG(INFO) << "Set all the internal state tensors: grad2d: " << grad2d_.sizes() << ", "
               << grad2d_.is_cuda() << ", radii: " << radii_.sizes() << ", " << radii_.is_cuda()
-              << ", count: " << count_.sizes() << ", " << count_.is_cuda() << std::endl;
+              << ", count: " << count_.sizes() << ", " << count_.is_cuda();
 
     // Indices of the gaussians that are visible in the current frame
     torch::Tensor gaussian_ids;
@@ -82,7 +88,7 @@ void Strategy::updateState(rendering::RasterizationOutput& r_output) {
     gaussian_ids = valid_mask.nonzero().squeeze(-1);
     grads = grads.squeeze(0).index_select(0, gaussian_ids);
     radii = r_output.radii.index_select(0, gaussian_ids);
-    std::cout << "Done selecting the gaussians" << std::endl;
+    LOG(INFO) << "Done selecting the gaussians";
 
     // running sum of the gradients for all visible gaussians
     grad2d_.index_add_(0, gaussian_ids, grads.norm(2, -1));
@@ -92,12 +98,12 @@ void Strategy::updateState(rendering::RasterizationOutput& r_output) {
     const double max_wh = static_cast<double>(std::max(r_output.width, r_output.height));
     radii_.index_put_({gaussian_ids},
                       torch::max(radii_.index_select(0, gaussian_ids), radii / max_wh));
-    std::cout << "Done updating the state" << std::endl;
+    LOG(INFO) << "Done updating the state";
 }
 
 void Strategy::growSplats(int iter) {
     torch::NoGradGuard no_grad;
-    std::cout << "Doing grow splats" << std::endl;
+    LOG(INFO) << "Doing grow splats";
 
     // Check if we're at max capacity
     int64_t current_splat_count = gaussians_->get_positions().size(0);
@@ -109,48 +115,50 @@ void Strategy::growSplats(int iter) {
 
     // Average gradient per gaussian accross all iterations
     const torch::Tensor grads = grad2d_ / count_.clamp_min(1);
-    std::cout << "Done getting the average gradient" << std::endl;
+    LOG(INFO) << "Done getting the average gradient";
 
     // Higher gradients -> unable to fit -> needs refinement
     // Currently Im setting the scene scale to .75. Might need to
     // revisit this to change later.
     const torch::Tensor is_grad_high = grads > config.grad_threshold;
-    std::cout << "Grads: " << grads.is_cuda() << ", is_grad_high: " << is_grad_high.is_cuda()
-              << "gaussians->get_scales(): " << gaussians_->get_scales().is_cuda() << std::endl;
-    std::cout << "Check stuff: " << gaussians_->check_stuff << std::endl;
+    LOG(INFO) << "Grads: " << grads.is_cuda() << ", is_grad_high: " << is_grad_high.is_cuda()
+              << "gaussians->get_scales(): " << gaussians_->get_scales().is_cuda();
+    LOG(INFO) << "Check stuff: " << gaussians_->check_stuff;
 
-    const auto max_values = std::get<0>(torch::max(gaussians_->get_scales(), -1));
-    std::cout << "Max values: " << max_values.is_cuda() << std::endl;
+    // Convert scales from log-space to linear space before comparison
+    const auto scales_linear = torch::exp(gaussians_->get_scales());
+    const auto max_values = std::get<0>(torch::max(scales_linear, -1));
+    LOG(INFO) << "Max values: " << max_values.is_cuda();
     const torch::Tensor is_small =
         max_values <= config.grow_scale3d * gaussians_->get_scene_scale();
     const torch::Tensor is_duplicated = is_grad_high & is_small;
     auto duplicate_count = is_duplicated.sum().item<int64_t>();
-    std::cout << "Duplicate count: " << duplicate_count << std::endl;
+    LOG(INFO) << "Duplicate count: " << duplicate_count;
 
-    // const torch::Tensor is_large = ~is_small;
-    // torch::Tensor is_split = is_grad_high & is_large;
-    // is_split |= radii_ > config.grow_scale2d;
-    // auto split_count = is_split.sum().item<int64_t>();
-    // std::cout << "Split count: " << split_count << std::endl;
+    const torch::Tensor is_large = ~is_small;
+    torch::Tensor is_split = is_grad_high & is_large;
+    is_split |= radii_ > config.grow_scale2d;
+    auto split_count = is_split.sum().item<int64_t>();
+    LOG(INFO) << "Split count: " << split_count;
 
     if (duplicate_count > 0) {
         duplicateSplats(is_duplicated);
     }
 
-    // std::cout << "Is split: " << is_split.sizes() << std::endl;
-    // auto duplicates = torch::zeros(duplicate_count,
-    //                                c10::TensorOptions().dtype(torch::kBool).device(grads.device()));
-    // std::cout << "Duplicates: " << duplicates.sizes() << std::endl;
-    // // Set the duplicated splats to zero so as to not split them
-    // is_split = torch::cat(
-    //     {is_split, torch::zeros(duplicate_count,
-    //                             c10::TensorOptions().dtype(torch::kBool).device(grads.device()))});
-    // if (split_count > 0) {
-    //     std::cout << "Calling split splats with is split: " << is_split.sizes() << std::endl;
-    //     splitSplats(is_split);
-    // }
+    LOG(INFO) << "Is split: " << is_split.sizes();
+    auto duplicates = torch::zeros(duplicate_count,
+                                   c10::TensorOptions().dtype(torch::kBool).device(grads.device()));
+    LOG(INFO) << "Duplicates: " << duplicates.sizes();
+    // Set the duplicated splats to zero so as to not split them
+    is_split = torch::cat(
+        {is_split, torch::zeros(duplicate_count,
+                                c10::TensorOptions().dtype(torch::kBool).device(grads.device()))});
+    if (split_count > 0) {
+        LOG(INFO) << "Calling split splats with is split: " << is_split.sizes();
+        splitSplats(is_split);
+    }
 
-    std::cout << "Duplicated: " << duplicate_count << /*", split: " << split_count << */ std::endl;
+    LOG(INFO) << "Duplicated: " << duplicate_count /*<< ", split: " << split_count*/;
 
     return;
 }
@@ -176,8 +184,8 @@ void Strategy::duplicateSplats(const torch::Tensor& is_duplicated) {
         num_to_duplicate = available_capacity;
     }
 
-    std::cout << "Duplicating " << num_to_duplicate << " splats (current: " << current_count
-              << ", max: " << config.max_splat_count << ")" << std::endl;
+    LOG(INFO) << "Duplicating " << num_to_duplicate << " splats (current: " << current_count
+              << ", max: " << config.max_splat_count << ")";
 
     const auto param_fn = [&sampled_idxs](const int i, const torch::Tensor param) {
         const torch::Tensor new_param = param.index_select(0, sampled_idxs);
@@ -247,10 +255,10 @@ void Strategy::splitSplats(torch::Tensor& is_split) {
         num_to_split = max_splits_allowed;
     }
 
-    std::cout << "Splitting " << num_to_split << " splats into " << split_size
+    LOG(INFO) << "Splitting " << num_to_split << " splats into " << split_size
               << " each (current: " << current_count
               << ", will add: " << (num_to_split * new_splats_per_split)
-              << ", max: " << config.max_splat_count << ")" << std::endl;
+              << ", max: " << config.max_splat_count << ")";
 
     // Recompute rest_idxs based on potentially limited sampled_idxs
     torch::Tensor rest_idxs;
@@ -265,13 +273,16 @@ void Strategy::splitSplats(torch::Tensor& is_split) {
     }
 
     const torch::Tensor sampled_scales = gaussians_->get_scales().index_select(0, sampled_idxs);
+    // Convert scales from log-space to linear space for einsum operation
+    const torch::Tensor sampled_scales_linear = torch::exp(sampled_scales);
+
     const torch::Tensor sampled_quats = gaussians_->get_rotations().index_select(0, sampled_idxs);
-    std::cout << "Converting quats to rotation matrix: " << sampled_quats.sizes() << std::endl;
+    LOG(INFO) << "Converting quats to rotation matrix: " << sampled_quats.sizes();
     const torch::Tensor rotmats = utils::quaternion_to_rotation_matrix(sampled_quats);
 
-    std::cout << "All sizes until here: " << sampled_idxs.sizes() << ", " << rest_idxs.sizes()
+    LOG(INFO) << "All sizes until here: " << sampled_idxs.sizes() << ", " << rest_idxs.sizes()
               << ", " << sampled_scales.sizes() << ", " << sampled_quats.sizes() << ", "
-              << rotmats.sizes() << std::endl;
+              << rotmats.sizes();
 
     const auto num_split_gaussians = sampled_idxs.size(0);
     // einsum seems to be super vague syntax but just fetching it from
@@ -284,54 +295,54 @@ void Strategy::splitSplats(torch::Tensor& is_split) {
     //   - Applies the Gaussian's rotation which transform from
     //     local space to world space
     const torch::Tensor samples = torch::einsum(  // [split_size, N, 3]
-        "nij,nj,bnj->bni", {rotmats, sampled_scales,
+        "nij,nj,bnj->bni", {rotmats, sampled_scales_linear,
                             torch::randn({split_size, num_split_gaussians, 3},
                                          sampled_quats.options().device(device))});
-    std::cout << "Sampled splats with scale and rotation: " << samples.sizes() << std::endl;
+    LOG(INFO) << "Sampled splats with scale and rotation: " << samples.sizes();
 
     const auto param_fn = [&sampled_idxs, &rest_idxs, &samples, &split_size, &sampled_scales](
                               const int i, const torch::Tensor param) {
         std::vector<int64_t> repeats(param.dim(), 1);
         repeats[0] = split_size;
 
-        std::cout << "Param sizes: " << param.sizes() << " " << param.device() << std::endl;
+        LOG(INFO) << "Param sizes: " << param.sizes() << " " << param.device();
 
         const torch::Tensor sampled_param = param.index_select(0, sampled_idxs);
-        std::cout << "Sampled param: " << sampled_param.sizes() << std::endl;
+        LOG(INFO) << "Sampled param: " << sampled_param.sizes();
         torch::Tensor split_param;
         // Split positions. Essentially the end would be split_size * N.
         if (i == 0) {
-            std::cout << "Splitting positions" << std::endl;
+            LOG(INFO) << "Splitting positions";
             split_param = (sampled_param.unsqueeze(0) + samples).reshape({-1, 3});
-            std::cout << "Split positions: " << split_param.sizes() << " " << split_param.device()
-                      << std::endl;
+            LOG(INFO) << "Split positions: " << split_param.sizes() << " " << split_param.device();
         }
         // Split scales.
         else if (i == 1) {
-            std::cout << "Splitting scales" << std::endl;
+            LOG(INFO) << "Splitting scales";
+            // sampled_scales is already in log-space, so: log(s/1.6) = log(s) - log(1.6)
             split_param =
-                torch::log(sampled_scales / 1.6).repeat({split_size, 1});  // [split_size * N, 3]
+                (sampled_scales - std::log(1.6f)).repeat({split_size, 1});  // [split_size * N, 3]
         }
         // Split opactiries.
         else if (i == 3) {  // gsplat sets revised_opacity to do this operation
-            std::cout << "Splitting opacities" << std::endl;
+            LOG(INFO) << "Splitting opacities";
             const torch::Tensor new_opacities =
                 1.0 - torch::sqrt(1.0 - torch::sigmoid(sampled_param));
             split_param = torch::logit(new_opacities).repeat(repeats);  // [split_size * N]
         }
         // Split the rest of the parameters(rotations, sh_coefficients)
         else {
-            std::cout << "Splitting the rest i: " << i << std::endl;
+            LOG(INFO) << "Splitting the rest i: " << i;
             split_param = sampled_param.repeat(repeats);
         }
 
-        std::cout << "Doing the rest" << std::endl;
+        LOG(INFO) << "Doing the rest";
         // Concatenate the rest of the parameters that were not split.
         const torch::Tensor rest_param = param.index_select(0, rest_idxs);
-        std::cout << "Concat: " << rest_param.sizes() << ", " << split_param.sizes() << std::endl;
+        LOG(INFO) << "Concat: " << rest_param.sizes() << ", " << split_param.sizes();
         auto cat_params =
             torch::cat({rest_param, split_param}, 0).set_requires_grad(param.requires_grad());
-        std::cout << "Cat params: " << cat_params.sizes() << std::endl;
+        LOG(INFO) << "Cat params: " << cat_params.sizes();
         return cat_params;
         // return torch::cat({rest_param, split_param}, 0).set_requires_grad(param.requires_grad());
     };
@@ -340,28 +351,23 @@ void Strategy::splitSplats(torch::Tensor& is_split) {
         [&sampled_idxs, &rest_idxs, &split_size](
             torch::optim::OptimizerParamState& state,
             const torch::Tensor full_param) -> std::unique_ptr<torch::optim::OptimizerParamState> {
-        std::cout << "Calling state_fn in split" << std::endl;
-        std::cout << "Full param: " << full_param.sizes() << " " << full_param.device()
-                  << std::endl;
+        LOG(INFO) << "Calling state_fn in split";
+        LOG(INFO) << "Full param: " << full_param.sizes() << " " << full_param.device();
         auto zero_shape = full_param.sizes().vec();
         zero_shape[0] = sampled_idxs.size(0) * split_size;
         auto* adam_state = dynamic_cast<torch::optim::AdamParamState*>(&state);
         // Standard Adam state
         auto rest_exp_avg = adam_state->exp_avg().index_select(0, rest_idxs);
         auto rest_exp_avg_sq = adam_state->exp_avg_sq().index_select(0, rest_idxs);
-        std::cout << "Rest exp avg: " << rest_exp_avg.sizes() << " " << rest_exp_avg_sq.device()
-                  << std::endl;
+        LOG(INFO) << "Rest exp avg: " << rest_exp_avg.sizes() << " " << rest_exp_avg_sq.device();
 
         // New state for all the splits
         auto zeros_to_add = torch::zeros(zero_shape, adam_state->exp_avg().options());
-        std::cout << "Zeros to add: " << zeros_to_add.sizes() << " " << zeros_to_add.device()
-                  << std::endl;
+        LOG(INFO) << "Zeros to add: " << zeros_to_add.sizes() << " " << zeros_to_add.device();
         auto new_exp_avg = torch::cat({rest_exp_avg, zeros_to_add}, 0);
-        std::cout << "New exp avg: " << new_exp_avg.sizes() << " " << new_exp_avg.device()
-                  << std::endl;
+        LOG(INFO) << "New exp avg: " << new_exp_avg.sizes() << " " << new_exp_avg.device();
         auto new_exp_avg_sq = torch::cat({rest_exp_avg_sq, zeros_to_add}, 0);
-        std::cout << "New exp avg sq: " << new_exp_avg_sq.sizes() << " " << new_exp_avg_sq.device()
-                  << std::endl;
+        LOG(INFO) << "New exp avg sq: " << new_exp_avg_sq.sizes() << " " << new_exp_avg_sq.device();
 
         auto new_state = std::make_unique<torch::optim::AdamParamState>();
         new_state->step(adam_state->step());
@@ -399,19 +405,21 @@ void Strategy::splitSplats(torch::Tensor& is_split) {
 
 void Strategy::pruneSplats(int iter) {
     torch::NoGradGuard no_grad;
-    std::cout << "Prune splats" << std::endl;
+    LOG(INFO) << "Prune splats";
 
     // Opacities are stored in logit space, so apply sigmoid before comparing to threshold
     auto opacities_sigmoid = torch::sigmoid(gaussians_->get_opacities());
     torch::Tensor is_prune = opacities_sigmoid < config.prune_opacity;
 
     // Printing mean and std of opacities (in sigmoid space for interpretability)
-    std::cout << "Mean opacity: " << torch::mean(opacities_sigmoid).item<float>() << std::endl;
-    std::cout << "Std opacity: " << torch::std(opacities_sigmoid).item<float>() << std::endl;
-    std::cout << "Is prune: " << is_prune.sizes() << std::endl;
+    LOG(INFO) << "Mean opacity: " << common::itemAs(torch::mean(opacities_sigmoid));
+    LOG(INFO) << "Std opacity: " << common::itemAs(torch::std(opacities_sigmoid));
+    LOG(INFO) << "Is prune: " << is_prune.sizes();
     // if (iter > config.reset_after_iterations) {
     //     std::cout << "Reset after iterations" << std::endl;
-    //     const auto max_values = std::get<0>(torch::max(gaussians_->get_scales(), -1));
+    //     // Convert scales from log-space to linear space before comparison
+    //     const auto scales_linear = torch::exp(gaussians_->get_scales());
+    //     const auto max_values = std::get<0>(torch::max(scales_linear, -1));
     //     // TODO: Remove the hard coded scene scale
     //     torch::Tensor is_too_big =
     //         max_values > config.prune_scale3d * gaussians_->get_scene_scale();
@@ -425,12 +433,12 @@ void Strategy::pruneSplats(int iter) {
     //     std::cout << "Computed too big 3" << std::endl;
     // }
 
-    std::cout << iter << " is less than " << config.reset_after_iterations << std::endl;
+    LOG(INFO) << iter << " is less than " << config.reset_after_iterations;
 
-    std::cout << "Some comp: " << is_prune.sum().item() << std::endl;
+    LOG(INFO) << "Some comp: " << is_prune.sum().item();
     const int64_t num_prunes = is_prune.sum().item<int64_t>();
     if (num_prunes > 0) {
-        std::cout << "Need to remove splats" << std::endl;
+        LOG(INFO) << "Need to remove splats";
         removeSplats(is_prune);
     }
     return;
@@ -438,14 +446,14 @@ void Strategy::pruneSplats(int iter) {
 
 void Strategy::removeSplats(const torch::Tensor& is_prune) {
     torch::NoGradGuard no_grad;
-    std::cout << "Remove splats" << std::endl;
+    LOG(INFO) << "Remove splats";
 
     // Flatten to 1D before nonzero to get proper 1D indices
     const torch::Tensor sampled_idxs = is_prune.flatten().logical_not().nonzero().squeeze(-1);
-    std::cout << "Sampled idxs: " << sampled_idxs.sizes() << std::endl;
+    LOG(INFO) << "Sampled idxs: " << sampled_idxs.sizes();
 
     const auto param_fn = [&sampled_idxs](const int i, const torch::Tensor param) {
-        std::cout << "Param fn " << i << " " << param.sizes() << std::endl;
+        LOG(INFO) << "Param fn " << i << " " << param.sizes();
         return param.index_select(0, sampled_idxs).set_requires_grad(param.requires_grad());
     };
 
@@ -454,7 +462,7 @@ void Strategy::removeSplats(const torch::Tensor& is_prune) {
             torch::optim::OptimizerParamState& state,
             const torch::Tensor new_param) -> std::unique_ptr<torch::optim::OptimizerParamState> {
         auto* adam_state = dynamic_cast<torch::optim::AdamParamState*>(&state);
-        std::cout << "Doing state update" << std::endl;
+        LOG(INFO) << "Doing state update";
         // Standard Adam state
         auto new_exp_avg = adam_state->exp_avg().index_select(0, sampled_idxs);
         auto new_exp_avg_sq = adam_state->exp_avg_sq().index_select(0, sampled_idxs);

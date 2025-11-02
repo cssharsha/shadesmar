@@ -13,8 +13,8 @@ class Strategy {
 public:
     static struct Config {
         int max_iterations = 1000;        // set from the training config rather than from here
-        int reset_after_iterations = 10;  // Increased from 10 to reduce densification frequency
-        int refine_start_iteration = 10;  // Don't densify before this iteration
+        int reset_after_iterations = 50;  // Increased from 10 to reduce densification frequency
+        int refine_start_iteration = 50;  // Don't densify before this iteration
         int64_t max_splat_count = 75000;  // Maximum number of splats to prevent OOM
         double grad_threshold = 0.0002;   // from the paper
         double grow_scale3d = 0.1;        // from the paper

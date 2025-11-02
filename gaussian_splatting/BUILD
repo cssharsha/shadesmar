@@ -3,6 +3,14 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Common tensor configuration (central dtype control)
+cc_library(
+    name = "tensor_config",
+    hdrs = ["common/tensor_config.hpp"],
+    deps = ["@libtorch//:torch"],
+    visibility = ["//visibility:public"],
+)
+
 # Training configuration
 cc_library(
     name = "training_config",
@@ -24,12 +32,13 @@ cc_library(
         "training/gaussian_tensors.hpp",
     ],
     deps = [
+        ":tensor_config",
         ":training_config",
         "//core/types",
         "//core/storage",
         "@libtorch//:torch",
         "@opencv//:core",
-        "@opencv//:imgproc", 
+        "@opencv//:imgproc",
         "//common:logging",
     ],
 )
@@ -41,6 +50,7 @@ cc_library(
     hdrs = ["visualization/training_visualizer.hpp"],
     deps = [
         ":keyframe_batch",
+        ":utils",
         "//viz:rerun_viz",
         "//core/types",
         "@opencv//:core",
@@ -55,6 +65,7 @@ cc_library(
     srcs = ["training/batch_trainer.cpp"],
     hdrs = ["training/batch_trainer.hpp"],
     deps = [
+        ":tensor_config",
         ":training_config",
         ":utils",
         ":parameter_transforms",
@@ -76,6 +87,7 @@ cc_library(
     srcs = ["optimization/parameter_transforms.cpp"],
     hdrs = ["optimization/parameter_transforms.hpp"],
     deps = [
+        ":tensor_config",
         "@libtorch//:torch",
         "//common:logging",
     ],
@@ -107,6 +119,7 @@ cc_library(
     srcs = ["optimization/loss_functions.cpp"],
     hdrs = ["optimization/loss_functions.hpp"],
     deps = [
+        ":tensor_config",
         ":fused_ssim",
         ":utils",
         "@libtorch//:torch",
@@ -120,6 +133,7 @@ cc_library(
     srcs = ["optimization/optimizer.cpp"],
     hdrs = ["optimization/optimizer.hpp"],
     deps = [
+        ":tensor_config",
         "@libtorch//:torch",
         ":keyframe_batch",
     ],
@@ -137,6 +151,7 @@ cc_library(
         "optimization/strategy.hpp",
     ],
     deps = [
+        ":tensor_config",
         ":keyframe_batch",
         ":optimizer",
         ":rasterizer",
@@ -179,6 +194,7 @@ cc_library(
     srcs = ["optimization/densification_controller.cpp"],
     hdrs = ["optimization/densification_controller.hpp"],
     deps = [
+        ":tensor_config",
         ":training_config",
         ":utils",
         "@libtorch//:torch",
@@ -225,6 +241,7 @@ cc_library(
         "rendering/rasterizer.hpp",
     ],
     deps = [
+        ":tensor_config",
         ":utils",
         ":keyframe_batch",
         "//core/types",
@@ -368,6 +385,16 @@ cc_binary(
     srcs = ["gs_processor_standalone_main.cpp"],
     deps = [
         ":standalone_gs",
+        "//viz:visualize_gs_rerun",
+        "//core/storage",
+        "//common:logging",
+    ],
+)
+cc_binary(
+    name = "streaming_gs_processor_main",
+    srcs = ["gs_processor_streaming_main.cpp"],
+    deps = [
+        ":streaming_gs_processor",
         "//viz:visualize_gs_rerun",
         "//core/storage",
         "//common:logging",

@@ -10,12 +10,15 @@ class Optimizer {
 public:
     static struct Config {
         int max_iterations = 100;
-        float learning_rate = 0.01f;
-        float positions_lr = 0.01f;
-        float rotations_lr = 0.01f;
-        float scales_lr = 0.01f;
-        float opacities_lr = 0.01f;
-        float sh_coefficients_lr = 0.01f;
+        float learning_rate = 0.01f;  // General LR, not used for gaussians
+        // Standard learning rates from gsplat reference implementation
+        // Note: positions_lr will be scaled by scene_scale in initialize()
+        float positions_lr = 1.6e-4f;      // 0.00016 - scaled by scene_scale
+        float rotations_lr = 1.0e-3f;      // 0.001
+        float scales_lr = 5.0e-3f;         // 0.005
+        float opacities_lr = 5.0e-2f;      // 0.05
+        float sh_coefficients_lr = 2.5e-3f; // 0.0025
+        // Note: sh_N uses sh_coefficients_lr / 20 in initialize()
     } config;
 
     Optimizer() = default;

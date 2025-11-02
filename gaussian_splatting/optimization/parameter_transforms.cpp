@@ -1,5 +1,6 @@
 #include "parameter_transforms.hpp"
 #include <logging/logging.hpp>
+#include "gaussian_splatting/common/tensor_config.hpp"
 
 namespace gaussian_splatting {
 namespace optimization {
@@ -33,7 +34,7 @@ torch::Tensor ParameterTransforms::inverseExponential(const torch::Tensor& scali
 
 torch::Tensor ParameterTransforms::clipGradients(const torch::Tensor& gradients, float max_norm) {
     auto grad_norm = torch::norm(gradients);
-    if (grad_norm.item<float>() > max_norm) {
+    if (common::itemAs(grad_norm) > max_norm) {
         return gradients * (max_norm / grad_norm);
     }
     return gradients;

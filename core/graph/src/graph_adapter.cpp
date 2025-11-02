@@ -270,11 +270,10 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
             }
         }
 
-        // Check if we can process ORB features (need current frame N and previous frame N-1)
-        if (keyframe_ids_with_images_.size() >= 2 &&
+        if (keyframe_ids_with_images_.size() >= 5 &&
             keyframe_ids_with_images_.back() == current_keyframe_id_) {
             auto previous_kf_id =
-                keyframe_ids_with_images_.at(keyframe_ids_with_images_.size() - 2);
+                keyframe_ids_with_images_.at(keyframe_ids_with_images_.size() - 5);
             auto current_frame_for_orb = getKeyFrameFromAnyQueue(current_keyframe_id_);  // Frame N
             auto previous_frame_for_orb = getKeyFrameFromAnyQueue(previous_kf_id);
 
@@ -284,13 +283,21 @@ void GraphAdapter::addKeyframeToGraph(const std::shared_ptr<types::KeyFrame>& ke
                     LOG(INFO) << "Processing ORB features for frames " << previous_kf_id << " → "
                               << current_keyframe_id_;
 
-                    // Get current map keypoints (includes both local and MapStore keypoints)
                     auto current_map_keypoints = getMapPointsCopy();
                     size_t keypoints_before_orb = current_map_keypoints.size();
 
-                    // Process ORB features - this will add new keypoints and update existing ones
-                    orb_tracker_(*current_frame_for_orb, *previous_frame_for_orb,
-                                 current_map_keypoints);
+                    // orb_tracker_(*current_frame_for_orb, *previous_frame_for_orb,
+                    //              current_map_keypoints);
+                    std::vector<Eigen::Vector3d> world_points;
+                    auto pose = orb_tracker_.match(*previous_frame_for_orb, *current_frame_for_orb,
+                                                   current_map_keypoints, world_points);
+                    // auto pose =
+                    //     sift_tracker_.match(*current_frame_for_orb, *previous_frame_for_orb);
+                    // auto pose = klt_tracker_.match(*current_frame_for_orb,
+                    // *previous_frame_for_orb);
+                    if (callbacks_.on_tracked_keyframe) {
+                        callbacks_.on_tracked_keyframe(*current_frame_for_orb, world_points);
+                    }
 
                     LOG(INFO) << "ORB tracking updated keypoints: " << keypoints_before_orb << " → "
                               << current_map_keypoints.size() << " (added "

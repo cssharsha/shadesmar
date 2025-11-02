@@ -76,6 +76,7 @@ void StandaloneGs::initializeStore() {
             exit(0);
         }
 
+        map_store_->syncIndexFromDisk();
         // tf_tree_ = map_store_->getTransformTree();
         // if (!tf_tree_) {
         //     std::cerr << "Failed to load tf tree" << std::endl;
@@ -84,12 +85,9 @@ void StandaloneGs::initializeStore() {
         // tf_tree_->printTree();
         tf_tree_ = std::make_shared<stf::TransformTree>();
         tf_tree_->setTransform("base_link", "camera", Eigen::Isometry3d::Identity());
-        // tf_tree_->setTransform("camera", "base_link", Eigen::Isometry3d::Identity());
         batch_trainer_ =
             std::make_unique<training::BatchTrainer>(training_config_, map_store_, tf_tree_);
         std::cout << "Batch trainer inited" << std::endl;
-
-        map_store_->syncIndexFromDisk();
 
         initializeVisualization();
         std::cout << "Finished visualizing" << std::endl;
@@ -124,66 +122,195 @@ bool StandaloneGs::loadAndTrain() {
         std::cerr << "BatchTrainer not initialized" << std::endl;
         return false;
     }
-    std::cout << "Loading and training" << std::endl;
+    std::cout << "Loading and training with spatial partitioning" << std::endl;
 
     std::vector<uint64_t> keyframe_ids;
-
     auto current_timestamp = getCurrentTimestamp();
-    core::types::GaussianSplatBatch splat_batch;
-    if (!intializeSplatsFromKeypoints(map_store_, batch_id_, current_timestamp, splat_batch,
-                                      next_splat_id_, keyframe_ids)) {
-        std::cout << "Unbale to load and init gaus splats" << std::endl;
+
+    // Initialize all splats from keypoints
+    core::types::GaussianSplatBatch full_splat_batch;
+    utils::PointCloudUtils point_cloud_utils;
+
+    auto all_keypoints = map_store_->getAllKeyPoints();
+    std::cout << "Total keypoints before filtering: " << all_keypoints.size() << std::endl;
+
+    // Filter out keypoints that need triangulation
+    std::vector<core::types::Keypoint> valid_keypoints;
+    for (const auto& keypoint : all_keypoints) {
+        if (!keypoint.needs_triangulation) {
+            valid_keypoints.push_back(keypoint);
+        }
+    }
+    std::cout << "Valid keypoints (after triangulation filter): " << valid_keypoints.size()
+              << std::endl;
+
+    // Build initial point cloud for computing center
+    utils::PointCloudUtils temp_point_cloud;
+    for (const auto& keypoint : valid_keypoints) {
+        temp_point_cloud.addPoint(keypoint.position.x(), keypoint.position.y(),
+                                  keypoint.position.z());
+    }
+    temp_point_cloud.setupKDTree();
+
+    // Compute initial bounding box and center
+    auto initial_bbox = temp_point_cloud.computeBoundingBox();
+    Eigen::Vector3f scene_center = initial_bbox.center();
+    std::cout << "Initial scene center: [" << scene_center.transpose() << "]" << std::endl;
+
+    // Filter keypoints by distance from center (default 30m)
+    std::cout << "\n=== Filtering keypoints by distance from center ===" << std::endl;
+    valid_keypoints = filterKeypointsByDistanceFromCenter(valid_keypoints, scene_center, 45.0f);
+
+    // Build point cloud with filtered keypoints for density check
+    for (const auto& keypoint : valid_keypoints) {
+        point_cloud_utils.addPoint(keypoint.position.x(), keypoint.position.y(),
+                                   keypoint.position.z());
+    }
+    point_cloud_utils.setupKDTree();
+
+    // Filter sparse/non-dense keypoints
+    std::cout << "\n=== Filtering sparse keypoints ===" << std::endl;
+    valid_keypoints = filterSparseKeypoints(valid_keypoints, point_cloud_utils, 10, 2.0f);
+
+    // Rebuild point cloud with final filtered keypoints
+    point_cloud_utils.reset();
+    for (const auto& keypoint : valid_keypoints) {
+        point_cloud_utils.addPoint(keypoint.position.x(), keypoint.position.y(),
+                                   keypoint.position.z());
+    }
+    point_cloud_utils.setupKDTree();
+
+    std::cout << "\n=== Final filtered keypoint count: " << valid_keypoints.size()
+              << " ===" << std::endl;
+
+    // Initialize full splat batch from filtered keypoints
+    if (!intializeSplatsFromKeypoints(valid_keypoints, batch_id_, current_timestamp,
+                                      full_splat_batch, next_splat_id_, point_cloud_utils)) {
+        std::cout << "Unable to load and init gaussian splats" << std::endl;
         return false;
     }
-    training_visualizer_->visualizeCurrentSplats(splat_batch, 0);
-    // while (true) {
-    //     std::cout << "Press c to continue" << std::endl;
-    //     auto c = getchar();
-    //     if (c == 'c') {
-    //         break;
-    //     }
-    //
-    //     std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    std::cout << "Initialized " << full_splat_batch.splats.size() << " splats" << std::endl;
+
+    auto all_keyframes = map_store_->getAllKeyFrames();
+    LOG(INFO) << "Training with " << all_keyframes.size() << " keyframes";
+
+    // Partition scene into radial sectors with shared center (outside-in viewing)
+    // Using more sectors to reduce memory consumption per region
+    // auto regions = partitionKeyframesIntoRadialSectors(all_keyframes, valid_keypoints,
+    // 16, 22.5f);
+    auto regions = partitionKeyframesIntoRadialSectors(all_keyframes, valid_keypoints, 1, 22.5f);
+
+    training_visualizer_->visualizeCurrentSplats(full_splat_batch, 0);
+    // for (size_t i = 0; i < regions.size(); i++) {
+    //     std::string name = "/bbox_" + std::to_string(i);
+    //     training_visualizer_->visualizeBBox(regions[i].bbox_3d, name);
     // }
-    // exit(0);
 
     try {
-        std::cout << "Batch first point: " << splat_batch.splats[0].position.transpose()
-                  << std::endl;
-        auto all_keyframes = map_store_->getAllKeyFrames();
-        LOG(INFO) << "Training with " << all_keyframes.size() << " keyframes";
-        std::cout << "Training with " << all_keyframes.size() << " keyframes" << std::endl;
-        // for (auto& kf : all_keyframes) {
-        // std::cout << "Enqueueing keyframe " << kf->id << std::endl;
-        training::TrainingResults results;
-        // batch_trainer_->trainKeyframe(kf, results);
-        batch_trainer_->setupTraining(splat_batch);
-        int iteration = 0;
-        for (auto& kf : all_keyframes) {
-            batch_trainer_->trainKeyframe(kf, results, iteration);
-            iteration++;
-            std::cout << "Image size: " << results.rendered_image.sizes() << std::endl;
-            auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
-            std::string entity_path = "/camera";
+        // Train each region separately
+        for (size_t region_idx = 0; region_idx < regions.size(); ++region_idx) {
+            const auto& region = regions[region_idx];
 
-            // TODO: Optimize this - copySplatsToBatch causes GPU->CPU->GPU transfer every
-            // iteration! Only visualize splats periodically to avoid memory overhead
-            batch_trainer_->copySplatsToBatch(splat_batch.splats);
-            std::cout << "Splats: " << splat_batch.splats.size() << std::endl;
-            training_visualizer_->visualizeCurrentSplats(splat_batch, 0);
+            std::cout << "\n=== Training Region " << (region_idx + 1) << "/" << regions.size()
+                      << " ===" << std::endl;
+            std::cout << "Region " << region.region_id << " bounds: min["
+                      << region.bbox_3d.min.transpose() << "] max["
+                      << region.bbox_3d.max.transpose() << "]" << std::endl;
+            training_visualizer_->visualizeBBox(region.bbox_3d, "/bbox");
 
-            training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(), entity_path);
-            training_visualizer_->logImage(entity_path, rendered_image, 0);
-            utils::writeImageToDirectory(rendered_image, "/data/south-building/debug/rendered/",
-                                         std::to_string(kf->id) + ".png");
+            // Filter splats for this region
+            auto region_splat_batch = filterSplatsByBoundingBox(full_splat_batch, region.bbox_3d);
+
+            if (region_splat_batch.splats.empty()) {
+                std::cout << "No splats in region " << (region_idx + 1) << ", skipping..."
+                          << std::endl;
+                continue;
+            }
+
+            std::cout << "Training region " << (region_idx + 1) << " with "
+                      << region_splat_batch.splats.size() << " splats and "
+                      << region.keyframe_ids.size() << " keyframes" << std::endl;
+
+            // Setup training for this region
+            batch_trainer_->setupTraining(region_splat_batch);
+
+            // Visualize region splats
+            training_visualizer_->visualizeCurrentSplats(region_splat_batch, region_idx);
+
+            // Train with keyframes in this region for N epochs
+            training::TrainingResults results;
+            const int num_epochs = 200;
+
+            // Collect keyframe pointers for this region
+            std::vector<core::types::KeyFrame::Ptr> region_keyframes;
+            for (const auto& kf_id : region.keyframe_ids) {
+                auto kf_it = std::find_if(all_keyframes.begin(), all_keyframes.end(),
+                                          [kf_id](const auto& kf) { return kf->id == kf_id; });
+                if (kf_it != all_keyframes.end()) {
+                    region_keyframes.push_back(*kf_it);
+                }
+            }
+
+            if (region_keyframes.empty()) {
+                std::cout << "No valid keyframes in region " << (region_idx + 1) << ", skipping..."
+                          << std::endl;
+                continue;
+            }
+
+            std::cout << "Training for " << num_epochs << " epochs with " << region_keyframes.size()
+                      << " keyframes" << std::endl;
+
+            // Training loop: run for num_epochs iterations
+            for (int iteration = 0; iteration < num_epochs; ++iteration) {
+                // Randomly select a keyframe from this region
+                int random_idx = std::rand() % region_keyframes.size();
+                auto& kf = region_keyframes[random_idx];
+
+                batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
+
+                if (iteration % 10 == 0) {
+                    std::cout << "Region " << (region_idx + 1) << " - Epoch " << iteration << "/"
+                              << num_epochs << std::endl;
+                }
+
+                // Visualize results periodically
+                // if (iteration % 50 == 0) {
+                auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
+                std::string entity_path = "/camera/region_" + std::to_string(region_idx);
+
+                batch_trainer_->copySplatsToBatch(region_splat_batch.splats);
+                training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(), entity_path);
+                training_visualizer_->logImage(entity_path, rendered_image, region_idx);
+                // }
+            }
+
+            // Copy trained splats back to full batch
+            batch_trainer_->copySplatsToBatch(region_splat_batch.splats);
+            for (size_t i = 0; i < region_splat_batch.splats.size(); ++i) {
+                // Find and update the corresponding splat in full batch
+                auto splat_it = std::find_if(
+                    full_splat_batch.splats.begin(), full_splat_batch.splats.end(),
+                    [&](const auto& s) { return s.id == region_splat_batch.splats[i].id; });
+                if (splat_it != full_splat_batch.splats.end()) {
+                    *splat_it = region_splat_batch.splats[i];
+                }
+            }
+            training_visualizer_->visualizeCurrentSplats(region_splat_batch, region_idx);
+
+            std::cout << "Finished training region " << (region_idx + 1) << std::endl;
         }
 
-        std::cout << "Finished logging " << std::endl;
-        // }
+        std::cout << "\n=== Finished training all regions ===" << std::endl;
+
+        // Final visualization with all trained splats
+        training_visualizer_->visualizeCurrentSplats(full_splat_batch, 0);
+
     } catch (const std::exception& e) {
-        std::cerr << "Exception in executeIncrementalTraining: " << e.what() << std::endl;
+        std::cerr << "Exception in loadAndTrain: " << e.what() << std::endl;
         return false;
     }
+
     return true;
 }
 

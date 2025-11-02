@@ -82,3 +82,17 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [":core"],
 )
+
+# cc_library(
+#     name = "video",
+#     srcs = glob([
+#         "lib/x86_64-linux-gnu/libopencv_video.so*",
+#     ]),
+#     hdrs = glob([
+#         "include/opencv4/opencv2/**/*.hpp",
+#         "include/opencv4/opencv2/**/*.h",
+#     ]),
+#     includes = ["include/opencv4"],
+#     visibility = ["//visibility:public"],
+#     deps = [":core", ":imgproc"],
+# )

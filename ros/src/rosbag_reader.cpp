@@ -64,6 +64,13 @@ RosbagReader::RosbagReader(const std::string& bagfile, core::storage::MapStore& 
         }
     };
 
+    callbacks.on_tracked_keyframe = [this](const core::types::KeyFrame& keyframe,
+                                           std::vector<Eigen::Vector3d>& world_points) {
+        if (visualizer_ && visualizer_->isConnected()) {
+            visualizer_->visualizeTrackedKeyframe(keyframe, world_points);
+        }
+    };
+
     graph_adapter_.setCallbacks(callbacks);
 }
 

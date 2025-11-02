@@ -26,6 +26,17 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
                                   core::types::GaussianSplatBatch& splat_batch,
                                   std::atomic<uint64_t>& next_splat_id,
                                   utils::PointCloudUtils& point_cloud_utils);
+bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keypoints,
+                                  const uint64_t& current_batch_id, double& current_timestamp,
+                                  core::types::GaussianSplatBatch& splat_batch,
+                                  std::atomic<uint64_t>& next_splat_id,
+                                  utils::PointCloudUtils& point_cloud_utils);
+bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keypoints,
+                                  std::shared_ptr<core::storage::MapStore>& map_store,
+                                  const uint64_t& current_batch_id, double& current_timestamp,
+                                  core::types::GaussianSplatBatch& splat_batch,
+                                  std::atomic<uint64_t>& next_splat_id,
+                                  utils::PointCloudUtils& point_cloud_utils);
 bool initializeRandomSplats(const std::vector<uint64_t>& keyframe_ids,
                             std::shared_ptr<core::storage::MapStore>& map_store,
                             const uint64_t& current_batch_id, double& current_timestamp,
@@ -75,5 +86,59 @@ Eigen::Vector3f generateRandomPosition(const Eigen::Vector3f& min_bounds,
 Eigen::Vector3f generateRandomColor();
 Eigen::Matrix3d generateInitialCovariance();
 float generateInitialOpacity();
+
+// Spatial partitioning utilities
+core::types::GaussianSplatBatch filterSplatsByBoundingBox(
+    const core::types::GaussianSplatBatch& splat_batch,
+    const utils::BoundingBox& bbox);
+
+std::vector<uint64_t> findKeyframesViewingRegion(
+    const std::vector<core::types::KeyFrame::Ptr>& all_keyframes,
+    const utils::BoundingBox& bbox,
+    float viewing_distance_threshold = 50.0f);
+
+bool isRegionVisibleFromKeyframe(
+    const core::types::KeyFrame::Ptr& keyframe,
+    const utils::BoundingBox& bbox,
+    float viewing_distance_threshold = 50.0f);
+
+// Keypoint outlier filtering
+std::vector<core::types::Keypoint> filterKeypointsByDistanceFromCenter(
+    const std::vector<core::types::Keypoint>& keypoints,
+    const Eigen::Vector3f& center,
+    float max_distance = 30.0f);
+
+std::vector<core::types::Keypoint> filterSparseKeypoints(
+    const std::vector<core::types::Keypoint>& keypoints,
+    utils::PointCloudUtils& point_cloud_utils,
+    int k_neighbors = 10,
+    float density_threshold = 1.0f);
+
+// Keyframe-based spatial partitioning
+struct KeyframeRegion {
+    utils::BoundingBox bbox_3d;  // 3D bounding box for this region
+    std::vector<uint64_t> keyframe_ids;  // Keyframes in this region
+    Eigen::Vector2f center_2d;  // 2D center in the dominant plane
+    int region_id;
+};
+
+// Detect dominant 2D plane from keyframe positions (returns primary and secondary axes)
+// Returns: pair of (primary_axis, secondary_axis) where each is 0=X, 1=Y, 2=Z
+std::pair<int, int> detectDominant2DPlane(
+    const std::vector<core::types::KeyFrame::Ptr>& keyframes);
+
+// Partition keyframes into 2D grid regions along the dominant plane
+std::vector<KeyframeRegion> partitionKeyframesInto2DGrid(
+    const std::vector<core::types::KeyFrame::Ptr>& keyframes,
+    const std::vector<core::types::Keypoint>& keypoints,
+    int grid_rows = 3,
+    int grid_cols = 3);
+
+// Partition keyframes into radial sectors around a shared center (for outside-in viewing)
+std::vector<KeyframeRegion> partitionKeyframesIntoRadialSectors(
+    const std::vector<core::types::KeyFrame::Ptr>& keyframes,
+    const std::vector<core::types::Keypoint>& keypoints,
+    int num_sectors = 8,
+    float overlap_angle = 30.0f);  // Overlap in degrees
 
 }  // namespace gaussian_splatting

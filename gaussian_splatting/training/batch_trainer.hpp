@@ -18,8 +18,8 @@
 #include "gaussian_splatting/training/gaussian_tensors.hpp"
 #include "gaussian_splatting/training/keyframe_batch.hpp"
 #include "gaussian_splatting/training/keyframe_tensor.hpp"
+#include "gaussian_splatting/training/training_config.hpp"
 #include "gaussian_splatting/visualization/training_visualizer.hpp"
-#include "training_config.hpp"
 
 namespace gaussian_splatting {
 namespace training {
@@ -47,7 +47,8 @@ public:
                     const training::KeyframeBatch& keyframe_batch, TrainingResults& results,
                     std::shared_ptr<visualization::RerunTrainingVisualizer> viz = nullptr);
     bool trainKeyframe(const core::storage::KeyFramePtr& keyframe, TrainingResults& result,
-                       int iteration = 0);
+                       int iteration = 0,
+                       std::shared_ptr<visualization::RerunTrainingVisualizer> viz = nullptr);
 
     // Load batch and setup for training
     bool setupBatchForTraining(const core::types::GaussianSplatBatch& batch,

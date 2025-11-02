@@ -15,6 +15,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <rerun.hpp>
 #include <rerun/archetypes/image.hpp>
+#include <rerun/archetypes/scalar.hpp>
 #include <rerun/archetypes/transform3d.hpp>
 #include <rerun/datatypes/quaternion.hpp>
 #include <rerun/datatypes/vec3d.hpp>
@@ -66,8 +67,8 @@ bool RerunVisualizer::initialize(bool save_to_file) {
             LOG(INFO) << "RerunVisualizer initialized. Logging to "
                       << (save_to_file ? "file." : "spawned/connected viewer.");
         }
-        rec_.log_static("/", rerun::ViewCoordinates::RDF);
-        // rec_.log_static("/", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
+        // rec_.log_static("/", rerun::ViewCoordinates::RDF);
+        rec_.log_static("/", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
         return is_connected_;
     } catch (const std::exception& e) {
         LOG(ERROR) << "Exception during RerunVisualizer::initialize: " << e.what();
@@ -88,6 +89,18 @@ void RerunVisualizer::disconnect() {
         }
         is_connected_ = false;
     }
+}
+
+void RerunVisualizer::addBoundingBox(Eigen::Vector3f& center, Eigen::Vector3f& half_size,
+                                     const std::string& name) {
+    std::cout << "Adding bounding box to Rerun visualizer with center: " << center.transpose()
+              << " half size: " << half_size.transpose() << std::endl;
+    if (!is_connected_)
+        return;
+
+    auto bbox = rerun::Boxes3D::from_centers_and_half_sizes(
+        {{center.x(), center.y(), center.z()}}, {{half_size.x(), half_size.y(), half_size.z()}});
+    rec_.log(name, bbox);
 }
 
 void RerunVisualizer::addPose(const core::types::Pose& pose, const std::string& entity_path,
@@ -550,6 +563,106 @@ void RerunVisualizer::visualizeFromStorage(const core::storage::MapStore& map_st
               << ", Map points: " << map_points.size();
 }
 
+void RerunVisualizer::visualizeTrackedKeyframe(const core::types::KeyFrame& keyframe,
+                                               std::vector<Eigen::Vector3d>& world_points) {
+    if (!is_connected_) {
+        return;
+    }
+    const auto& image_data = keyframe.getColorImage();
+    const auto& K = keyframe.getCameraInfo();
+    auto getStaticTransform = [&](const std::string& source, const std::string& target,
+                                  stf::TransformTree::TransformResult& transform) {
+        try {
+            LOG(INFO) << "DEBUG: Transform query - original: '" << source << "' -> '" << target
+                      << "'";
+
+            // First try without cleaning (original frame names)
+            try {
+                transform = transform_tree_->getTransform(source, target);
+                LOG(INFO) << "DEBUG: Transform query SUCCEEDED (original names)";
+                return true;
+            } catch (const std::exception& e1) {
+                LOG(INFO) << "DEBUG: Transform query failed with original names: " << e1.what();
+            }
+
+            // Then try with cleaned names (remove leading slashes)
+            std::string clean_source = source;
+            std::string clean_target = target;
+            if (!clean_source.empty() && clean_source[0] == '/') {
+                clean_source = clean_source.substr(1);
+            }
+            if (!clean_target.empty() && clean_target[0] == '/') {
+                clean_target = clean_target.substr(1);
+            }
+
+            if (clean_source != source || clean_target != target) {
+                LOG(INFO) << "DEBUG: Trying cleaned names: '" << clean_source << "' -> '"
+                          << clean_target << "'";
+                transform = transform_tree_->getTransform(clean_source, clean_target);
+                LOG(INFO) << "DEBUG: Transform query SUCCEEDED (cleaned names)";
+                return true;
+            } else {
+                throw std::runtime_error("Transform not found with either naming convention");
+            }
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "Failed to get static transform from " << source << " to " << target
+                       << ": " << e.what();
+            return false;
+        }
+        return true;
+    };
+
+    try {
+        stf::TransformTree::TransformResult base_to_camera_result;
+        getStaticTransform(base_link_frame_id_, K.frame_id, base_to_camera_result);
+
+        auto camera = rerun::archetypes::Pinhole::from_focal_length_and_resolution(
+            {static_cast<float>(K.k[0]), static_cast<float>(K.k[4])},
+            {static_cast<float>(K.width), static_cast<float>(K.height)});
+
+        // Get base_link to camera transform
+        Eigen::Isometry3d base_to_camera_transform = base_to_camera_result.transform;
+        core::types::Pose base_to_camera_pose;
+        base_to_camera_pose.position = base_to_camera_transform.translation();
+        base_to_camera_pose.orientation = Eigen::Quaterniond(base_to_camera_transform.rotation());
+
+        // Compose: camera_pose_in_reference = pose_of_base_link_in_reference *
+        // base_link_to_camera
+        core::types::Pose camera_pose_in_reference = keyframe.pose * base_to_camera_pose;
+
+        std::string camera_path = "/" + reference_frame_id_ + "/camera";
+
+        addPose(camera_pose_in_reference, camera_path, current_timestamp_);
+        addCamera(camera, camera_path, current_timestamp_);
+        addImage(image_data.toCvMat(), camera_path, current_timestamp_);
+
+        LOG(INFO) << "DEBUG: Successfully published camera " << camera_path
+                  << " with image and pose for keyframe " << keyframe.id;
+    } catch (const std::exception& e) {
+        LOG(WARNING) << "Failed to get transform from " << base_link_frame_id_ << " to "
+                     << K.frame_id << " for camera visualization: " << e.what();
+    }
+
+    // Create entity path for this keyframe
+    std::string keyframe_entity_path =
+        "/" + reference_frame_id_ + "/tracked_keyframes/" + std::to_string(keyframe.id);
+
+    std::vector<rerun::datatypes::Vec3D> points;
+    for (const auto& point : world_points) {
+        points.emplace_back(rerun::datatypes::Vec3D{static_cast<float>(point.x()),
+                                                    static_cast<float>(point.y()),
+                                                    static_cast<float>(point.z())});
+    }
+
+    if (!points.empty()) {
+        rec_.log("/" + reference_frame_id_ + "/tracked_points",
+                 rerun::Points3D(points).with_colors(
+                     {rerun::components::Color(255, 0, 255)}));  // Magenta
+    }
+
+    LOG(INFO) << "Visualized tracked points for keyframe " << keyframe.id;
+}
+
 // void RerunVisualizer::setFrame() {
 //
 // }
@@ -715,6 +828,42 @@ void RerunVisualizer::visualizeGaussianSplatsFromStorage(const core::storage::Ma
 
     } catch (const std::exception& e) {
         LOG(ERROR) << "Exception in visualizeGaussianSplatsFromStorage: " << e.what();
+    }
+}
+
+void RerunVisualizer::logLoss(const std::string& entity_path, double value, int iteration) {
+    if (!is_connected_) {
+        return;
+    }
+
+    try {
+        // Set the timeline to the iteration number for proper time series plotting
+        rec_.set_time_sequence("iteration", iteration);
+
+        // Log the scalar value to create a time series plot
+        rec_.log(entity_path, rerun::Scalar(value));
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to log loss to " << entity_path << ": " << e.what();
+    }
+}
+
+void RerunVisualizer::logLoss(const std::string& entity_path, double value, int iteration,
+                               uint8_t r, uint8_t g, uint8_t b) {
+    if (!is_connected_) {
+        return;
+    }
+
+    try {
+        // Set the timeline to the iteration number for proper time series plotting
+        rec_.set_time_sequence("iteration", iteration);
+
+        // Log the scalar value with color
+        rec_.log(entity_path, rerun::Scalar(value),
+                 rerun::SeriesLine().with_color({r, g, b}));
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to log loss to " << entity_path << ": " << e.what();
     }
 }
 

@@ -322,6 +322,29 @@ void RerunTrainingVisualizer::visualizeCurrentSplats(
     }
 }
 
+void RerunTrainingVisualizer::visualizeBBox(const utils::BoundingBox& bbox, std::string name) {
+    std::lock_guard<std::mutex> lock(viz_mutex_);
+
+    if (!initialized_) {
+        return;
+    }
+    if (!rerun_viz_) {
+        return;
+    }
+
+    auto center = bbox.center();
+    Eigen::Vector3f half_size = bbox.size() / 2.0f;
+    try {
+        // Use RerunVisualizer's Gaussian splat method to render as proper ellipsoids with colors
+        auto now = std::chrono::system_clock::now();
+        double timestamp = std::chrono::duration<double>(now.time_since_epoch()).count();
+        rerun_viz_->addBoundingBox(center, half_size, name);
+
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to log bounding box " << name << ": " << e.what();
+    }
+}
+
 void RerunTrainingVisualizer::visualizeTrainingState(const std::string& state,
                                                      const std::string& details) {
     std::lock_guard<std::mutex> lock(viz_mutex_);
@@ -506,6 +529,35 @@ void RerunTrainingVisualizer::createLossCurveTimeSeries() {
             "Loss curves initialized for Gaussian Splatting training");
     logText("training/metrics/layout", "Training metrics initialized");
     logText("training/epochs/layout", "Epoch tracking initialized");
+}
+
+void RerunTrainingVisualizer::logLoss(const std::string& entity_path, double value, int iteration) {
+    std::lock_guard<std::mutex> lock(viz_mutex_);
+
+    if (!initialized_ || !rerun_viz_) {
+        return;
+    }
+
+    try {
+        rerun_viz_->logLoss(entity_path, value, iteration);
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to log loss to " << entity_path << ": " << e.what();
+    }
+}
+
+void RerunTrainingVisualizer::logLoss(const std::string& entity_path, double value, int iteration,
+                                      uint8_t r, uint8_t g, uint8_t b) {
+    std::lock_guard<std::mutex> lock(viz_mutex_);
+
+    if (!initialized_ || !rerun_viz_) {
+        return;
+    }
+
+    try {
+        rerun_viz_->logLoss(entity_path, value, iteration, r, g, b);
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to log loss to " << entity_path << ": " << e.what();
+    }
 }
 
 }  // namespace visualization

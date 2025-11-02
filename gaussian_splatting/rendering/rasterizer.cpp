@@ -3,6 +3,7 @@
 #include <Ops.h>  // mind the gsplat header!
 #include <logging/logging.hpp>
 
+#include "gaussian_splatting/common/tensor_config.hpp"
 #include "gaussian_splatting/gsplat/gsplat/cuda/include/Ops.h"
 #include "gaussian_splatting/rendering/rasterizer.hpp"
 #include "gaussian_splatting/utils/image_utils.hpp"
@@ -30,7 +31,7 @@ RasterizationOutput DifferentiableRasterizer::rasterize(GaussianTensors& gaussia
     opacities = torch::sigmoid(opacities);
 
     auto scales = gaussians.get_scales();
-    // scales = torch::exp(scales);
+    scales = torch::exp(scales);  // Convert from log-space to linear space
     //================= Step 1: Project Gaussians to 2D ==================
     ProjectGaussians::config.image_width = keyframe_tensor.getImageWidth();
     ProjectGaussians::config.image_height = keyframe_tensor.getImageHeight();
@@ -68,13 +69,13 @@ RasterizationOutput DifferentiableRasterizer::rasterize(GaussianTensors& gaussia
                          torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
 
         auto xys_cpu = xys.to(torch::kCPU);
-        auto xys_accessor = xys_cpu.accessor<float, 3>();
+        auto xys_accessor = common::accessorAs<3>(xys_cpu);
         std::cout << "xys size: " << xys_cpu.sizes() << std::endl;
 
         for (int i = 0; i < xys_cpu.size(1); i++) {
             auto xy = xys_cpu[0][i];
-            auto x = static_cast<size_t>(xy[0].item<float>());
-            auto y = static_cast<size_t>(xy[1].item<float>());
+            auto x = static_cast<size_t>(common::itemAs(xy[0]));
+            auto y = static_cast<size_t>(common::itemAs(xy[1]));
 
             if (x >= 0 && x < keyframe_tensor.getImageWidth() && y >= 0 &&
                 y < keyframe_tensor.getImageHeight()) {
@@ -123,8 +124,8 @@ RasterizationOutput DifferentiableRasterizer::rasterize(GaussianTensors& gaussia
     auto colors = SphericalHarmonics::apply(sh_degree_tensor, dirs, shs)[0];
     colors = torch::clamp_min(colors + 0.5f, 0.0f);
     std::cout << "Colors shape: " << colors.sizes() << std::endl;
-    std::cout << "Colors stats: Min=" << colors.min().item<float>()
-              << ", Max=" << colors.max().item<float>() << ", Mean=" << colors.mean().item<float>()
+    std::cout << "Colors stats: Min=" << common::itemAs(colors.min())
+              << ", Max=" << common::itemAs(colors.max()) << ", Mean=" << common::itemAs(colors.mean())
               << std::endl;
 
     // Visualize colors by rendering them at their projected 2D positions
@@ -155,15 +156,15 @@ RasterizationOutput DifferentiableRasterizer::rasterize(GaussianTensors& gaussia
         // Simple per-pixel color assignment
         for (int i = 0; i < xys_cpu.size(1); i++) {
             auto xy = xys_cpu[0][i];
-            int x = static_cast<int>(xy[0].item<float>());
-            int y = static_cast<int>(xy[1].item<float>());
+            int x = static_cast<int>(common::itemAs(xy[0]));
+            int y = static_cast<int>(common::itemAs(xy[1]));
 
             if (x >= 0 && x < static_cast<int>(keyframe_tensor.getImageWidth()) && y >= 0 &&
                 y < static_cast<int>(keyframe_tensor.getImageHeight())) {
                 // Get color for this Gaussian (colors_cpu is [1, N, 3], so index [0][i])
-                float r = colors_cpu[0][i][0].item<float>();
-                float g = colors_cpu[0][i][1].item<float>();
-                float b = colors_cpu[0][i][2].item<float>();
+                float r = common::itemAs(colors_cpu[0][i][0]);
+                float g = common::itemAs(colors_cpu[0][i][1]);
+                float b = common::itemAs(colors_cpu[0][i][2]);
                 float alpha = 1.0f;
 
                 // Accumulate color at this pixel
@@ -337,8 +338,8 @@ RasterizationOutput DifferentiableRasterizer::rasterize(GaussianTensors& gaussia
             "/data/south-building/debug/",
             std::to_string(keyframe_tensor.getKeyframeId()) + "_rendered_alpha.png");
 
-        auto alpha_mean = rendered_alpha.mean().item<float>();
-        auto alpha_max = rendered_alpha.max().item<float>();
+        auto alpha_mean = common::itemAs(rendered_alpha.mean());
+        auto alpha_max = common::itemAs(rendered_alpha.max());
         auto covered_pixels = (rendered_alpha > 0.1).sum().item<int64_t>();
         std::cout << "Alpha stats - Mean: " << alpha_mean << ", Max: " << alpha_max
                   << ", Covered pixels (alpha>0.1): " << covered_pixels << std::endl;
@@ -381,6 +382,16 @@ torch::autograd::tensor_list ProjectGaussians::forward(torch::autograd::Autograd
     opacities = opacities.contiguous();
     camera_pose = camera_pose.contiguous();
     camera_intrinsics = camera_intrinsics.contiguous();
+
+    // Debug: Check tensor dtypes before projection
+    std::cout << "=== Tensor dtypes before projection ===" << std::endl;
+    std::cout << "xyzs dtype: " << xyzs.dtype() << std::endl;
+    std::cout << "rotations dtype: " << rotations.dtype() << std::endl;
+    std::cout << "scales dtype: " << scales.dtype() << std::endl;
+    std::cout << "opacities dtype: " << opacities.dtype() << std::endl;
+    std::cout << "camera_pose dtype: " << camera_pose.dtype() << std::endl;
+    std::cout << "camera_intrinsics dtype: " << camera_intrinsics.dtype() << std::endl;
+    std::cout << "========================================" << std::endl;
 
     // Project 3D Gaussians to 2D
     auto proj_results = gsplat::projection_ewa_3dgs_fused_fwd(

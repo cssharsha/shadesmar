@@ -35,7 +35,19 @@ struct KeyframeDecision {
     std::string reason;
 };
 
+// DEBUG: Synthetic object for testing triangulation pipeline
+struct SyntheticObject {
+    std::string type;                             // "cube", "sphere", "pyramid", etc.
+    Eigen::Vector3d center;                       // World position
+    std::vector<Eigen::Vector3d> feature_points;  // 3D points on surface
+    Eigen::Vector3d color;                        // RGB color for visualization [0-1]
+    double scale;                                 // Size parameter
+};
+
 class OrbTracker {
+    // Friend declaration for test access
+    friend class OrbTrackerTriangulateTest;
+
 public:
     OrbTracker(uint32_t num_features = 2000, float scal_factor = 1.2f, uint32_t levels = 8);
 
@@ -75,8 +87,54 @@ public:
     void performDirectTriangulationWithMapStore(
         uint64_t current_kf_id, uint64_t previous_kf_id, const core::storage::MapStore& map_store,
         std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+    std::optional<core::types::Pose> match(const core::types::KeyFrame& prev_frame,
+                                           const core::types::KeyFrame& cur_frame,
+                                           std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+                                           std::vector<Eigen::Vector3d>& world_points);
+
+    // Triangulation method to convert matches to 3D world points (public for testing)
+    std::vector<Eigen::Vector3d> triangulateMatches(const std::vector<cv::Point2f>& prev_points,
+                                                    const std::vector<cv::Point2f>& cur_points,
+                                                    const core::types::KeyFrame& prev_frame,
+                                                    const core::types::KeyFrame& cur_frame,
+                                                    const cv::Mat& K);
+
+    // Triangulation method that also returns indices of valid triangulated points
+    std::vector<Eigen::Vector3d> triangulateMatches(const std::vector<cv::Point2f>& prev_points,
+                                                    const std::vector<cv::Point2f>& cur_points,
+                                                    const core::types::KeyFrame& prev_frame,
+                                                    const core::types::KeyFrame& cur_frame,
+                                                    const cv::Mat& K,
+                                                    std::vector<int>& valid_indices);
+
+    void generateSyntheticWallFeatures(const core::types::KeyFrame& prev_frame,
+                                       const core::types::KeyFrame& cur_frame, const cv::Mat& K,
+                                       std::vector<cv::Point2f>& prev_points,
+                                       std::vector<cv::Point2f>& cur_points,
+                                       std::vector<Eigen::Vector3d>& world_points);
+
+    void generateSyntheticObjectFeatures(const core::types::KeyFrame& prev_frame,
+                                         const core::types::KeyFrame& cur_frame, const cv::Mat& K,
+                                         std::vector<cv::Point2f>& prev_points,
+                                         std::vector<cv::Point2f>& cur_points,
+                                         std::vector<Eigen::Vector3d>& world_points,
+                                         std::vector<int>& object_ids);
+
+    Eigen::Vector3d getPixelColor(const core::types::KeyFrame& frame, float x, float y);
 
 private:
+    std::set<int> matchCurrentFrameWithMap(
+        const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
+        const core::types::KeyFrame& cur_frame, const cv::Mat& K,
+        std::map<uint32_t, core::types::Keypoint>& map_keypoints);
+
+    std::optional<core::types::Pose> matchRemainingWithPrevFrame(
+        const std::vector<cv::KeyPoint>& prev_img_kps, const cv::Mat& prev_img_desc,
+        const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
+        const std::set<int>& cur_matched_indices, const core::types::KeyFrame& prev_frame,
+        const core::types::KeyFrame& cur_frame, const cv::Mat& K,
+        std::map<uint32_t, core::types::Keypoint>& map_keypoints,
+        std::vector<Eigen::Vector3d>& world_points);
     std::map<std::string, core::types::CameraInfo> cam_infos_;
     std::map<std::string, core::types::Pose> cam_poses_;
     std::map<std::string, cv::Mat> projection_matrix_;

@@ -54,6 +54,8 @@ public:
                    double timestamp);
     void addCamera(const rerun::archetypes::Pinhole& camera, const std::string& entity_path,
                    double timestamp = 0);
+    void addBoundingBox(Eigen::Vector3f& center, Eigen::Vector3f& half_size,
+                        const std::string& name);
 
     void setTransformTree(std::shared_ptr<stf::TransformTree> transform_tree) {
         transform_tree_ = transform_tree;
@@ -75,6 +77,8 @@ public:
     void visualizeFromStorage(const core::storage::MapStore& map_store,
                               uint64_t current_keyframe_id, uint64_t previous_keyframe_id,
                               size_t trajectory_keyframe_count = 5);
+    void visualizeTrackedKeyframe(const core::types::KeyFrame& keyframe,
+                                  std::vector<Eigen::Vector3d>& world_points);
 
     // Gaussian splat visualization methods (primarily used by GaussianSplatRerunVisualizer)
     void addGaussianSplats(const std::vector<core::types::GaussianSplat>& splats,
@@ -83,6 +87,11 @@ public:
                                const std::string& entity_path, double timestamp);
     void visualizeGaussianSplatsFromStorage(const core::storage::MapStore& map_store,
                                             const std::string& entity_path = "gaussian_splats");
+
+    // Log scalar values for time series plots (e.g., losses)
+    void logLoss(const std::string& entity_path, double value, int iteration);
+    void logLoss(const std::string& entity_path, double value, int iteration,
+                 uint8_t r, uint8_t g, uint8_t b);
 
 private:
     std::string name_;

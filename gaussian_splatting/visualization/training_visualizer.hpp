@@ -12,6 +12,7 @@
 
 #include "core/types/gaussian_splat.hpp"
 #include "gaussian_splatting/training/keyframe_batch.hpp"
+#include "gaussian_splatting/utils/point_cloud_utils.hpp"
 #include "viz/rerun_viz.hpp"
 
 namespace gaussian_splatting {
@@ -98,6 +99,7 @@ public:
                                 uint32_t iteration);
     void visualizeCurrentSplats(const std::vector<core::types::GaussianSplat>& splats,
                                 uint32_t iteration);
+    void visualizeBBox(const utils::BoundingBox& bbox, std::string name = "bounding_box");
 
     // Training state visualization
     void visualizeTrainingState(const std::string& state, const std::string& details = "");
@@ -118,6 +120,11 @@ public:
     // Real-time updates
     void setCurrentTimestamp(double timestamp);
     void logImage(const std::string& entity_path, const cv::Mat& image, uint32_t step);
+
+    // Loss logging for time series plots
+    void logLoss(const std::string& entity_path, double value, int iteration);
+    void logLoss(const std::string& entity_path, double value, int iteration,
+                 uint8_t r, uint8_t g, uint8_t b);
 
 private:
     // Rerun visualization helpers

@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cstdint>
+#include <iomanip>
 #include <random>
 
 #include <logging/logging.hpp>
@@ -135,6 +137,141 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
         // std::cout << "Added splat: " << splat_batch.splats.back().id
         //           << " with position: " << splat_batch.splats.back().position.transpose()
         //           << std::endl;
+        keypoints_loaded++;
+        // Actual progress bar showing progress
+        float progress = static_cast<float>(keypoints_loaded) / keypoints_total;
+        int pos = static_cast<int>(barWidth * progress);
+        std::cout << "\r [";
+        for (int i = 0; i < barWidth; ++i) {
+            if (i < pos) {
+                std::cout << "=";
+            } else if (i == pos) {
+                std::cout << ">";
+            } else {
+                std::cout << " ";
+            }
+        }
+        std::cout << "] " << keypoints_loaded << " / " << keypoints_total << " keypoints loaded"
+                  << std::flush;
+    }
+    std::cout << std::endl;
+    return true;
+}
+
+bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keypoints,
+                                  const uint64_t& current_batch_id, double& current_timestamp,
+                                  core::types::GaussianSplatBatch& splat_batch,
+                                  std::atomic<uint64_t>& next_splat_id,
+                                  utils::PointCloudUtils& point_cloud_utils) {
+    std::cout << "Initialize splats from filtered keypoints" << std::endl;
+    std::cout << "Number of keypoints: " << keypoints.size() << std::endl;
+    if (keypoints.empty()) {
+        return false;
+    }
+
+    // Create splat batch from keypoints
+    splat_batch.batch_id = current_batch_id;
+    splat_batch.timestamp = current_timestamp;
+
+    // Progress bar for keypoints loaded
+    size_t keypoints_loaded = 0;
+    size_t keypoints_total = keypoints.size();
+    std::cout << "Loading " << keypoints_total << " filtered keypoints" << std::endl;
+    const int barWidth = 50;
+    point_cloud_utils.setupKDTree();
+
+    for (const auto& keypoint : keypoints) {
+        core::types::GaussianSplat splat;
+        splat.id = next_splat_id++;
+        splat.position = keypoint.position;
+        splat.source_keypoint_id = keypoint.id();
+
+        // Initialize color
+        splat.color = keypoint.color.cast<float>() / 255.0f;
+
+        splat.scale =
+            point_cloud_utils.computeScaleFromKNN(keypoint.position.cast<float>()).cast<double>();
+        splat.covariance = computeKeypointCovarianceUsingScale(keypoint, splat.scale.cast<float>());
+
+        // Initialize opacity and confidence
+        auto init_opacity = 0.1f;
+        splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        splat.confidence = computeInitialConfidence(keypoint);
+        splat.timestamp = current_timestamp;
+
+        // Initialize spherical harmonics coefficients (1st degree, 3 per channel)
+        splat.sh_coefficients = Eigen::VectorXf::Zero(6);
+
+        splat_batch.splats.push_back(splat);
+
+        keypoints_loaded++;
+        // Actual progress bar showing progress
+        float progress = static_cast<float>(keypoints_loaded) / keypoints_total;
+        int pos = static_cast<int>(barWidth * progress);
+        std::cout << "\r [";
+        for (int i = 0; i < barWidth; ++i) {
+            if (i < pos) {
+                std::cout << "=";
+            } else if (i == pos) {
+                std::cout << ">";
+            } else {
+                std::cout << " ";
+            }
+        }
+        std::cout << "] " << keypoints_loaded << " / " << keypoints_total << " keypoints loaded"
+                  << std::flush;
+    }
+    std::cout << std::endl;
+    return true;
+}
+
+bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keypoints,
+                                  std::shared_ptr<core::storage::MapStore>& map_store,
+                                  const uint64_t& current_batch_id, double& current_timestamp,
+                                  core::types::GaussianSplatBatch& splat_batch,
+                                  std::atomic<uint64_t>& next_splat_id,
+                                  utils::PointCloudUtils& point_cloud_utils) {
+    std::cout << "Initialize splats from filtered keypoints with color extraction" << std::endl;
+    std::cout << "Number of keypoints: " << keypoints.size() << std::endl;
+    if (keypoints.empty()) {
+        return false;
+    }
+
+    // Create splat batch from keypoints
+    splat_batch.batch_id = current_batch_id;
+    splat_batch.timestamp = current_timestamp;
+
+    // Progress bar for keypoints loaded
+    size_t keypoints_loaded = 0;
+    size_t keypoints_total = keypoints.size();
+    std::cout << "Loading " << keypoints_total << " filtered keypoints with color extraction" << std::endl;
+    const int barWidth = 50;
+    point_cloud_utils.setupKDTree();
+
+    for (const auto& keypoint : keypoints) {
+        core::types::GaussianSplat splat;
+        splat.id = next_splat_id++;
+        splat.position = keypoint.position;
+        splat.source_keypoint_id = keypoint.id();
+
+        // Extract color from keyframe observations (reads actual images from map_store)
+        splat.color = extractColorFromKeyframes(keypoint, map_store);
+
+        splat.scale =
+            point_cloud_utils.computeScaleFromKNN(keypoint.position.cast<float>()).cast<double>();
+        splat.covariance = computeKeypointCovarianceUsingScale(keypoint, splat.scale.cast<float>());
+
+        // Initialize opacity and confidence
+        auto init_opacity = 0.1f;
+        splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        splat.confidence = computeInitialConfidence(keypoint);
+        splat.timestamp = current_timestamp;
+
+        // Initialize spherical harmonics coefficients (1st degree, 3 per channel)
+        splat.sh_coefficients = Eigen::VectorXf::Zero(6);
+
+        splat_batch.splats.push_back(splat);
+
         keypoints_loaded++;
         // Actual progress bar showing progress
         float progress = static_cast<float>(keypoints_loaded) / keypoints_total;
@@ -527,6 +664,535 @@ float generateInitialOpacity() {
     float max_opacity = 0.8f;
 
     return min_opacity + uniform_dist(random_generator) * (max_opacity - min_opacity);
+}
+
+core::types::GaussianSplatBatch filterSplatsByBoundingBox(
+    const core::types::GaussianSplatBatch& splat_batch, const utils::BoundingBox& bbox) {
+    core::types::GaussianSplatBatch filtered_batch;
+    filtered_batch.batch_id = splat_batch.batch_id;
+    filtered_batch.timestamp = splat_batch.timestamp;
+    filtered_batch.start_keyframe_id = splat_batch.start_keyframe_id;
+    filtered_batch.end_keyframe_id = splat_batch.end_keyframe_id;
+    filtered_batch.source_keyframe_ids = splat_batch.source_keyframe_ids;
+
+    for (const auto& splat : splat_batch.splats) {
+        Eigen::Vector3f position = splat.position.cast<float>();
+        if (bbox.contains(position)) {
+            filtered_batch.splats.push_back(splat);
+        }
+    }
+
+    std::cout << "Filtered " << filtered_batch.splats.size() << " splats from "
+              << splat_batch.splats.size() << " in bounding box [" << bbox.min.transpose()
+              << "] to [" << bbox.max.transpose() << "]" << std::endl;
+
+    return filtered_batch;
+}
+
+bool isRegionVisibleFromKeyframe(const core::types::KeyFrame::Ptr& keyframe,
+                                 const utils::BoundingBox& bbox, float viewing_distance_threshold) {
+    if (!keyframe) {
+        return false;
+    }
+
+    Eigen::Vector3d camera_position = keyframe->pose.position;
+    Eigen::Vector3f camera_pos_f = camera_position.cast<float>();
+    Eigen::Vector3f bbox_center = bbox.center();
+
+    // Calculate distance from camera to bounding box center
+    float distance_to_center = (camera_pos_f - bbox_center).norm();
+
+    // Check if camera is within viewing distance threshold
+    if (distance_to_center > viewing_distance_threshold) {
+        return false;
+    }
+
+    // Check if the bounding box is in front of the camera
+    // Get camera forward direction (assuming camera looks along +Z in camera frame)
+    Eigen::Vector3d forward_world = keyframe->pose.orientation * Eigen::Vector3d(0, 0, 1);
+    Eigen::Vector3d to_bbox = (bbox_center.cast<double>() - camera_position).normalized();
+
+    // Check if the bounding box is roughly in the camera's field of view
+    // Use a generous angle (e.g., 120 degrees = cos(120) = -0.5)
+    double dot_product = forward_world.dot(to_bbox);
+    if (dot_product < -0.5) {
+        return false;  // Bounding box is behind the camera
+    }
+
+    return true;
+}
+
+std::vector<uint64_t> findKeyframesViewingRegion(
+    const std::vector<core::types::KeyFrame::Ptr>& all_keyframes, const utils::BoundingBox& bbox,
+    float viewing_distance_threshold) {
+    std::vector<uint64_t> viewing_keyframes;
+
+    for (const auto& keyframe : all_keyframes) {
+        if (isRegionVisibleFromKeyframe(keyframe, bbox, viewing_distance_threshold)) {
+            viewing_keyframes.push_back(keyframe->id);
+        }
+    }
+
+    std::cout << "Found " << viewing_keyframes.size() << " keyframes viewing region ["
+              << bbox.min.transpose() << "] to [" << bbox.max.transpose() << "]" << std::endl;
+
+    return viewing_keyframes;
+}
+
+std::vector<core::types::Keypoint> filterKeypointsByDistanceFromCenter(
+    const std::vector<core::types::Keypoint>& keypoints, const Eigen::Vector3f& center,
+    float max_distance) {
+    return keypoints;
+    std::vector<core::types::Keypoint> filtered_keypoints;
+    filtered_keypoints.reserve(keypoints.size());
+
+    size_t filtered_count = 0;
+    for (const auto& keypoint : keypoints) {
+        Eigen::Vector3f position = keypoint.position.cast<float>();
+        float distance = (position - center).norm();
+
+        if (distance <= max_distance) {
+            filtered_keypoints.push_back(keypoint);
+        } else {
+            filtered_count++;
+        }
+    }
+
+    std::cout << "Filtered " << filtered_count << " keypoints beyond " << max_distance
+              << "m from center [" << center.transpose() << "]" << std::endl;
+    std::cout << "Remaining keypoints: " << filtered_keypoints.size() << " / " << keypoints.size()
+              << std::endl;
+
+    return filtered_keypoints;
+}
+
+std::vector<core::types::Keypoint> filterSparseKeypoints(
+    const std::vector<core::types::Keypoint>& keypoints, utils::PointCloudUtils& point_cloud_utils,
+    int k_neighbors, float density_threshold) {
+    std::vector<core::types::Keypoint> filtered_keypoints;
+    filtered_keypoints.reserve(keypoints.size());
+
+    size_t sparse_count = 0;
+    std::vector<float> all_avg_distances;
+    all_avg_distances.reserve(keypoints.size());
+
+    std::cout << "\n=== Filtering sparse keypoints ===" << std::endl;
+    std::cout << "Keypoints: " << keypoints.size() << std::endl;
+
+    for (const auto& keypoint : keypoints) {
+        Eigen::Vector3f position = keypoint.position.cast<float>();
+
+        // Get k nearest neighbors
+        std::vector<int> indices;
+        std::vector<float> distances;
+        point_cloud_utils.getClosestPoint(position, indices, distances, k_neighbors + 1);
+
+        if (indices.size() < static_cast<size_t>(k_neighbors)) {
+            // Not enough neighbors, consider sparse
+            sparse_count++;
+            continue;
+        }
+
+        // Calculate average distance to k nearest neighbors
+        float avg_distance = 0.0f;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            avg_distance += std::sqrt(distances[i]);
+        }
+        avg_distance /= indices.size();
+        all_avg_distances.push_back(avg_distance);
+
+        // Keep points with high density (low average distance to neighbors)
+        if (avg_distance <= density_threshold) {
+            filtered_keypoints.push_back(keypoint);
+        } else {
+            sparse_count++;
+        }
+    }
+
+    std::cout << "Filtered " << sparse_count
+              << " sparse keypoints (density threshold: " << density_threshold << "m)" << std::endl;
+    std::cout << "Remaining keypoints: " << filtered_keypoints.size() << " / " << keypoints.size()
+              << std::endl;
+
+    // Compute and display histogram of average distances
+    if (!all_avg_distances.empty()) {
+        std::sort(all_avg_distances.begin(), all_avg_distances.end());
+
+        float min_dist = all_avg_distances.front();
+        float max_dist = all_avg_distances.back();
+        float median_dist = all_avg_distances[all_avg_distances.size() / 2];
+
+        std::cout << "\n=== Distance Statistics ===" << std::endl;
+        std::cout << "Min distance: " << min_dist << "m" << std::endl;
+        std::cout << "Max distance: " << max_dist << "m" << std::endl;
+        std::cout << "Median distance: " << median_dist << "m" << std::endl;
+
+        // Create histogram with 10 bins
+        const int num_bins = 10;
+        std::vector<int> histogram(num_bins, 0);
+        float bin_width = (max_dist - min_dist) / num_bins;
+
+        if (bin_width > 0) {
+            for (float dist : all_avg_distances) {
+                int bin = static_cast<int>((dist - min_dist) / bin_width);
+                bin = std::min(bin, num_bins - 1);  // Handle edge case for max value
+                histogram[bin]++;
+            }
+
+            std::cout << "\n=== Distance Histogram ===" << std::endl;
+            int max_count = *std::max_element(histogram.begin(), histogram.end());
+            const int bar_width = 50;
+
+            for (int i = 0; i < num_bins; ++i) {
+                float bin_start = min_dist + i * bin_width;
+                float bin_end = min_dist + (i + 1) * bin_width;
+
+                int bar_len = (max_count > 0) ? (histogram[i] * bar_width / max_count) : 0;
+
+                std::cout << std::fixed << std::setprecision(2);
+                std::cout << "[" << std::setw(6) << bin_start << " - " << std::setw(6) << bin_end
+                          << "): ";
+
+                for (int j = 0; j < bar_len; ++j) {
+                    std::cout << "#";
+                }
+                std::cout << " " << histogram[i] << std::endl;
+            }
+            std::cout << std::endl;
+        }
+    }
+
+    return filtered_keypoints;
+}
+
+std::pair<int, int> detectDominant2DPlane(
+    const std::vector<core::types::KeyFrame::Ptr>& keyframes) {
+    if (keyframes.empty()) {
+        return {0, 1};  // Default to XY plane
+    }
+
+    // Collect all keyframe positions
+    std::vector<Eigen::Vector3f> positions;
+    positions.reserve(keyframes.size());
+    for (const auto& kf : keyframes) {
+        positions.push_back(kf->pose.position.cast<float>());
+    }
+
+    // Compute variance along each axis
+    Eigen::Vector3f mean = Eigen::Vector3f::Zero();
+    for (const auto& pos : positions) {
+        mean += pos;
+    }
+    mean /= positions.size();
+
+    Eigen::Vector3f variance = Eigen::Vector3f::Zero();
+    for (const auto& pos : positions) {
+        Eigen::Vector3f diff = pos - mean;
+        variance += diff.cwiseProduct(diff);
+    }
+    variance /= positions.size();
+
+    std::cout << "\n=== Keyframe Position Variance Analysis ===" << std::endl;
+    std::cout << "Variance along X: " << variance.x() << std::endl;
+    std::cout << "Variance along Y: " << variance.y() << std::endl;
+    std::cout << "Variance along Z: " << variance.z() << std::endl;
+
+    // Find the axis with minimum variance (this is the "vertical" axis)
+    int min_variance_axis = 0;
+    float min_var = variance.x();
+    if (variance.y() < min_var) {
+        min_variance_axis = 1;
+        min_var = variance.y();
+    }
+    if (variance.z() < min_var) {
+        min_variance_axis = 2;
+    }
+
+    // The other two axes form the dominant 2D plane
+    std::vector<int> plane_axes;
+    for (int i = 0; i < 3; ++i) {
+        if (i != min_variance_axis) {
+            plane_axes.push_back(i);
+        }
+    }
+
+    std::string axis_names[] = {"X", "Y", "Z"};
+    std::cout << "Detected dominant 2D plane: " << axis_names[plane_axes[0]] << "-"
+              << axis_names[plane_axes[1]] << " (vertical axis: " << axis_names[min_variance_axis]
+              << ")" << std::endl;
+
+    return {plane_axes[0], plane_axes[1]};
+}
+
+std::vector<KeyframeRegion> partitionKeyframesInto2DGrid(
+    const std::vector<core::types::KeyFrame::Ptr>& keyframes,
+    const std::vector<core::types::Keypoint>& keypoints, int grid_rows, int grid_cols) {
+    std::cout << "\n=== Partitioning keyframes into " << grid_rows << "x" << grid_cols
+              << " 2D grid ===" << std::endl;
+
+    // Detect dominant 2D plane
+    auto [axis1, axis2] = detectDominant2DPlane(keyframes);
+    int vertical_axis = 3 - axis1 - axis2;  // The remaining axis
+
+    // Find min/max bounds along the 2D plane for keyframes
+    float min_coord1 = std::numeric_limits<float>::max();
+    float max_coord1 = std::numeric_limits<float>::lowest();
+    float min_coord2 = std::numeric_limits<float>::max();
+    float max_coord2 = std::numeric_limits<float>::lowest();
+
+    for (const auto& kf : keyframes) {
+        Eigen::Vector3f pos = kf->pose.position.cast<float>();
+        float coord1 = pos[axis1];
+        float coord2 = pos[axis2];
+
+        min_coord1 = std::min(min_coord1, coord1);
+        max_coord1 = std::max(max_coord1, coord1);
+        min_coord2 = std::min(min_coord2, coord2);
+        max_coord2 = std::max(max_coord2, coord2);
+    }
+
+    // Add padding to ensure all keyframes are included
+    float padding_1 = (max_coord1 - min_coord1) * 0.1f;
+    float padding_2 = (max_coord2 - min_coord2) * 0.1f;
+    min_coord1 -= padding_1;
+    max_coord1 += padding_1;
+    min_coord2 -= padding_2;
+    max_coord2 += padding_2;
+
+    std::cout << "2D grid bounds: axis" << axis1 << " [" << min_coord1 << ", " << max_coord1
+              << "], axis" << axis2 << " [" << min_coord2 << ", " << max_coord2 << "]" << std::endl;
+
+    // Find vertical extent from keypoints
+    float min_vertical = std::numeric_limits<float>::max();
+    float max_vertical = std::numeric_limits<float>::lowest();
+    for (const auto& kp : keypoints) {
+        float vert_coord = kp.position.cast<float>()[vertical_axis];
+        min_vertical = std::min(min_vertical, vert_coord);
+        max_vertical = std::max(max_vertical, vert_coord);
+    }
+
+    // Add vertical padding
+    float vert_padding = (max_vertical - min_vertical) * 0.1f;
+    min_vertical -= vert_padding;
+    max_vertical += vert_padding;
+
+    std::cout << "Vertical extent (axis " << vertical_axis << "): [" << min_vertical << ", "
+              << max_vertical << "]" << std::endl;
+
+    // Create grid cells
+    float cell_width_1 = (max_coord1 - min_coord1) / grid_cols;
+    float cell_width_2 = (max_coord2 - min_coord2) / grid_rows;
+
+    std::vector<KeyframeRegion> regions;
+    int region_id = 0;
+
+    for (int row = 0; row < grid_rows; ++row) {
+        for (int col = 0; col < grid_cols; ++col) {
+            KeyframeRegion region;
+            region.region_id = region_id++;
+
+            // Compute 2D bounds for this cell
+            float cell_min_1 = min_coord1 + col * cell_width_1;
+            float cell_max_1 = cell_min_1 + cell_width_1;
+            float cell_min_2 = min_coord2 + row * cell_width_2;
+            float cell_max_2 = cell_min_2 + cell_width_2;
+
+            // Create 3D bounding box
+            Eigen::Vector3f bbox_min, bbox_max;
+            bbox_min[axis1] = cell_min_1;
+            bbox_max[axis1] = cell_max_1;
+            bbox_min[axis2] = cell_min_2;
+            bbox_max[axis2] = cell_max_2;
+            bbox_min[vertical_axis] = min_vertical;
+            bbox_max[vertical_axis] = max_vertical;
+
+            region.bbox_3d = utils::BoundingBox(bbox_min, bbox_max);
+            region.center_2d =
+                Eigen::Vector2f((cell_min_1 + cell_max_1) / 2.0f, (cell_min_2 + cell_max_2) / 2.0f);
+
+            // Assign keyframes to this region
+            for (const auto& kf : keyframes) {
+                Eigen::Vector3f pos = kf->pose.position.cast<float>();
+                float kf_coord1 = pos[axis1];
+                float kf_coord2 = pos[axis2];
+
+                if (kf_coord1 >= cell_min_1 && kf_coord1 < cell_max_1 && kf_coord2 >= cell_min_2 &&
+                    kf_coord2 < cell_max_2) {
+                    region.keyframe_ids.push_back(kf->id);
+                }
+            }
+
+            // Only add region if it has keyframes
+            if (!region.keyframe_ids.empty()) {
+                std::cout << "Region " << region.region_id << ": " << region.keyframe_ids.size()
+                          << " keyframes" << std::endl;
+                regions.push_back(region);
+            }
+        }
+    }
+
+    std::cout << "Created " << regions.size() << " non-empty regions" << std::endl;
+    return regions;
+}
+
+std::vector<KeyframeRegion> partitionKeyframesIntoRadialSectors(
+    const std::vector<core::types::KeyFrame::Ptr>& keyframes,
+    const std::vector<core::types::Keypoint>& keypoints, int num_sectors, float overlap_angle) {
+    std::cout << "\n=== Partitioning keyframes into " << num_sectors
+              << " radial sectors (overlap: " << overlap_angle << " degrees) ===" << std::endl;
+
+    if (keyframes.empty() || keypoints.empty()) {
+        return {};
+    }
+
+    // Detect dominant 2D plane
+    auto [axis1, axis2] = detectDominant2DPlane(keyframes);
+    int vertical_axis = 3 - axis1 - axis2;
+
+    // Compute shared center from keypoints (the object being viewed)
+    Eigen::Vector3f center = Eigen::Vector3f::Zero();
+    for (const auto& kp : keypoints) {
+        center += kp.position.cast<float>();
+    }
+    center /= keypoints.size();
+
+    std::cout << "Shared center (from keypoints): [" << center.transpose() << "]" << std::endl;
+
+    // Find vertical extent from keypoints
+    float min_vertical = std::numeric_limits<float>::max();
+    float max_vertical = std::numeric_limits<float>::lowest();
+    for (const auto& kp : keypoints) {
+        float vert_coord = kp.position.cast<float>()[vertical_axis];
+        min_vertical = std::min(min_vertical, vert_coord);
+        max_vertical = std::max(max_vertical, vert_coord);
+    }
+
+    float vert_padding = (max_vertical - min_vertical) * 0.1f;
+    min_vertical -= vert_padding;
+    max_vertical += vert_padding;
+
+    // Find maximum radius from keyframes to center (in 2D plane)
+    float max_radius = 0.0f;
+    for (const auto& kf : keyframes) {
+        Eigen::Vector3f pos = kf->pose.position.cast<float>();
+        float dx = pos[axis1] - center[axis1];
+        float dy = pos[axis2] - center[axis2];
+        float radius = std::sqrt(dx * dx + dy * dy);
+        max_radius = std::max(max_radius, radius);
+    }
+
+    // Add padding to ensure all points are included
+    float horizontal_padding = max_radius * 0.3f;
+    max_radius += horizontal_padding;
+
+    std::cout << "Maximum radius from center: " << max_radius << "m" << std::endl;
+    std::cout << "Vertical extent (axis " << vertical_axis << "): [" << min_vertical << ", "
+              << max_vertical << "]" << std::endl;
+
+    // Create radial sectors with overlap
+    std::vector<KeyframeRegion> regions;
+    float sector_angle = 360.0f / num_sectors;
+    float overlap_rad = overlap_angle * M_PI / 180.0f;
+    float sector_angle_rad = sector_angle * M_PI / 180.0f;
+
+    for (int sector = 0; sector < num_sectors; ++sector) {
+        KeyframeRegion region;
+        region.region_id = sector;
+
+        // Calculate sector angular range with overlap
+        float sector_center_angle = sector * sector_angle_rad;
+        float angle_start = sector_center_angle - sector_angle_rad / 2.0f - overlap_rad;
+        float angle_end = sector_center_angle + sector_angle_rad / 2.0f + overlap_rad;
+
+        // 2D center for this sector (outward from shared center)
+        float center_angle = sector * sector_angle_rad;
+        region.center_2d =
+            Eigen::Vector2f(center[axis1] + max_radius * 0.5f * std::cos(center_angle),
+                            center[axis2] + max_radius * 0.5f * std::sin(center_angle));
+
+        // Create bounding box that covers the sector
+        // All sectors share the same center but extend outward in their direction
+        Eigen::Vector3f bbox_min, bbox_max;
+
+        // Calculate sector extents in 2D
+        std::vector<Eigen::Vector2f> sector_corners;
+        sector_corners.push_back(Eigen::Vector2f(0, 0));  // Center
+
+        // Sample points along the arc
+        int num_arc_samples = 10;
+        for (int i = 0; i <= num_arc_samples; ++i) {
+            float angle = angle_start + (angle_end - angle_start) * i / num_arc_samples;
+            sector_corners.push_back(
+                Eigen::Vector2f(max_radius * std::cos(angle), max_radius * std::sin(angle)));
+        }
+
+        // Find min/max in 2D
+        float min_2d_1 = std::numeric_limits<float>::max();
+        float max_2d_1 = std::numeric_limits<float>::lowest();
+        float min_2d_2 = std::numeric_limits<float>::max();
+        float max_2d_2 = std::numeric_limits<float>::lowest();
+
+        for (const auto& corner : sector_corners) {
+            min_2d_1 = std::min(min_2d_1, corner.x());
+            max_2d_1 = std::max(max_2d_1, corner.x());
+            min_2d_2 = std::min(min_2d_2, corner.y());
+            max_2d_2 = std::max(max_2d_2, corner.y());
+        }
+
+        // Create 3D bounding box
+        bbox_min[axis1] = center[axis1] + min_2d_1;
+        bbox_max[axis1] = center[axis1] + max_2d_1;
+        bbox_min[axis2] = center[axis2] + min_2d_2;
+        bbox_max[axis2] = center[axis2] + max_2d_2;
+        bbox_min[vertical_axis] = min_vertical;
+        bbox_max[vertical_axis] = max_vertical;
+
+        region.bbox_3d = utils::BoundingBox(bbox_min, bbox_max);
+
+        // Assign keyframes to this sector based on their angle from center
+        for (const auto& kf : keyframes) {
+            Eigen::Vector3f pos = kf->pose.position.cast<float>();
+            float dx = pos[axis1] - center[axis1];
+            float dy = pos[axis2] - center[axis2];
+            float kf_angle = std::atan2(dy, dx);
+
+            // Normalize angles to [0, 2π]
+            auto normalize_angle = [](float angle) {
+                while (angle < 0)
+                    angle += 2.0f * M_PI;
+                while (angle >= 2.0f * M_PI)
+                    angle -= 2.0f * M_PI;
+                return angle;
+            };
+
+            kf_angle = normalize_angle(kf_angle);
+            float norm_angle_start = normalize_angle(angle_start);
+            float norm_angle_end = normalize_angle(angle_end);
+
+            // Check if keyframe angle is within sector range (handling wraparound)
+            bool in_sector = false;
+            if (norm_angle_start <= norm_angle_end) {
+                in_sector = (kf_angle >= norm_angle_start && kf_angle <= norm_angle_end);
+            } else {
+                // Sector wraps around 0
+                in_sector = (kf_angle >= norm_angle_start || kf_angle <= norm_angle_end);
+            }
+
+            if (in_sector) {
+                region.keyframe_ids.push_back(kf->id);
+            }
+        }
+
+        if (!region.keyframe_ids.empty()) {
+            std::cout << "Sector " << sector << " (angle " << std::fixed << std::setprecision(1)
+                      << (sector * sector_angle) << "°): " << region.keyframe_ids.size()
+                      << " keyframes" << std::endl;
+            regions.push_back(region);
+        }
+    }
+
+    std::cout << "Created " << regions.size() << " non-empty sectors" << std::endl;
+    return regions;
 }
 
 bool initializeRandomSplats(const std::vector<uint64_t>& keyframe_ids,

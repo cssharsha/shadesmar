@@ -1,5 +1,6 @@
 #include "densification_controller.hpp"
 #include <logging/logging.hpp>
+#include "gaussian_splatting/common/tensor_config.hpp"
 
 namespace gaussian_splatting {
 namespace optimization {
@@ -56,8 +57,8 @@ bool DensificationController::densifyAndPrune(GaussianTensors& gaussians,
     stats.gaussians_removed = indices_to_remove.size();
     stats.gaussians_added = indices_to_split.size() + indices_to_clone.size();
     stats.total_gaussians = gaussians.number_of_splats();
-    stats.avg_opacity = gaussians.get_opacities().mean().item<float>();
-    stats.avg_gradient_norm = avg_gradients.norm().item<float>();
+    stats.avg_opacity = common::itemAs(gaussians.get_opacities().mean());
+    stats.avg_gradient_norm = common::itemAs(avg_gradients.norm());
 
     LOG(INFO) << "Densification complete: " << initial_count << " -> "
               << gaussians.number_of_splats() << " (removed " << stats.gaussians_removed
