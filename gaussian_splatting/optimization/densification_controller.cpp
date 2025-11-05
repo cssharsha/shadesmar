@@ -177,9 +177,10 @@ bool DensificationController::removeGaussians(GaussianTensors& gaussians,
     gaussians.get_scales() = gaussians.get_scales().index_select(0, keep_mask.nonzero().squeeze());
     gaussians.get_opacities() =
         gaussians.get_opacities().index_select(0, keep_mask.nonzero().squeeze());
-    gaussians.get_sh_coefficients() =
-        gaussians.get_sh_coefficients().index_select(0, keep_mask.nonzero().squeeze());
-    gaussians.get_colors() = gaussians.get_colors().index_select(0, keep_mask.nonzero().squeeze());
+    // Note: get_sh_coefficients() returns concatenation of sh_0 and sh_N,
+    // but we need to update sh_0 and sh_N separately
+    gaussians.get_sh_0() = gaussians.get_sh_0().index_select(0, keep_mask.nonzero().squeeze());
+    gaussians.get_sh_N() = gaussians.get_sh_N().index_select(0, keep_mask.nonzero().squeeze());
 
     gaussians.number_of_splats() = gaussians.get_positions().size(0);
 

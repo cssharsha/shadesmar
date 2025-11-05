@@ -13,12 +13,14 @@ struct GaussianSplat {
     uint32_t id;
     Eigen::Vector3d position;    // μ (mean position)
     Eigen::Matrix3d covariance;  // Σ (3x3 covariance matrix)
-    Eigen::Vector3f color;       // RGB color [0.0, 1.0]
     float opacity;               // α (alpha/opacity) [0.0, 1.0]
     Eigen::Vector3d scale;
     Eigen::Quaterniond rotation;
-    Eigen::VectorXf sh_coefficients;
-    int sh_degree = 3;
+
+    // Spherical harmonics representation
+    Eigen::Vector3f sh_dc;       // DC component (0th degree) - base color in SH space
+    Eigen::VectorXf sh_rest;     // Higher order coefficients (degrees 1-3)
+    int sh_degree = 3;           // SH degree (0-3)
 
     uint32_t source_keypoint_id;  // ID of keypoint that generated this splat
     float confidence;             // Quality/confidence metric
@@ -28,10 +30,11 @@ struct GaussianSplat {
         : id(0),
           position(Eigen::Vector3d::Zero()),
           covariance(Eigen::Matrix3d::Identity()),
-          color(Eigen::Vector3f::Zero()),
           opacity(1.0f),
           scale(Eigen::Vector3d::Ones()),
           rotation(Eigen::Quaterniond::Identity()),
+          sh_dc(Eigen::Vector3f::Zero()),
+          sh_rest(Eigen::VectorXf::Zero(45)),  // 15 coeffs × 3 RGB for degree 3
           source_keypoint_id(0),
           confidence(1.0f),
           timestamp(0.0) {}
@@ -41,13 +44,17 @@ struct GaussianSplat {
         : id(splat_id),
           position(pos),
           covariance(cov),
-          color(rgb),
           opacity(alpha),
           scale(Eigen::Vector3d::Ones()),
           rotation(Eigen::Quaterniond::Identity()),
+          sh_rest(Eigen::VectorXf::Zero(45)),
           source_keypoint_id(keypoint_id),
           confidence(1.0f),
-          timestamp(0.0) {}
+          timestamp(0.0) {
+        // Convert RGB to SH DC component: sh_dc = (rgb - 0.5) / C0
+        constexpr float C0 = 0.28209479177387814f;
+        sh_dc = (rgb.array() - 0.5f) / C0;
+    }
 
     // Convert to protobuf message
     void toProto(proto::GaussianSplat& proto_splat) const {
@@ -66,11 +73,6 @@ struct GaussianSplat {
             }
         }
 
-        auto* color_proto = proto_splat.mutable_color();
-        color_proto->set_x(color.x());
-        color_proto->set_y(color.y());
-        color_proto->set_z(color.z());
-
         proto_splat.set_opacity(opacity);
         proto_splat.set_source_keypoint_id(source_keypoint_id);
         proto_splat.set_confidence(confidence);
@@ -87,10 +89,19 @@ struct GaussianSplat {
         rotation_proto->set_y(rotation.y());
         rotation_proto->set_z(rotation.z());
 
-        proto_splat.clear_sh_coefficients();
-        for (int i = 0; i < sh_coefficients.size(); ++i) {
-            proto_splat.add_sh_coefficients(sh_coefficients(i));
+        // Store spherical harmonics DC component
+        auto* sh_dc_proto = proto_splat.mutable_sh_dc();
+        sh_dc_proto->set_x(sh_dc.x());
+        sh_dc_proto->set_y(sh_dc.y());
+        sh_dc_proto->set_z(sh_dc.z());
+
+        // Store higher order SH coefficients
+        proto_splat.clear_sh_rest();
+        for (int i = 0; i < sh_rest.size(); ++i) {
+            proto_splat.add_sh_rest(sh_rest(i));
         }
+
+        proto_splat.set_sh_degree(sh_degree);
     }
 
     // Create from protobuf message
@@ -112,9 +123,6 @@ struct GaussianSplat {
             splat.covariance = Eigen::Matrix3d::Identity();
         }
 
-        const auto& color_proto = proto_splat.color();
-        splat.color = Eigen::Vector3f(color_proto.x(), color_proto.y(), color_proto.z());
-
         splat.opacity = proto_splat.opacity();
         splat.source_keypoint_id = proto_splat.source_keypoint_id();
         splat.confidence = proto_splat.confidence();
@@ -127,12 +135,32 @@ struct GaussianSplat {
         splat.rotation = Eigen::Quaterniond(rotation_proto.w(), rotation_proto.x(),
                                             rotation_proto.y(), rotation_proto.z());
 
-        splat.sh_coefficients.resize(proto_splat.sh_coefficients_size());
-        for (int i = 0; i < proto_splat.sh_coefficients_size(); ++i) {
-            splat.sh_coefficients(i) = proto_splat.sh_coefficients(i);
+        // Load spherical harmonics DC component
+        const auto& sh_dc_proto = proto_splat.sh_dc();
+        splat.sh_dc = Eigen::Vector3f(sh_dc_proto.x(), sh_dc_proto.y(), sh_dc_proto.z());
+
+        // Load higher order SH coefficients
+        splat.sh_rest.resize(proto_splat.sh_rest_size());
+        for (int i = 0; i < proto_splat.sh_rest_size(); ++i) {
+            splat.sh_rest(i) = proto_splat.sh_rest(i);
         }
 
+        splat.sh_degree = proto_splat.sh_degree();
+
         return splat;
+    }
+
+    // Get RGB color from SH DC component
+    Eigen::Vector3f getColor() const {
+        constexpr float C0 = 0.28209479177387814f;
+        Eigen::Vector3f color = (sh_dc.array() * C0 + 0.5f).matrix();
+        return color.cwiseMax(0.0f).cwiseMin(1.0f);  // Clamp to [0, 1]
+    }
+
+    // Set SH DC component from RGB color
+    void setColor(const Eigen::Vector3f& rgb) {
+        constexpr float C0 = 0.28209479177387814f;
+        sh_dc = (rgb.array() - 0.5f) / C0;
     }
 
     // Validate splat parameters
@@ -146,8 +174,8 @@ struct GaussianSplat {
         if (solver.eigenvalues().minCoeff() < 0)
             return false;
 
-        // Check color range [0, 1]
-        if (color.minCoeff() < 0.0f || color.maxCoeff() > 1.0f)
+        // Check SH DC component is finite
+        if (!sh_dc.allFinite())
             return false;
 
         // Check opacity range [0, 1]

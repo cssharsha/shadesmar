@@ -758,9 +758,11 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
                                                        static_cast<float>(splat.position.z())});
 
         // Add color with opacity (convert from [0,1] to [0,255])
-        colors.emplace_back(rerun::components::Color{static_cast<uint8_t>(splat.color.x() * 255.0f),
-                                                     static_cast<uint8_t>(splat.color.y() * 255.0f),
-                                                     static_cast<uint8_t>(splat.color.z() * 255.0f),
+        // Get RGB color from SH DC component
+        Eigen::Vector3f rgb = splat.getColor();
+        colors.emplace_back(rerun::components::Color{static_cast<uint8_t>(rgb.x() * 255.0f),
+                                                     static_cast<uint8_t>(rgb.y() * 255.0f),
+                                                     static_cast<uint8_t>(rgb.z() * 255.0f),
                                                      static_cast<uint8_t>(splat.opacity * 255.0f)});
         // std::cout << "Added position: " << splat.position.transpose() << std::endl;
 

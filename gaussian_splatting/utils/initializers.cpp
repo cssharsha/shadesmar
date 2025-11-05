@@ -109,10 +109,12 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
         splat.source_keypoint_id = keypoint.id();
 
         // Initialize color by extracting from keyframe observations
-        // Eigen::Vector3f extracted_color = extractColorFromKeyframes(keypoint, map_store);
-        // splat.color = extracted_color;
-        splat.color = keypoint.color.cast<float>() / 255.0f;
-        // std::cout << "Color: " << splat.color.transpose() << std::endl;
+        // Convert RGB color to SH DC component
+        Eigen::Vector3f rgb_color = keypoint.color.cast<float>() / 255.0f;
+        constexpr float C0 = 0.28209479177387814f;
+        splat.sh_dc = (rgb_color.array() - 0.5f) / C0;
+        // std::cout << "Color: " << rgb_color.transpose() << " -> SH DC: " <<
+        // splat.sh_dc.transpose() << std::endl;
 
         splat.scale =
             point_cloud_utils.computeScaleFromKNN(keypoint.position.cast<float>()).cast<double>();
@@ -122,13 +124,14 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
         // Initialize opacity and confidence
         // splat.opacity = computeInitialOpacity(keypoint);
         auto init_opacity = 0.5f;
-        splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        // splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        splat.opacity = init_opacity;
         splat.confidence = computeInitialConfidence(keypoint);
         splat.timestamp = current_timestamp;
 
-        // Initialize spherical harmonics coefficients (1st degree, 3 per channel)
-        // DC component is splat.color
-        splat.sh_coefficients = Eigen::VectorXf::Zero(6);
+        // Initialize higher order spherical harmonics to zero (degree 3: 15 coeffs × 3 RGB = 45)
+        splat.sh_rest = Eigen::VectorXf::Zero(45);
+        splat.sh_degree = 3;
 
         splat_batch.splats.push_back(splat);
         // std::cout << "Added splat: " << splat.id << " with position: " <<
@@ -186,21 +189,24 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
         splat.position = keypoint.position;
         splat.source_keypoint_id = keypoint.id();
 
-        // Initialize color
-        splat.color = keypoint.color.cast<float>() / 255.0f;
+        // Initialize color by converting RGB to SH DC component
+        Eigen::Vector3f rgb_color = keypoint.color.cast<float>() / 255.0f;
+        constexpr float C0 = 0.28209479177387814f;
+        splat.sh_dc = (rgb_color.array() - 0.5f) / C0;
 
         splat.scale =
             point_cloud_utils.computeScaleFromKNN(keypoint.position.cast<float>()).cast<double>();
         splat.covariance = computeKeypointCovarianceUsingScale(keypoint, splat.scale.cast<float>());
 
         // Initialize opacity and confidence
-        auto init_opacity = 0.1f;
+        auto init_opacity = 0.5f;
         splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
         splat.confidence = computeInitialConfidence(keypoint);
         splat.timestamp = current_timestamp;
 
-        // Initialize spherical harmonics coefficients (1st degree, 3 per channel)
-        splat.sh_coefficients = Eigen::VectorXf::Zero(6);
+        // Initialize higher order spherical harmonics to zero (degree 3: 15 coeffs × 3 RGB = 45)
+        splat.sh_rest = Eigen::VectorXf::Zero(45);
+        splat.sh_degree = 3;
 
         splat_batch.splats.push_back(splat);
 
@@ -256,20 +262,23 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
         splat.source_keypoint_id = keypoint.id();
 
         // Extract color from keyframe observations (reads actual images from map_store)
-        splat.color = extractColorFromKeyframes(keypoint, map_store);
+        // and convert to SH DC component
+        Eigen::Vector3f rgb_color = extractColorFromKeyframes(keypoint, map_store);
+        splat.setColor(rgb_color);
 
         splat.scale =
             point_cloud_utils.computeScaleFromKNN(keypoint.position.cast<float>()).cast<double>();
         splat.covariance = computeKeypointCovarianceUsingScale(keypoint, splat.scale.cast<float>());
 
         // Initialize opacity and confidence
-        auto init_opacity = 0.1f;
+        auto init_opacity = 0.5f;
         splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
         splat.confidence = computeInitialConfidence(keypoint);
         splat.timestamp = current_timestamp;
 
-        // Initialize spherical harmonics coefficients (1st degree, 3 per channel)
-        splat.sh_coefficients = Eigen::VectorXf::Zero(6);
+        // Initialize higher order spherical harmonics to zero (degree 3: 15 coeffs × 3 RGB = 45)
+        splat.sh_rest = Eigen::VectorXf::Zero(45);
+        splat.sh_degree = 3;
 
         splat_batch.splats.push_back(splat);
 
@@ -558,8 +567,9 @@ std::vector<core::types::GaussianSplat> generateRandomSplats(const Eigen::Vector
         // Random position within scene bounds
         splat.position = generateRandomPosition(scene_min, scene_max).template cast<double>();
 
-        // Random initial color
-        splat.color = generateRandomColor();
+        // Random initial color - convert RGB to SH DC component
+        Eigen::Vector3f rgb_color = generateRandomColor();
+        splat.setColor(rgb_color);
 
         // Initial covariance matrix
         splat.covariance = generateInitialCovariance();
@@ -586,7 +596,9 @@ std::vector<core::types::GaussianSplat> generateRandomSplats(const Eigen::Vector
             splat.scale = Eigen::Vector3d::Ones() * 0.01;
         }
 
-        splat.sh_coefficients = Eigen::VectorXf::Zero(6);
+        // Initialize higher order spherical harmonics to zero (degree 3: 15 coeffs × 3 RGB = 45)
+        splat.sh_rest = Eigen::VectorXf::Zero(45);
+        splat.sh_degree = 3;
 
         splats.push_back(splat);
     }

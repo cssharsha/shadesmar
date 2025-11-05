@@ -7,15 +7,19 @@
 namespace gaussian_splatting {
 namespace utils {
 
-std::string SplatLogger::getSplatCSVHeader(int max_sh_coeffs) {
+std::string SplatLogger::getSplatCSVHeader(int sh_degree) {
     std::stringstream ss;
-    ss << "id,pos_x,pos_y,pos_z,scale_x,scale_y,scale_z,";
-    ss << "rot_w,rot_x,rot_y,rot_z,";
-    ss << "color_r,color_g,color_b,opacity";
+    ss << "splat_id,pos_x,pos_y,pos_z,scale_x,scale_y,scale_z,";
+    ss << "rot_w,rot_x,rot_y,rot_z,opacity,";
 
-    // Add SH coefficient columns
-    for (int i = 0; i < max_sh_coeffs; ++i) {
-        ss << ",sh_" << i;
+    // Add SH DC component (sh0)
+    ss << "sh0_r,sh0_g,sh0_b";
+
+    // Add higher order SH coefficients (shN)
+    // For degree 3: 15 coefficients (indices 0-14)
+    const int num_higher_order = (sh_degree + 1) * (sh_degree + 1) - 1;
+    for (int i = 0; i < num_higher_order; ++i) {
+        ss << ",shN_" << i << "_r,shN_" << i << "_g,shN_" << i << "_b";
     }
 
     ss << "\n";
@@ -39,15 +43,19 @@ std::string SplatLogger::splatToCSVRow(const core::types::GaussianSplat& splat) 
     ss << splat.rotation.w() << "," << splat.rotation.x() << ","
        << splat.rotation.y() << "," << splat.rotation.z() << ",";
 
-    // Color (3 values)
-    ss << splat.color.x() << "," << splat.color.y() << "," << splat.color.z() << ",";
-
     // Opacity (1 value)
-    ss << splat.opacity;
+    ss << splat.opacity << ",";
 
-    // SH coefficients (variable number)
-    for (int i = 0; i < splat.sh_coefficients.size(); ++i) {
-        ss << "," << splat.sh_coefficients(i);
+    // SH DC component (sh0_r, sh0_g, sh0_b)
+    ss << splat.sh_dc.x() << "," << splat.sh_dc.y() << "," << splat.sh_dc.z();
+
+    // Higher order SH coefficients (shN_i_r, shN_i_g, shN_i_b)
+    // sh_rest is stored as [sh1_r, sh1_g, sh1_b, sh2_r, sh2_g, sh2_b, ...]
+    const int num_higher_order = splat.sh_rest.size() / 3;
+    for (int i = 0; i < num_higher_order; ++i) {
+        ss << "," << splat.sh_rest(i * 3 + 0)   // r
+           << "," << splat.sh_rest(i * 3 + 1)   // g
+           << "," << splat.sh_rest(i * 3 + 2);  // b
     }
 
     ss << "\n";
@@ -78,14 +86,14 @@ bool SplatLogger::writeSplatsToCSV(const std::vector<core::types::GaussianSplat>
             return false;
         }
 
-        // Find maximum SH coefficient size
-        int max_sh_coeffs = 0;
-        for (const auto& splat : splats) {
-            max_sh_coeffs = std::max(max_sh_coeffs, static_cast<int>(splat.sh_coefficients.size()));
+        // Get SH degree from first splat (all should be the same)
+        int sh_degree = 3;  // Default to degree 3
+        if (!splats.empty()) {
+            sh_degree = splats[0].sh_degree;
         }
 
         // Write header
-        file << getSplatCSVHeader(max_sh_coeffs);
+        file << getSplatCSVHeader(sh_degree);
 
         // Write splat data
         for (const auto& splat : splats) {

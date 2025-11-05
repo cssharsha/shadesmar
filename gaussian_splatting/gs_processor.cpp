@@ -500,11 +500,14 @@ bool GaussianSplatProcessor::generateSplatFromKeypoint(const core::types::Keypoi
     }
 
     // Extract average color from observations
-    if (!extractColorFromObservations(keypoint, output_splat.color)) {
+    Eigen::Vector3f rgb_color;
+    if (!extractColorFromObservations(keypoint, rgb_color)) {
         LOG(WARNING) << "Failed to extract color for keypoint " << keypoint.id();
         // Use default gray color if color extraction fails
-        output_splat.color = Eigen::Vector3f(0.5f, 0.5f, 0.5f);
+        rgb_color = Eigen::Vector3f(0.5f, 0.5f, 0.5f);
     }
+    // Convert RGB to SH DC component
+    output_splat.setColor(rgb_color);
 
     // Set initial opacity and confidence
     output_splat.opacity = 0.8f;  // High initial opacity

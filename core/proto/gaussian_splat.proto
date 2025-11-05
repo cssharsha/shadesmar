@@ -13,30 +13,42 @@ message GaussianSplat {
     
     // 3x3 covariance matrix Σ (stored as 9 elements in row-major order)
     repeated double covariance = 3;  // Should have exactly 9 elements
-    
-    // RGB color
-    Vector3 color = 4;
-    
+
     // Opacity/alpha value [0.0, 1.0]
-    float opacity = 5;
-    
+    float opacity = 4;
+
     // Optional: Link to source keypoint that generated this splat
-    uint32 source_keypoint_id = 6;
-    
+    uint32 source_keypoint_id = 5;
+
     // Optional: Confidence/quality metric for this splat
-    float confidence = 7;
-    
+    float confidence = 6;
+
     // Timestamp when this splat was created
-    double timestamp = 8;
+    double timestamp = 7;
 
     // 3D scaling vector
-    Vector3 scale = 9;
+    Vector3 scale = 8;
 
     // Rotation as a quaternion (w, x, y, z)
-    Quaternion rotation = 10;
+    Quaternion rotation = 9;
 
-    // Spherical harmonics coefficients (excluding DC term, which is color)
-    repeated float sh_coefficients = 11;
+    // Spherical harmonics DC component (0th degree, 1st coefficient)
+    // This represents the base color in spherical harmonics space
+    // To convert to RGB: color = sh_dc * C0 + 0.5, where C0 = 0.28209479177387814
+    Vector3 sh_dc = 10;
+
+    // Higher order spherical harmonics coefficients (degrees 1-3)
+    // Layout: [sh1_r, sh1_g, sh1_b, sh2_r, sh2_g, sh2_b, ..., sh15_r, sh15_g, sh15_b]
+    // For degree d, total coefficients = (d+1)^2
+    // Degree 0: 1 coeff (DC, stored in sh_dc)
+    // Degree 1: 3 coeffs × 3 RGB = 9 values
+    // Degree 2: 5 coeffs × 3 RGB = 15 values
+    // Degree 3: 7 coeffs × 3 RGB = 21 values
+    // Total for degree 3: 15 higher-order coeffs × 3 = 45 values
+    repeated float sh_rest = 11;
+
+    // Degree of spherical harmonics (typically 0-3)
+    int32 sh_degree = 12;
 }
 
 message GaussianSplatBatch {

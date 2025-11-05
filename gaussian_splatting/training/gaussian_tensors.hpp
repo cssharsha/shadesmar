@@ -37,12 +37,6 @@ public:
     const torch::Tensor& get_covariances() const {
         return covariances;
     }
-    torch::Tensor& get_colors() {
-        return colors;
-    }
-    const torch::Tensor& get_colors() const {
-        return colors;
-    }
     torch::Tensor& get_opacities() {
         return opacities;
     }
@@ -98,12 +92,11 @@ public:
 private:
     torch::Tensor positions;
     torch::Tensor covariances;
-    torch::Tensor colors;
     torch::Tensor opacities;
     torch::Tensor scales;
     torch::Tensor rotations;
-    torch::Tensor sh_0;
-    torch::Tensor sh_N;
+    torch::Tensor sh_0;       // SH DC component [N, 1, 3]
+    torch::Tensor sh_N;       // SH higher order coefficients [N, 15, 3] for degree 3
     torch::Tensor confidences;
     int32_t sh_degree = 0;
     uint32_t num_splats;

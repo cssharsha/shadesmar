@@ -49,8 +49,6 @@ bool BatchGPUManager::loadBatchToTensors(const core::types::GaussianSplatBatch& 
 bool BatchGPUManager::loadToGPU(GaussianTensors& gpu_tensors) {
     std::cout << "Computing positions size" << std::endl;
     auto positions_size = utils::logical_nbytes(gpu_tensors.get_positions()) / 1024.0 / 1024.0;
-    std::cout << "Computing colors size" << std::endl;
-    auto colors_size = utils::logical_nbytes(gpu_tensors.get_colors()) / 1024.0 / 1024.0;
     std::cout << "Computing scales size" << std::endl;
     auto scales_size = utils::logical_nbytes(gpu_tensors.get_scales()) / 1024.0 / 1024.0;
     std::cout << "Computing opacities size" << std::endl;
@@ -61,14 +59,14 @@ bool BatchGPUManager::loadToGPU(GaussianTensors& gpu_tensors) {
     std::cout << "Computing rotations size" << std::endl;
     auto rotations_size = utils::logical_nbytes(gpu_tensors.get_rotations()) / 1024.0 / 1024.0;
 
-    auto total_size = positions_size + colors_size + scales_size + opacities_size +
+    auto total_size = positions_size + scales_size + opacities_size +
                       sh_coefficients_size + rotations_size;
     LOG(INFO) << "Loading tensors to GPU: positions=" << positions_size
-              << ", colors=" << colors_size << ", scales=" << scales_size
+              << ", scales=" << scales_size
               << ", opacities=" << opacities_size << ", sh_coefficients=" << sh_coefficients_size
               << ", rotations=" << rotations_size << " : total=" << total_size;
 
-    if (positions_size + colors_size + scales_size + opacities_size + sh_coefficients_size +
+    if (positions_size + scales_size + opacities_size + sh_coefficients_size +
             rotations_size >
         config_.max_gpu_memory_per_batch) {
         LOG(ERROR) << "Batch too large to fit in GPU memory";
