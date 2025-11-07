@@ -1,4 +1,4 @@
-.PHONY: help check-setup build install-foxglove-deps build-foxglove package-extension build-extension-full build-colmap-converter build-colmap-viz run run-no-spatial run-colmap-converter run-colmap-viz rerun shell clean test-connection docker-build docker-rebuild docker-up docker-down docker-restart
+.PHONY: help check-setup build install-foxglove-deps build-foxglove package-extension build-extension-full build-colmap-converter build-colmap-viz run run-no-spatial run-colmap-converter run-colmap-viz rerun shell clean test-connection docker-build docker-rebuild docker-up docker-down docker-restart setup-lfs add-data split-large-files reassemble-data
 
 # Default target
 help:
@@ -33,6 +33,12 @@ help:
 	@echo "  make clean                - Clean build artifacts"
 	@echo "  make test-connection      - Test if Foxglove WebSocket is accessible"
 	@echo ""
+	@echo "Git LFS & Data Management:"
+	@echo "  make setup-lfs            - Install Git LFS and configure tracking"
+	@echo "  make add-data SOURCE=<path> DEST=<subpath> - Add any data to repo with LFS"
+	@echo "  make split-large-files DIR=<path> - Split files >2GB into chunks"
+	@echo "  make reassemble-data DIR=<path> - Reassemble split files"
+	@echo ""
 	@echo "Docker Management:"
 	@echo "  make docker-build         - Build Docker image from Dockerfile"
 	@echo "  make docker-rebuild       - Rebuild Docker image (no cache)"
@@ -48,10 +54,14 @@ help:
 	@echo "  make run MAP=/data/robot/house11_map ARGS='--disable-foxglove'"
 	@echo "  make build-colmap-converter && make run-colmap-converter COLMAP_PATH=/data/train"
 	@echo "  make build-colmap-viz && make run-colmap-viz MAP_PATH=/data/train"
+	@echo "  make add-data SOURCE=/data/gscudasb/map DEST=gscuda/map"
+	@echo "  make add-data SOURCE=/data/gscuda/text DEST=gscuda/colmap"
 	@echo "  make docker-restart  # After modifying Dockerfile"
 	@echo ""
 	@echo "Configuration variables:"
 	@echo "  MAP               - Map base path (required for run targets)"
+	@echo "  SOURCE            - Source file/directory path (required for add-data)"
+	@echo "  DEST              - Destination subpath in data/ (required for add-data)"
 	@echo "  ARGS              - Additional arguments to pass to binary"
 	@echo "  FOXGLOVE_HOST     - Foxglove host (default: 0.0.0.0)"
 	@echo "  FOXGLOVE_PORT     - Foxglove port (default: 8765)"
@@ -237,6 +247,82 @@ endif
 	@echo "Press Ctrl+C to exit"
 	docker exec -it $(CONTAINER_NAME) zsh -c "source ~/.cargo/env && cd $(WORKSPACE_DIR) && \
 		./bazel-bin/colmap_processor/colmap_viz_main $(MAP_PATH)"
+
+# ============================================================================
+# Git LFS and Data Management
+# ============================================================================
+
+# Setup Git LFS only (without adding data)
+setup-lfs: check-setup
+	@echo "Setting up Git LFS..."
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+		if ! command -v git-lfs &> /dev/null; then \
+			sudo apt-get update -qq && sudo apt-get install -y git-lfs; \
+		fi && \
+		git lfs install && \
+		git lfs track '*.dat' && \
+		git lfs track '*.idx' && \
+		git lfs track '*.meta' && \
+		git lfs track '*.bag' && \
+		git lfs track '*.db3' && \
+		git lfs track '*.bin'"
+	@echo "✓ Git LFS setup complete"
+
+# Add any data (maps, bags, colmap, etc.) with custom destination
+add-data: check-setup
+ifndef SOURCE
+	@echo "ERROR: SOURCE variable is required"
+	@echo "Usage: make add-data SOURCE=<source_path> DEST=<dest_subpath>"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make add-data SOURCE=/data/gscudasb/map DEST=gscuda/map"
+	@echo "  make add-data SOURCE=/data/gscuda/text DEST=gscuda/colmap"
+	@echo "  make add-data SOURCE=/data/mybag.bag DEST=datasets/bag1"
+	@exit 1
+endif
+ifndef DEST
+	@echo "ERROR: DEST variable is required"
+	@echo "Usage: make add-data SOURCE=<source_path> DEST=<dest_subpath>"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make add-data SOURCE=/data/gscudasb/map DEST=gscuda/map"
+	@echo "  make add-data SOURCE=/data/gscuda/text DEST=gscuda/colmap"
+	@echo "  make add-data SOURCE=/data/mybag.bag DEST=datasets/bag1"
+	@exit 1
+endif
+	@echo "Running Git LFS setup and data addition..."
+	@echo "Source: $(SOURCE)"
+	@echo "Destination: data/$(DEST)"
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && bash ./scripts/add-data-lfs.sh '$(SOURCE)' '$(DEST)'"
+	@echo ""
+	@echo "✓ Data ready to commit!"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Review: docker exec $(CONTAINER_NAME) zsh -c 'cd $(WORKSPACE_DIR) && git status'"
+	@echo "  2. Commit: docker exec $(CONTAINER_NAME) zsh -c 'cd $(WORKSPACE_DIR) && git commit -m \"Add data with LFS: $(DEST)\"'"
+	@echo "  3. Push: docker exec $(CONTAINER_NAME) zsh -c 'cd $(WORKSPACE_DIR) && git push'"
+
+# Split files larger than 2GB (GitHub LFS limit)
+split-large-files: check-setup
+ifndef DIR
+	@echo "ERROR: DIR variable is required"
+	@echo "Usage: make split-large-files DIR=<directory_path>"
+	@echo "Example: make split-large-files DIR=data/gscuda/map"
+	@exit 1
+endif
+	@echo "Splitting large files in: $(DIR)"
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && bash ./scripts/split-large-files.sh '$(DIR)'"
+
+# Reassemble split data files
+reassemble-data: check-setup
+ifndef DIR
+	@echo "ERROR: DIR variable is required"
+	@echo "Usage: make reassemble-data DIR=<directory_path>"
+	@echo "Example: make reassemble-data DIR=data/gscuda/map"
+	@exit 1
+endif
+	@echo "Reassembling data files in: $(DIR)"
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && bash ./scripts/reassemble-data.sh '$(DIR)'"
 
 # ============================================================================
 # Docker Management Commands
