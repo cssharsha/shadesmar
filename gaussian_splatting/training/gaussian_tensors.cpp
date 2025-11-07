@@ -71,9 +71,12 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
         // sh_rest layout: [sh1_r, sh1_g, sh1_b, sh2_r, sh2_g, sh2_b, ...]
         const int64_t num_rest = num_sh_coeffs - 1;  // Exclude DC component
         for (int64_t j = 0; j < num_rest && j * 3 < splat.sh_rest.size(); ++j) {
-            shs_ptr[(i * num_sh_coeffs + (j + 1)) * 3 + 0] = static_cast<common::scalar_t>(splat.sh_rest(j * 3 + 0));
-            shs_ptr[(i * num_sh_coeffs + (j + 1)) * 3 + 1] = static_cast<common::scalar_t>(splat.sh_rest(j * 3 + 1));
-            shs_ptr[(i * num_sh_coeffs + (j + 1)) * 3 + 2] = static_cast<common::scalar_t>(splat.sh_rest(j * 3 + 2));
+            shs_ptr[(i * num_sh_coeffs + (j + 1)) * 3 + 0] =
+                static_cast<common::scalar_t>(splat.sh_rest(j * 3 + 0));
+            shs_ptr[(i * num_sh_coeffs + (j + 1)) * 3 + 1] =
+                static_cast<common::scalar_t>(splat.sh_rest(j * 3 + 1));
+            shs_ptr[(i * num_sh_coeffs + (j + 1)) * 3 + 2] =
+                static_cast<common::scalar_t>(splat.sh_rest(j * 3 + 2));
         }
 
         // Use KNN-computed scales in log-space
@@ -98,8 +101,8 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
             LOG(INFO) << "Tensor position: [" << positions_ptr[0] << ", " << positions_ptr[1]
                       << ", " << positions_ptr[2] << "]";
             LOG(INFO) << "SH DC: " << splat.sh_dc.transpose();
-            LOG(INFO) << "Tensor SH DC: [" << shs_ptr[0] << ", " << shs_ptr[1] << ", "
-                      << shs_ptr[2] << "]";
+            LOG(INFO) << "Tensor SH DC: [" << shs_ptr[0] << ", " << shs_ptr[1] << ", " << shs_ptr[2]
+                      << "]";
             LOG(INFO) << "Scale: " << splat.scale.transpose();
             LOG(INFO) << "Tensor scale: [" << scales_ptr[0] << ", " << scales_ptr[1] << ", "
                       << scales_ptr[2] << "]";
@@ -137,8 +140,24 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
     LOG(INFO) << "Mean position: " << mean_position;
     LOG(INFO) << "Scene scale: " << scene_scale;
 
-    LOG(INFO) << "Did all the conversions";
+    // IMPORTANT: Set member variables!
+    this->num_splats = static_cast<uint32_t>(num_splats);
+    this->sh_degree = sh_degree;
+
+    LOG(INFO) << "Did all the conversions. num_splats=" << this->num_splats
+              << " sh_degree=" << this->sh_degree;
     return true;
+}
+
+void GaussianTensors::clear() {
+    positions = torch::Tensor();
+    covariances = torch::Tensor();
+    opacities = torch::Tensor();
+    scales = torch::Tensor();
+    rotations = torch::Tensor();
+    sh_0 = torch::Tensor();
+    sh_N = torch::Tensor();
+    confidences = torch::Tensor();
 }
 
 void GaussianTensors::to(const torch::Device& device) {
@@ -208,8 +227,8 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
     const auto* opacities_ptr = common::dataPtrAs(opacities_cpu);
     const auto* scales_ptr = common::dataPtrAs(scales_cpu);
     const auto* rotations_ptr = common::dataPtrAs(rotations_cpu);
-    const auto* sh_0_ptr = common::dataPtrAs(sh_0_cpu);    // Shape: [N, 1, 3]
-    const auto* sh_N_ptr = common::dataPtrAs(sh_N_cpu);    // Shape: [N, K-1, 3]
+    const auto* sh_0_ptr = common::dataPtrAs(sh_0_cpu);  // Shape: [N, 1, 3]
+    const auto* sh_N_ptr = common::dataPtrAs(sh_N_cpu);  // Shape: [N, K-1, 3]
     const auto* confidences_ptr = common::dataPtrAs(confidences_cpu);
 
     const int64_t num_higher_order = sh_N_cpu.size(1);  // K-1 (15 for degree 3)
@@ -227,11 +246,9 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
 
         // Copy SH DC component from sh_0 tensor [N, 1, 3]
         // The tensor layout is: sh_0[i, 0, :] = [r, g, b]
-        splats[i].sh_dc = Eigen::Vector3f(
-            static_cast<float>(sh_0_ptr[i * 3 + 0]),
-            static_cast<float>(sh_0_ptr[i * 3 + 1]),
-            static_cast<float>(sh_0_ptr[i * 3 + 2])
-        );
+        splats[i].sh_dc = Eigen::Vector3f(static_cast<float>(sh_0_ptr[i * 3 + 0]),
+                                          static_cast<float>(sh_0_ptr[i * 3 + 1]),
+                                          static_cast<float>(sh_0_ptr[i * 3 + 2]));
 
         // Copy higher order SH coefficients from sh_N tensor [N, K-1, 3]
         // The tensor layout is: sh_N[i, j, :] = [r, g, b] for j in 0..K-1
@@ -239,17 +256,19 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
         splats[i].sh_rest.resize(num_higher_order * 3);
         splats[i].sh_degree = 3;  // Degree 3 for 16 total coefficients
         for (int64_t j = 0; j < num_higher_order; ++j) {
-            splats[i].sh_rest(j * 3 + 0) = static_cast<float>(sh_N_ptr[(i * num_higher_order + j) * 3 + 0]);
-            splats[i].sh_rest(j * 3 + 1) = static_cast<float>(sh_N_ptr[(i * num_higher_order + j) * 3 + 1]);
-            splats[i].sh_rest(j * 3 + 2) = static_cast<float>(sh_N_ptr[(i * num_higher_order + j) * 3 + 2]);
+            splats[i].sh_rest(j * 3 + 0) =
+                static_cast<float>(sh_N_ptr[(i * num_higher_order + j) * 3 + 0]);
+            splats[i].sh_rest(j * 3 + 1) =
+                static_cast<float>(sh_N_ptr[(i * num_higher_order + j) * 3 + 1]);
+            splats[i].sh_rest(j * 3 + 2) =
+                static_cast<float>(sh_N_ptr[(i * num_higher_order + j) * 3 + 2]);
         }
 
         // Convert scales from log space back to linear: exp(log_scale)
         // This matches Python: scales = torch.exp(self.splats["scales"])
         splats[i].scale =
-            Eigen::Vector3d(std::exp(scales_ptr[i * 3 + 0]),
-                           std::exp(scales_ptr[i * 3 + 1]),
-                           std::exp(scales_ptr[i * 3 + 2]));
+            Eigen::Vector3d(std::exp(scales_ptr[i * 3 + 0]), std::exp(scales_ptr[i * 3 + 1]),
+                            std::exp(scales_ptr[i * 3 + 2]));
 
         // Cast float tensor values to double for rotations and normalize
         splats[i].rotation = Eigen::Quaterniond(rotations_ptr[i * 4 + 0], rotations_ptr[i * 4 + 1],
@@ -261,6 +280,31 @@ std::vector<core::types::GaussianSplat> GaussianTensors::toSplats() {
 
     // Note: We don't modify the GPU tensors at all, they remain on CUDA with gradients intact
     return splats;
+}
+
+GaussianTensors GaussianTensors::clone() const {
+    // Create deep copy of all tensors for thread-safe rendering
+    // Use NoGradGuard to avoid copying gradient information
+    torch::NoGradGuard no_grad;
+
+    GaussianTensors cloned;
+
+    // Clone all tensors (creates independent copies)
+    cloned.positions = positions.clone();
+    cloned.covariances = covariances.clone();
+    cloned.opacities = opacities.clone();
+    cloned.scales = scales.clone();
+    cloned.rotations = rotations.clone();
+    cloned.sh_0 = sh_0.clone();
+    cloned.sh_N = sh_N.clone();
+    cloned.confidences = confidences.clone();
+
+    // Copy metadata
+    cloned.num_splats = num_splats;
+    cloned.sh_degree = sh_degree;
+    cloned.scene_scale = scene_scale;
+
+    return cloned;
 }
 
 }  // namespace gaussian_splatting

@@ -5,6 +5,7 @@
 #include "gaussian_splatting/training/batch_trainer.hpp"
 #include "gaussian_splatting/training/training_config.hpp"
 #include "gaussian_splatting/visualization/training_visualizer.hpp"
+#include "gaussian_splatting/visualization/foxglove_renderer.hpp"
 #include "stf/transform_tree.hpp"
 
 namespace gaussian_splatting {
@@ -19,6 +20,11 @@ struct Config {
     std::string training_viz_recording_id = "streaming_gs_training";
     std::string training_viz_host = "127.0.0.1";
     int training_viz_port = 9876;
+
+    // Foxglove interactive rendering
+    bool enable_foxglove_renderer = true;
+    std::string foxglove_host = "0.0.0.0";
+    int foxglove_port = 8765;
 
     std::string camera_frame = "camera";
     std::string base_link = "base_link";
@@ -62,6 +68,7 @@ private:
     training::TrainingConfig training_config_;
 
     std::shared_ptr<visualization::RerunTrainingVisualizer> training_visualizer_;
+    std::unique_ptr<visualization::FoxgloveRenderer> foxglove_renderer_;
 };
 
 }  // namespace gaussian_splatting

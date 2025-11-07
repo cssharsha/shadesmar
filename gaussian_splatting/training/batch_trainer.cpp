@@ -524,13 +524,18 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
         // IMPORTANT: Match gsplat order: backward() -> optimizer.step() -> step_post_backward()
         // Optimizer step MUST happen BEFORE densification, otherwise densification
         // replaces tensors and destroys gradients (causing crash at iteration 50+)
-        strategy_->step(iteration);
 
-        LOG(INFO) << "=== After optimizer step ===";
+        // Lock mutex to prevent concurrent cloning while modifying tensors
+        {
+            std::lock_guard<std::mutex> lock(tensors_mutex_);
+            strategy_->step(iteration);
 
-        // Densification happens AFTER optimizer step (when it's safe to replace tensors)
-        // This may grow/prune splats, changing tensor sizes
-        strategy_->postBackward(render_result, iteration);
+            LOG(INFO) << "=== After optimizer step ===";
+
+            // Densification happens AFTER optimizer step (when it's safe to replace tensors)
+            // This may grow/prune splats, changing tensor sizes
+            strategy_->postBackward(render_result, iteration);
+        }
 
         LOG(INFO) << "=== After densification (postBackward) ===";
         LOG(INFO) << "Positions: " << current_gaussian_tensors_.get_positions().data_ptr();

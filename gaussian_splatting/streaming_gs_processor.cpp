@@ -1,17 +1,20 @@
-#include <logging/logging.hpp>
-#include <memory>
-#include <unordered_set>
+// Include header first to avoid macro conflicts with foxglove
+#include "gaussian_splatting/streaming_gs_processor.hpp"
+
 #include <algorithm>
-#include <random>
+#include <chrono>
+#include <memory>
 #include <numeric>
+#include <random>
+#include <unordered_set>
+
+#include <logging/logging.hpp>
 
 #include "core/storage/map_store.hpp"
 #include "gaussian_splatting/training/batch_trainer.hpp"
 #include "gaussian_splatting/utils/image_utils.hpp"
 #include "gaussian_splatting/utils/initializers.hpp"
 #include "gaussian_splatting/utils/splat_logger.hpp"
-
-#include "gaussian_splatting/streaming_gs_processor.hpp"
 
 namespace gaussian_splatting {
 
@@ -44,6 +47,25 @@ bool StreamingGS::initializeVisualization() {
         // Set initial training state
         training_visualizer_->visualizeTrainingState("INITIALIZING",
                                                      "Setting up streaming processor");
+
+        // Initialize FoxgloveRenderer for interactive rendering
+        if (config_.enable_foxglove_renderer) {
+            LOG(INFO) << "Initializing Foxglove interactive renderer...";
+            visualization::FoxgloveRenderer::Config foxglove_config;
+            foxglove_config.host = config_.foxglove_host;
+            foxglove_config.port = config_.foxglove_port;
+
+            foxglove_renderer_ = std::make_unique<visualization::FoxgloveRenderer>(foxglove_config);
+
+            if (!foxglove_renderer_->initialize()) {
+                LOG(ERROR) << "Failed to initialize FoxgloveRenderer";
+                foxglove_renderer_.reset();
+                // Don't fail entirely - Foxglove is optional
+            } else {
+                LOG(INFO) << "Foxglove renderer initialized on " << config_.foxglove_host << ":"
+                          << config_.foxglove_port;
+            }
+        }
 
         std::cout << "Visualization system initialized successfully" << std::endl;
         std::cout << "Recording ID: " << config_.training_viz_recording_id << std::endl;
@@ -231,8 +253,8 @@ bool StreamingGS::loadAndTrain() {
             training::TrainingResults results;
             const int num_epochs = 200;
 
-            std::cout << "Training for " << num_epochs << " epochs with "
-                      << all_keyframes.size() << " keyframes" << std::endl;
+            std::cout << "Training for " << num_epochs << " epochs with " << all_keyframes.size()
+                      << " keyframes" << std::endl;
 
             std::random_device rd;
             std::mt19937 rng(rd());
@@ -252,9 +274,8 @@ bool StreamingGS::loadAndTrain() {
                     batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
 
                     if (iteration % 10 == 0) {
-                        std::cout << "Epoch " << epoch << "/" << num_epochs
-                                  << " - Keyframe " << (kf_idx + 1) << "/"
-                                  << all_keyframes.size() << std::endl;
+                        std::cout << "Epoch " << epoch << "/" << num_epochs << " - Keyframe "
+                                  << (kf_idx + 1) << "/" << all_keyframes.size() << std::endl;
                     }
 
                     // Visualize results periodically
@@ -267,6 +288,45 @@ bool StreamingGS::loadAndTrain() {
                         training_visualizer_->visualizeKeyframe(kf->pose, kf->getCameraInfo(),
                                                                 entity_path);
                         training_visualizer_->logImage(entity_path, rendered_image, iteration);
+                        auto rendering_tensors = batch_trainer_->cloneCurrentTensors();
+                        foxglove_renderer_->updateRenderingTensors(rendering_tensors);
+                        if (foxglove_renderer_->testRenderFromFixedPose()) {
+                            LOG(INFO) << "Rendering test successful!";
+                            // render_count++;
+                        } else {
+                            LOG(ERROR) << "Rendering test failed";
+                        }
+
+                        // Update Foxglove renderer with cloned training tensors
+                        // LOG(INFO) << "Checking Foxglove renderer: ptr="
+                        //           << (foxglove_renderer_ != nullptr) << " running="
+                        //           << (foxglove_renderer_ ? foxglove_renderer_->isRunning() :
+                        //           false);
+                        // if (foxglove_renderer_ && foxglove_renderer_->isRunning()) {
+                        //     LOG(INFO) << "Cloning training tensors for rendering";
+                        //     auto rendering_tensors = batch_trainer_->cloneCurrentTensors();
+                        //     foxglove_renderer_->updateRenderingTensors(rendering_tensors);
+                        //
+                        //     // Test render from fixed pose periodically so Foxglove clients can
+                        //     see
+                        //     // it
+                        //     static int render_count = 0;
+                        //     if (render_count <
+                        //         5) {  // Render first 5 times to ensure clients receive it
+                        //         LOG(INFO)
+                        //             << "Testing rendering pipeline with fixed camera pose
+                        //             (attempt "
+                        //             << (render_count + 1) << ")";
+                        //         if (foxglove_renderer_->testRenderFromFixedPose()) {
+                        //             LOG(INFO) << "Rendering test successful!";
+                        //             render_count++;
+                        //         } else {
+                        //             LOG(ERROR) << "Rendering test failed";
+                        //         }
+                        //     }
+                        // } else {
+                        //     LOG(WARNING) << "Foxglove renderer not available or not running";
+                        // }
                     }
                 }
             }
@@ -364,8 +424,10 @@ bool StreamingGS::loadAndTrain() {
 
                         // Visualize results periodically
                         if (iteration % 5 == 0) {
-                            auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
-                            std::string entity_path = "/camera/region_" + std::to_string(region_idx);
+                            auto rendered_image =
+                                utils::tensorToMat(results.rendered_image[0], false);
+                            std::string entity_path =
+                                "/camera/region_" + std::to_string(region_idx);
 
                             batch_trainer_->copySplatsToBatch(region_splat_batch.splats);
                             training_visualizer_->visualizeCurrentSplats(region_splat_batch,
@@ -637,9 +699,9 @@ bool StreamingGS::streamAndTrain() {
                     batch_trainer_->trainKeyframe(kf, results, iteration, training_visualizer_);
 
                     if (iteration % 10 == 0) {
-                        std::cout << "Epoch " << epoch << "/" << num_epochs
-                                  << " - Keyframe " << (kf_idx + 1) << "/"
-                                  << keyframes_with_color.size() << std::endl;
+                        std::cout << "Epoch " << epoch << "/" << num_epochs << " - Keyframe "
+                                  << (kf_idx + 1) << "/" << keyframes_with_color.size()
+                                  << std::endl;
                     }
 
                     // Visualize results periodically
@@ -655,19 +717,55 @@ bool StreamingGS::streamAndTrain() {
                         core::types::Pose pose;
                         pose.position = camera_pose.translation();
                         pose.orientation = camera_pose.rotation();
-                        training_visualizer_->visualizeKeyframe(pose, kf->getCameraInfo(), entity_path);
+                        training_visualizer_->visualizeKeyframe(pose, kf->getCameraInfo(),
+                                                                entity_path);
                         training_visualizer_->logImage(entity_path, rendered_image, iteration);
+
+                        // // Update Foxglove renderer with cloned training tensors
+                        LOG(INFO) << "Checking Foxglove renderer: ptr="
+                                  << (foxglove_renderer_ != nullptr) << " running="
+                                  << (foxglove_renderer_ ? foxglove_renderer_->isRunning() : false);
+                        if (foxglove_renderer_ && foxglove_renderer_->isRunning()) {
+                            foxglove_renderer_->updateSplats(
+                                full_splat_batch.splats,
+                                static_cast<uint64_t>(
+                                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::system_clock::now().time_since_epoch())
+                                        .count()));
+                            foxglove_renderer_->testRenderFromFixedPose();
+                        }
+                        // if (foxglove_renderer_ && foxglove_renderer_->isRunning()) {
+                        //     LOG(INFO) << "Cloning training tensors for rendering";
+                        //     auto rendering_tensors = batch_trainer_->cloneCurrentTensors();
+                        //     foxglove_renderer_->updateRenderingTensors(rendering_tensors);
+                        //
+                        //     // Test render from fixed pose periodically so Foxglove clients can
+                        //     see it static int render_count = 0; if (render_count < 5) {  //
+                        //     Render first 5 times to ensure clients receive it
+                        //         LOG(INFO) << "Testing rendering pipeline with fixed camera pose
+                        //         (attempt " << (render_count + 1) << ")"; if
+                        //         (foxglove_renderer_->testRenderFromFixedPose()) {
+                        //             LOG(INFO) << "Rendering test successful!";
+                        //             render_count++;
+                        //         } else {
+                        //             LOG(ERROR) << "Rendering test failed";
+                        //         }
+                        //     }
+                        // } else {
+                        //     LOG(WARNING) << "Foxglove renderer not available or not running";
+                        // }
                     }
 
                     // Log splat state to CSV at first iteration and every 50 iterations
                     if (iteration == 0 || (iteration % 50 == 0 && iteration > 0)) {
                         batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
-                        std::string csv_filename = "splats_iter_" + std::to_string(iteration) + ".csv";
-                        LOG(INFO) << "Logging " << full_splat_batch.splats.size()
-                                  << " splats to " << training_config_.debug_output_path << csv_filename;
+                        std::string csv_filename =
+                            "splats_iter_" + std::to_string(iteration) + ".csv";
+                        LOG(INFO) << "Logging " << full_splat_batch.splats.size() << " splats to "
+                                  << training_config_.debug_output_path << csv_filename;
                         utils::SplatLogger::writeSplatsToCSV(full_splat_batch.splats,
-                                                              training_config_.debug_output_path,
-                                                              csv_filename);
+                                                             training_config_.debug_output_path,
+                                                             csv_filename);
                     }
                 }
             }
@@ -678,11 +776,10 @@ bool StreamingGS::streamAndTrain() {
             batch_trainer_->copySplatsToBatch(full_splat_batch.splats);
             std::string splat_log_path = training_config_.debug_output_path;
             std::string csv_filename = "splats_final.csv";
-            LOG(INFO) << "Logging " << full_splat_batch.splats.size()
-                      << " splats to " << splat_log_path << csv_filename;
-            if (!utils::SplatLogger::writeSplatsToCSV(full_splat_batch.splats,
-                                                       splat_log_path,
-                                                       csv_filename)) {
+            LOG(INFO) << "Logging " << full_splat_batch.splats.size() << " splats to "
+                      << splat_log_path << csv_filename;
+            if (!utils::SplatLogger::writeSplatsToCSV(full_splat_batch.splats, splat_log_path,
+                                                      csv_filename)) {
                 LOG(ERROR) << "Failed to write splats to CSV";
             }
 
@@ -795,14 +892,17 @@ bool StreamingGS::streamAndTrain() {
 
                         // Visualize results periodically
                         if (iteration % 5 == 0) {
-                            auto rendered_image = utils::tensorToMat(results.rendered_image[0], false);
+                            auto rendered_image =
+                                utils::tensorToMat(results.rendered_image[0], false);
                             std::string entity_path = "/camera/batch_" + std::to_string(batch_idx);
 
                             batch_trainer_->copySplatsToBatch(batch_splat_batch.splats);
-                            training_visualizer_->visualizeCurrentSplats(batch_splat_batch, batch_idx);
+                            training_visualizer_->visualizeCurrentSplats(batch_splat_batch,
+                                                                         batch_idx);
                             auto transform_result =
                                 tf_tree_->getTransform(config_.base_link, config_.camera_frame);
-                            auto camera_pose = kf->pose.getEigenIsometry() * transform_result.transform;
+                            auto camera_pose =
+                                kf->pose.getEigenIsometry() * transform_result.transform;
                             core::types::Pose pose;
                             pose.position = camera_pose.translation();
                             pose.orientation = camera_pose.rotation();

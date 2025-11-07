@@ -18,8 +18,106 @@ RasterizationOutput DifferentiableRasterizer::rasterize(const GaussianTensors& g
                                                         const torch::Tensor& camera_pose,
                                                         const torch::Tensor& camera_intrinsics,
                                                         int image_width, int image_height) {
-    std::cout << "Not implemented" << std::endl;
-    return RasterizationOutput();
+    // Gradient-free rendering for visualization
+    torch::NoGradGuard no_grad;
+
+    LOG(INFO) << "[Rasterizer] Rendering " << gaussians.number_of_splats() << " splats to "
+              << image_width << "x" << image_height;
+
+    // Transform opacities and scales before rasterization
+    auto opacities = gaussians.get_opacities();
+    opacities = torch::sigmoid(opacities);
+
+    auto scales = gaussians.get_scales();
+    scales = torch::exp(scales);  // Convert from log-space to linear space
+
+    //================= Step 1: Project Gaussians to 2D ==================
+    ProjectGaussians::config.image_width = image_width;
+    ProjectGaussians::config.image_height = image_height;
+    ProjectGaussians::config.eps2d = 0.3f;
+    ProjectGaussians::config.near_plane = 0.01f;
+    ProjectGaussians::config.far_plane = 10000.f;
+    ProjectGaussians::config.radius_clip = 0.0f;
+    ProjectGaussians::config.calc_compensations = false;
+    ProjectGaussians::config.camera_model = gsplat::CameraModelType::PINHOLE;
+    ProjectGaussians::config.rasterize_step_status = RasterizeStepStatus::INITIALIZED;
+
+    auto proj_results = ProjectGaussians::apply(
+        gaussians.get_positions(), gaussians.get_rotations(), scales, opacities,
+        camera_pose, camera_intrinsics);
+
+    // Extract projection results: [radii, xys, depths, conics, compensations]
+    auto radii = proj_results[0];
+    auto xys = proj_results[1];
+    auto depths = proj_results[2];
+    auto conics = proj_results[3];
+    auto compensations = proj_results[4];
+
+    // No gradient tracking for visualization
+    auto xys_contiguous = xys.contiguous();
+
+    //================== Step 2: Compute colors with spherical harmonics ==================
+    auto world_to_cam = torch::inverse(camera_pose);
+    auto world_to_cam_T = world_to_cam.index(
+        {torch::indexing::Slice(), torch::indexing::Slice(torch::indexing::None, 3), 3});
+
+    // Compute view directions (from Gaussian positions to camera)
+    auto dirs = (gaussians.get_positions() - world_to_cam_T).unsqueeze(0);
+
+    // Evaluate spherical harmonics
+    auto sh_degree_tensor =
+        torch::tensor({gaussians.get_sh_degree()},
+                      torch::TensorOptions().dtype(torch::kInt32).device(dirs.device()));
+    auto shs = gaussians.get_sh_coefficients().unsqueeze(0);
+    auto colors = SphericalHarmonics::apply(sh_degree_tensor, dirs, shs)[0];
+    colors = torch::clamp_min(colors + 0.5f, 0.0f);
+
+    //================= Step 3: Intersect Gaussians with tiles ==================
+    int32_t tile_size = 16;
+    const int tile_width = (image_width + tile_size - 1) / tile_size;
+    const int tile_height = (image_height + tile_size - 1) / tile_size;
+
+    auto intersections =
+        gsplat::intersect_tile(xys_contiguous, radii, depths, {}, {}, xys_contiguous.size(0),
+                               tile_size, tile_width, tile_height, true, false);
+
+    const auto tiles_per_gauss = std::get<0>(intersections);
+    const auto isect_ids = std::get<1>(intersections);
+    const auto flatten_ids = std::get<2>(intersections);
+
+    auto isect_offsets = gsplat::intersect_offset(isect_ids, 1, tile_width, tile_height);
+    isect_offsets = isect_offsets.reshape({1, tile_height, tile_width});
+
+    //================= Step 4: Rasterize the 2D Gaussians ==================
+    Rasterization::config.image_width = image_width;
+    Rasterization::config.image_height = image_height;
+    Rasterization::config.tile_size = tile_size;
+    Rasterization::config.rasterize_step_status = RasterizeStepStatus::INITIALIZED;
+
+    auto final_bg = at::empty({0}, colors.options().dtype(torch::kFloat32));
+
+    auto raster_outputs = Rasterization::apply(xys_contiguous, conics, colors, opacities, final_bg,
+                                               isect_offsets, flatten_ids);
+
+    auto rendered_image = raster_outputs[0];
+    auto rendered_alpha = raster_outputs[1];
+
+    // Return the output
+    RasterizationOutput out;
+    out.success = true;
+    out.width = image_width;
+    out.height = image_height;
+    out.rendered_image = rendered_image;
+    out.alpha_channel = rendered_alpha;
+    out.means2d = xys_contiguous;
+    out.radii = std::get<0>(radii.squeeze(0).max(-1));
+    out.visibility = out.radii > 0;
+    out.depths = depths;
+
+    LOG(INFO) << "[Rasterizer] Rendering complete. Alpha mean: "
+              << rendered_alpha.mean().item<float>();
+
+    return out;
 }
 
 RasterizationOutput DifferentiableRasterizer::rasterize(GaussianTensors& gaussians,

@@ -59,6 +59,24 @@ cc_library(
     ],
 )
 
+# Foxglove renderer
+cc_library(
+    name = "foxglove_renderer",
+    srcs = ["visualization/foxglove_renderer.cpp"],
+    hdrs = ["visualization/foxglove_renderer.hpp"],
+    deps = [
+        ":keyframe_batch",
+        ":rasterizer",
+        "//viz:foxglove_server",
+        "//core/types",
+        "//common:logging",
+        "@libtorch//:torch",
+        "@opencv//:core",
+        "@opencv//:imgproc",
+        "@eigen",
+    ],
+)
+
 # Batch trainer
 cc_library(
     name = "batch_trainer",
@@ -299,6 +317,7 @@ cc_library(
         ":training_config",
         ":keyframe_batch",
         ":training_visualizer",
+        ":foxglove_renderer",
         ":batch_trainer",
         ":bilateral_grid",
         ":rasterizer",

@@ -159,6 +159,22 @@ http_archive(
     strip_prefix = "json-3.11.3",
 )
 
+# Foxglove SDK (prebuilt C/C++ libraries)
+http_archive(
+    name = "foxglove_sdk",
+    urls = ["https://github.com/foxglove/foxglove-sdk/releases/download/sdk/v0.15.3/foxglove-v0.15.3-cpp-x86_64-unknown-linux-gnu.zip"],
+    integrity = "sha256-nbMJlgcQ5pIs6uOfFXB3WAzeMmwMG9gcNfIMK+zPfIQ=",
+    build_file = "//third_party:foxglove_sdk.BUILD",
+)
+
+# Foxglove Schemas (JSON, Protobuf, Flatbuffer schemas)
+http_archive(
+    name = "foxglove_schemas",
+    urls = ["https://github.com/foxglove/foxglove-sdk/archive/refs/tags/sdk/v0.15.3.tar.gz"],
+    strip_prefix = "foxglove-sdk-sdk-v0.15.3/schemas",
+    build_file = "//third_party:foxglove_schemas.BUILD",
+)
+
 # Add Rerun SDK
 http_archive(
     name = "rerun_sdk",

@@ -81,6 +81,19 @@ public:
     }
     void setupTraining(const core::types::GaussianSplatBatch& batch);
 
+    /**
+     * @brief Clone current training tensors for thread-safe rendering
+     *
+     * Returns a deep copy of current_gaussian_tensors_ that can be safely
+     * used by rendering thread while training continues.
+     *
+     * @return GaussianTensors Deep copy of current training tensors
+     */
+    GaussianTensors cloneCurrentTensors() const {
+        std::lock_guard<std::mutex> lock(tensors_mutex_);
+        return current_gaussian_tensors_.clone();
+    }
+
 private:
     TrainingConfig config_;
     std::shared_ptr<core::storage::MapStore> map_store_;
@@ -119,6 +132,9 @@ private:
     std::mutex keyframe_train_queue_mutex_;
     std::condition_variable keyframe_train_queue_cv_;
     std::atomic<bool> shutdown_requested_ = false;
+
+    // Mutex to protect current_gaussian_tensors_ from concurrent access
+    mutable std::mutex tensors_mutex_;
 
     // Apply parameter transforms
     // void applyParameterTransforms();

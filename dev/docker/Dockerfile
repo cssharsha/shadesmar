@@ -23,6 +23,12 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Node.js 20.x and npm for Foxglove extension development
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest \
+    && rm -rf /var/lib/apt/lists/*
+
 # Looks like libssh-gcrypt has some issue, so installing it separately
 RUN apt update -y && apt install -y libssh-gcrypt-4
 
@@ -37,6 +43,7 @@ RUN apt update -y && apt install -y \
     libopencv-dev \
     libboost-all-dev \
     libtbb-dev \
+    libwebsocketpp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 

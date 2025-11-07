@@ -86,6 +86,11 @@ public:
     void printGradInfo() const;
     void setRequiresGrad(bool requires_grad = true);
 
+    // Clone tensors for safe concurrent access (deep copy)
+    GaussianTensors clone() const;
+
+    void clear();
+
     std::vector<core::types::GaussianSplat> toSplats();
     uint32_t check_stuff = 0;
 
@@ -95,8 +100,8 @@ private:
     torch::Tensor opacities;
     torch::Tensor scales;
     torch::Tensor rotations;
-    torch::Tensor sh_0;       // SH DC component [N, 1, 3]
-    torch::Tensor sh_N;       // SH higher order coefficients [N, 15, 3] for degree 3
+    torch::Tensor sh_0;  // SH DC component [N, 1, 3]
+    torch::Tensor sh_N;  // SH higher order coefficients [N, 15, 3] for degree 3
     torch::Tensor confidences;
     int32_t sh_degree = 0;
     uint32_t num_splats;

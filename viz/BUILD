@@ -45,6 +45,28 @@ cc_library(
 )
 
 cc_library(
+    name = "foxglove_server",
+    srcs = ["src/foxglove_server.cpp"],
+    hdrs = [
+        "include/viz/foxglove_server.hpp",
+        "include/viz/foxglove_schemas.hpp",
+    ],
+    includes = ["include"],
+    data = [
+        "@foxglove_schemas//:jsonschema",
+    ],
+    deps = [
+        "//core/types",
+        "//common:logging",
+        "@foxglove_sdk//:foxglove_sdk",
+        "@nlohmann_json//:json",
+        "@opencv//:core",
+        "@opencv//:imgcodecs",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "visualize_gs_rerun",
     srcs = ["src/visualize_gs_rerun.cpp"],
     hdrs = ["include/viz/visualize_gs_rerun.hpp"],
