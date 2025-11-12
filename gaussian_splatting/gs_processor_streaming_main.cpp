@@ -41,10 +41,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::string map_base_path = argv[1];
-    bool use_spatial_partitioning = true;  // Default to true
-    bool enable_foxglove_renderer = true;  // Default to true
-    std::string foxglove_host = "0.0.0.0"; // Default bind to all interfaces
-    int foxglove_port = 8765;              // Default Foxglove port
+    bool use_spatial_partitioning = true;   // Default to true
+    bool enable_foxglove_renderer = true;   // Default to true
+    std::string foxglove_host = "0.0.0.0";  // Default bind to all interfaces
+    int foxglove_port = 8765;               // Default Foxglove port
 
     // Parse command line arguments
     for (int i = 2; i < argc; ++i) {

@@ -693,6 +693,7 @@ rerun::Points3D RerunVisualizer::toRerunPoints(const core::types::PointCloud& cl
     std::vector<rerun::Color> rerun_colors;
     rerun_colors.reserve(cloud.colors.size());
     for (const auto& c : cloud.colors) {
+        std::cout << "Color: " << c.transpose() << std::endl;
         rerun_colors.push_back(rerun::Color(
             static_cast<uint8_t>(c.x()), static_cast<uint8_t>(c.y()), static_cast<uint8_t>(c.z())));
         std::cout << "Color: " << c.transpose() << std::endl;
@@ -760,10 +761,9 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
         // Add color with opacity (convert from [0,1] to [0,255])
         // Get RGB color from SH DC component
         Eigen::Vector3f rgb = splat.getColor();
-        colors.emplace_back(rerun::components::Color{static_cast<uint8_t>(rgb.x() * 255.0f),
-                                                     static_cast<uint8_t>(rgb.y() * 255.0f),
-                                                     static_cast<uint8_t>(rgb.z() * 255.0f),
-                                                     static_cast<uint8_t>(splat.opacity * 255.0f)});
+        colors.emplace_back(rerun::components::Color{
+            static_cast<uint8_t>(rgb.x() * 255.0f), static_cast<uint8_t>(rgb.y() * 255.0f),
+            static_cast<uint8_t>(rgb.z() * 255.0f), static_cast<uint8_t>(splat.opacity * 255.0f)});
         // std::cout << "Added position: " << splat.position.transpose() << std::endl;
 
         // Calculate average radius from covariance eigenvalues
@@ -777,9 +777,11 @@ void RerunVisualizer::addGaussianSplats(const std::vector<core::types::GaussianS
 
     // Create Points3D with colors and radii
     auto points3d = rerun::Points3D(positions).with_colors(colors).with_radii(radii);
+    auto points3d_cloud = rerun::Points3D(positions).with_colors(colors);
 
     // rec_.set_time_sequence("max_keyframe_id", timestamp);
-    rec_.log(entity_path, points3d);
+    rec_.log(entity_path + "/splats", points3d);
+    rec_.log(entity_path + "/cloud", points3d_cloud);
 
     LOG(INFO) << "Visualized " << splats.size() << " Gaussian splats at " << entity_path;
 }

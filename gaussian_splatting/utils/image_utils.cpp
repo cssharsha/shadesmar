@@ -1,7 +1,7 @@
+#include "image_utils.hpp"
 #include <filesystem>
 #include <logging/logging.hpp>
 #include <opencv2/opencv.hpp>
-#include "image_utils.hpp"
 
 namespace gaussian_splatting {
 namespace utils {
@@ -95,6 +95,7 @@ cv::Mat combineImagesHorizontally(const cv::Mat& img1, const cv::Mat& img2) {
 
 bool writeImageToDirectory(const cv::Mat& image, const std::string& directory,
                            const std::string& filename) {
+    LOG(INFO) << "Writing image to directory: " << directory;
     if (image.empty()) {
         LOG(ERROR) << "Cannot write empty image";
         return false;
@@ -125,7 +126,7 @@ bool writeImageToDirectory(const cv::Mat& image, const std::string& directory,
 }
 
 void plotProjectedPoints(const torch::Tensor& points, const std::string& directory,
-                           const std::string& filename, int image_width, int image_height) {
+                         const std::string& filename, int image_width, int image_height) {
     torch::NoGradGuard no_grad;
 
     // Ensure tensor is on CPU
@@ -153,13 +154,14 @@ void plotProjectedPoints(const torch::Tensor& points, const std::string& directo
 
             // Draw a small circle for each point
             if (x >= 0 && x < image_width && y >= 0 && y < image_height) {
-                cv::circle(image, cv::Point(x, y), 1, cv::Scalar(0, 255, 0), -1); // Green dot
+                cv::circle(image, cv::Point(x, y), 1, cv::Scalar(0, 255, 0), -1);  // Green dot
             }
         }
 
         // Construct filename with index
         std::filesystem::path path(filename);
-        std::string new_filename = path.stem().string() + "_" + std::to_string(i) + path.extension().string();
+        std::string new_filename =
+            path.stem().string() + "_" + std::to_string(i) + path.extension().string();
 
         // Write image to file
         writeImageToDirectory(image, directory, new_filename);

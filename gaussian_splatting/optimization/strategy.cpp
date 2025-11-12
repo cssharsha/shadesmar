@@ -403,5 +403,8 @@ void Strategy<GrowPolicy, PrunePolicy>::removeSplats(const torch::Tensor& is_pru
 // Explicit template instantiation for DefaultStrategy
 template class Strategy<DefaultGrowPolicy, DefaultPrunePolicy>;
 
+// Explicit template instantiation for MCMCStrategy
+template class Strategy<MCMCGrowPolicy, MCMCPrunePolicy>;
+
 }  // namespace optimization
 }  // namespace gaussian_splatting

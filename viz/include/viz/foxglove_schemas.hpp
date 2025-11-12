@@ -110,6 +110,7 @@ class SchemaLoader {
         {"foxglove.CompressedImage", "CompressedImage.json"},
         {"foxglove.Image", "Image.json"},
         {"foxglove.PoseStamped", "PoseStamped.json"},
+        {"foxglove.PosesInFrame", "PosesInFrame.json"},
         {"foxglove.CameraCalibration", "CameraCalibration.json"},
         {"foxglove.FrameTransform", "FrameTransform.json"},
         {"foxglove.Grid", "Grid.json"},

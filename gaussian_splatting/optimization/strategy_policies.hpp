@@ -10,7 +10,7 @@ namespace optimization {
 // split large splats with high gradients
 class DefaultGrowPolicy {
 public:
-    template<typename StrategyType>
+    template <typename StrategyType>
     void operator()(StrategyType* strategy, int iter);
 };
 
@@ -18,7 +18,7 @@ public:
 // Removes splats with low opacity
 class DefaultPrunePolicy {
 public:
-    template<typename StrategyType>
+    template <typename StrategyType>
     void operator()(StrategyType* strategy, int iter);
 };
 
@@ -28,15 +28,15 @@ public:
 class MCMCGrowPolicy {
 public:
     static struct Config {
-        int cap_max = 1000000;           // Maximum number of Gaussians
-        float noise_lr = 5e5;            // Noise learning rate for position perturbation
-        int refine_start_iter = 500;     // Start MCMC refinement after this iteration
-        int refine_stop_iter = 25000;    // Stop MCMC refinement after this iteration
-        int refine_every = 100;          // Refine every N iterations
-        float min_opacity = 0.005;       // Minimum opacity threshold for dead Gaussians
+        int cap_max = 1000000;         // Maximum number of Gaussians
+        float noise_lr = 5e5;          // Noise learning rate for position perturbation
+        int refine_start_iter = 1;     // Start MCMC refinement after this iteration
+        int refine_stop_iter = 25000;  // Stop MCMC refinement after this iteration
+        int refine_every = 10;         // Refine every N iterations
+        float min_opacity = 0.005;     // Minimum opacity threshold for dead Gaussians
     } config;
 
-    template<typename StrategyType>
+    template <typename StrategyType>
     void operator()(StrategyType* strategy, int iter);
 
 private:
@@ -48,15 +48,15 @@ private:
     void initializeBinomialTable(const c10::Device& device);
 
     // Relocate dead Gaussians (opacity < min_opacity) to high-opacity locations
-    template<typename StrategyType>
+    template <typename StrategyType>
     void relocateGaussians(StrategyType* strategy);
 
     // Add new Gaussians by sampling from opacity distribution (5% growth)
-    template<typename StrategyType>
+    template <typename StrategyType>
     void addNewGaussians(StrategyType* strategy);
 
     // Inject noise to Gaussian positions for exploration
-    template<typename StrategyType>
+    template <typename StrategyType>
     void injectNoise(StrategyType* strategy, float lr);
 
     // Compute new opacity and scales using Equation 9 from the paper
@@ -72,8 +72,8 @@ private:
     // Helper: Compute 3x3 covariance matrices from quaternions and scales
     // Returns: [N, 3, 3] covariance matrices
     torch::Tensor quaternionScaleToCovariance(
-        const torch::Tensor& quats,    // [N, 4] normalized quaternions
-        const torch::Tensor& scales    // [N, 3] scales in linear space
+        const torch::Tensor& quats,  // [N, 4] normalized quaternions
+        const torch::Tensor& scales  // [N, 3] scales in linear space
     );
 
     // Helper: Sigmoid function for opacity-based weighting
@@ -86,7 +86,7 @@ private:
 // MCMC doesn't prune - it relocates dead Gaussians instead
 class MCMCPrunePolicy {
 public:
-    template<typename StrategyType>
+    template <typename StrategyType>
     void operator()(StrategyType* strategy, int iter) {
         // No-op: MCMC handles "dead" Gaussians via relocation in the grow policy
     }

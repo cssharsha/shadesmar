@@ -262,7 +262,7 @@ void MCMCGrowPolicy::relocateGaussians(StrategyType* strategy) {
     new_opacities = new_opacities.clamp(config.min_opacity, 1.0f - eps);
 
     // Convert back to logit space for opacities and log space for scales
-    auto new_opacities_logit = torch::logit(new_opacities);
+    auto new_opacities_logit = torch::logit(new_opacities).unsqueeze(-1);  // Add dimension to match [N, 1]
     auto new_scales_log = torch::log(new_scales);
 
     // Update parameters:
@@ -379,7 +379,7 @@ void MCMCGrowPolicy::addNewGaussians(StrategyType* strategy) {
     // Clamp and convert
     float eps = std::numeric_limits<float>::epsilon();
     new_opacities = new_opacities.clamp(config.min_opacity, 1.0f - eps);
-    auto new_opacities_logit = torch::logit(new_opacities);
+    auto new_opacities_logit = torch::logit(new_opacities).unsqueeze(-1);  // Add dimension to match [N, 1]
     auto new_scales_log = torch::log(new_scales);
 
     // First update the sampled indices with new values

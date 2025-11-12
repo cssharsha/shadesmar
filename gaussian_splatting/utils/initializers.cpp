@@ -30,7 +30,7 @@ bool intializeSplatsFromKeypoints(std::shared_ptr<core::storage::MapStore>& map_
                                   core::types::GaussianSplatBatch& splat_batch,
                                   std::atomic<uint64_t>& next_splat_id,
                                   std::vector<uint64_t>& keyframe_ids) {
-    std::cout << "Initialize splats from keypoints" << std::endl;
+    std::cout << "Initialize splats from keypoints m1" << std::endl;
     // Get all keypoints from map store (non-blocking read)
     auto all_keypoints = map_store->getAllKeyPoints();
     std::cout << "No keypoints: " << all_keypoints.size() << std::endl;
@@ -72,7 +72,7 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
                                   core::types::GaussianSplatBatch& splat_batch,
                                   std::atomic<uint64_t>& next_splat_id,
                                   utils::PointCloudUtils& point_cloud_utils) {
-    std::cout << "Initialize splats from keypoints" << std::endl;
+    std::cout << "Initialize splats from keypoints m2" << std::endl;
     // Get all keypoints from map store (non-blocking read)
     auto all_keypoints = map_store->getAllKeyPoints();
     std::cout << "No keypoints: " << all_keypoints.size() << std::endl;
@@ -110,7 +110,8 @@ bool intializeSplatsFromKeypoints(const std::vector<uint64_t>& keyframe_ids,
 
         // Initialize color by extracting from keyframe observations
         // Convert RGB color to SH DC component
-        Eigen::Vector3f rgb_color = keypoint.color.cast<float>() / 255.0f;
+        // Eigen::Vector3f rgb_color = keypoint.color.cast<float>() / 255.0f;
+        Eigen::Vector3f rgb_color = extractColorFromKeyframes(keypoint, map_store);
         constexpr float C0 = 0.28209479177387814f;
         splat.sh_dc = (rgb_color.array() - 0.5f) / C0;
         // std::cout << "Color: " << rgb_color.transpose() << " -> SH DC: " <<
@@ -166,7 +167,7 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
                                   core::types::GaussianSplatBatch& splat_batch,
                                   std::atomic<uint64_t>& next_splat_id,
                                   utils::PointCloudUtils& point_cloud_utils) {
-    std::cout << "Initialize splats from filtered keypoints" << std::endl;
+    std::cout << "Initialize splats from filtered keypoints m3" << std::endl;
     std::cout << "Number of keypoints: " << keypoints.size() << std::endl;
     if (keypoints.empty()) {
         return false;
@@ -191,6 +192,7 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
 
         // Initialize color by converting RGB to SH DC component
         Eigen::Vector3f rgb_color = keypoint.color.cast<float>() / 255.0f;
+        // Eigen::Vector3f rgb_color = computeColorFromKeypoint(keypoint);
         constexpr float C0 = 0.28209479177387814f;
         splat.sh_dc = (rgb_color.array() - 0.5f) / C0;
 

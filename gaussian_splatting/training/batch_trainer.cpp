@@ -84,8 +84,8 @@ void BatchTrainer::setupTraining(const core::types::GaussianSplatBatch& batch) {
     optimizer->initialize(current_gaussian_tensors_);
     // Set the proper gamma
     auto scheduler = std::make_unique<optimization::Scheduler>(optimizer->getOptimizer(), 0.5);
-    strategy_ = std::make_unique<optimization::DefaultStrategy>(std::move(optimizer), std::move(scheduler),
-                                                                &current_gaussian_tensors_);
+    strategy_ = std::make_unique<optimization::DefaultStrategy>(
+        std::move(optimizer), std::move(scheduler), &current_gaussian_tensors_);
 }
 
 void BatchTrainer::copySplatsToBatch(std::vector<core::types::GaussianSplat>& splats) {
@@ -393,8 +393,8 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
 
     // Log photometric loss to Rerun for time series plot (RED)
     if (viz) {
-        viz->logLoss("training/loss/photometric", common::itemAs(photometric_loss), iteration,
-                     255, 0, 0);  // Red
+        viz->logLoss("training/loss/photometric", common::itemAs(photometric_loss), iteration, 255,
+                     0, 0);  // Red
     }
 
     LOG(INFO) << "Doint photometric loss";
@@ -409,8 +409,8 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
 
     // Log scale loss to Rerun for time series plot (GREEN)
     if (viz) {
-        viz->logLoss("training/loss/scale", common::itemAs(scale_loss), iteration,
-                     0, 255, 0);  // Green
+        viz->logLoss("training/loss/scale", common::itemAs(scale_loss), iteration, 0, 255,
+                     0);  // Green
     }
 
     scale_loss.backward();
@@ -421,18 +421,17 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
 
     // Log opacity loss to Rerun for time series plot (BLUE)
     if (viz) {
-        viz->logLoss("training/loss/opacity", common::itemAs(opacity_loss), iteration,
-                     0, 0, 255);  // Blue
+        viz->logLoss("training/loss/opacity", common::itemAs(opacity_loss), iteration, 0, 0,
+                     255);  // Blue
     }
 
     opacity_loss.backward();
 
     // Log total loss to Rerun for time series plot (MAGENTA)
     if (viz) {
-        float total_loss =
-            common::itemAs(photometric_loss) + common::itemAs(scale_loss) + common::itemAs(opacity_loss);
-        viz->logLoss("training/loss/total", total_loss, iteration,
-                     255, 0, 255);  // Magenta
+        float total_loss = common::itemAs(photometric_loss) + common::itemAs(scale_loss) +
+                           common::itemAs(opacity_loss);
+        viz->logLoss("training/loss/total", total_loss, iteration, 255, 0, 255);  // Magenta
     }
 
     // Debug: Check gradient magnitudes after backward pass
@@ -561,8 +560,8 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
             LOG(INFO) << "Max scale change: " << scale_diff;
         } else {
             // Sizes changed - densification happened
-            LOG(INFO) << "Splat count changed: " << positions_before.size(0)
-                      << " -> " << positions_after.size(0);
+            LOG(INFO) << "Splat count changed: " << positions_before.size(0) << " -> "
+                      << positions_after.size(0);
             LOG(INFO) << "Skipping parameter diff (densification occurred)";
         }
         LOG(INFO) << "Positions tensor address: " << positions_after.data_ptr();

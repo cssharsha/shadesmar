@@ -216,7 +216,6 @@ std::optional<core::types::Pose> OrbTracker::match(
     const core::types::KeyFrame& prev_frame, const core::types::KeyFrame& cur_frame,
     std::map<uint32_t, core::types::Keypoint>& map_keypoints,
     std::vector<Eigen::Vector3d>& world_points) {
-
     LOG(INFO) << "=== MATCH FUNCTION: Two-Stage Matching ===";
     LOG(INFO) << "Processing frames: prev=" << prev_frame.id << ", cur=" << cur_frame.id;
     LOG(INFO) << "Map size before matching: " << map_keypoints.size() << " keypoints";
@@ -239,6 +238,8 @@ std::optional<core::types::Pose> OrbTracker::match(
 
         orb_detector_->detectAndCompute(gray, edge_mask, keypoints, descriptor);
     };
+
+    LOG(INFO) << "Priting image stuff:\n" << cur_frame.getCameraInfo();
 
     // Detect features in both frames
     std::vector<cv::KeyPoint> cur_img_kps;
@@ -302,7 +303,6 @@ std::set<int> OrbTracker::matchCurrentFrameWithMap(
     const std::vector<cv::KeyPoint>& cur_img_kps, const cv::Mat& cur_img_desc,
     const core::types::KeyFrame& cur_frame, const cv::Mat& K,
     std::map<uint32_t, core::types::Keypoint>& map_keypoints) {
-
     std::set<int> matched_indices;
 
     if (map_keypoints.empty()) {
@@ -402,7 +402,6 @@ std::optional<core::types::Pose> OrbTracker::matchRemainingWithPrevFrame(
     const core::types::KeyFrame& cur_frame, const cv::Mat& K,
     std::map<uint32_t, core::types::Keypoint>& map_keypoints,
     std::vector<Eigen::Vector3d>& world_points) {
-
     if (prev_img_kps.empty() || cur_img_kps.empty()) {
         LOG(WARNING) << "No keypoints for Stage 2 matching";
         return std::nullopt;
@@ -1009,6 +1008,59 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
                   << T_prev_cam_to_cur_cam.translation().transpose()
                   << ", rotation_rpy=" << stf::getRPY(T_prev_cam_to_cur_cam).transpose();
 
+        // Lambda to undistort points if distortion model is present
+        auto undistortPoints = [&K](const std::vector<cv::Point2f>& distorted_points,
+                                    const core::types::KeyFrame& frame) -> std::vector<cv::Point2f> {
+            const auto& cam_info = frame.getCameraInfo();
+
+            // Check if distortion model is set and has distortion coefficients
+            if (cam_info.distortion_model.empty() || cam_info.d.empty()) {
+                LOG(INFO) << "No distortion model or coefficients, using original points";
+                return distorted_points;
+            }
+
+            LOG(INFO) << "Undistorting points with model: " << cam_info.distortion_model
+                      << ", coeffs: [" << cam_info.d[0];
+            for (size_t i = 1; i < cam_info.d.size(); ++i) {
+                LOG(INFO) << ", " << cam_info.d[i];
+            }
+            LOG(INFO) << "]";
+
+            // Convert distortion coefficients to cv::Mat
+            cv::Mat distortion_coeffs(cam_info.d.size(), 1, CV_64F);
+            for (size_t i = 0; i < cam_info.d.size(); ++i) {
+                distortion_coeffs.at<double>(i) = cam_info.d[i];
+            }
+
+            // Undistort the points
+            std::vector<cv::Point2f> undistorted_points;
+            cv::undistortPoints(distorted_points, undistorted_points, K, distortion_coeffs);
+
+            // undistortPoints returns normalized coordinates, so we need to project them back
+            // Apply K to convert back to pixel coordinates
+            std::vector<cv::Point2f> pixel_points;
+            pixel_points.reserve(undistorted_points.size());
+
+            double fx = K.at<double>(0, 0);
+            double fy = K.at<double>(1, 1);
+            double cx = K.at<double>(0, 2);
+            double cy = K.at<double>(1, 2);
+
+            for (const auto& pt : undistorted_points) {
+                cv::Point2f pixel_pt;
+                pixel_pt.x = fx * pt.x + cx;
+                pixel_pt.y = fy * pt.y + cy;
+                pixel_points.push_back(pixel_pt);
+            }
+
+            LOG(INFO) << "Undistorted " << distorted_points.size() << " points";
+            return pixel_points;
+        };
+
+        // Undistort points if distortion model is present
+        std::vector<cv::Point2f> undistorted_prev_points = undistortPoints(prev_points, prev_frame);
+        std::vector<cv::Point2f> undistorted_cur_points = undistortPoints(cur_points, cur_frame);
+
         // Setup projection matrices for triangulation in prev_camera frame
         // P_prev = K * [I | 0] (prev camera is the reference frame)
         // P_cur = K * [R | t] (where [R|t] is prev_cam -> cur_cam transform)
@@ -1043,9 +1095,9 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
 
         P_cur = K * Rt_cur;
 
-        // Triangulate points using OpenCV
+        // Triangulate points using OpenCV with undistorted points
         cv::Mat points_homogeneous;
-        cv::triangulatePoints(P_prev, P_cur, prev_points, cur_points, points_homogeneous);
+        cv::triangulatePoints(P_prev, P_cur, undistorted_prev_points, undistorted_cur_points, points_homogeneous);
         LOG(INFO) << "points_homogeneous: " << points_homogeneous.rows << "x"
                   << points_homogeneous.cols;
         LOG(INFO) << "points_homogeneous: " << points_homogeneous.t();
@@ -1070,14 +1122,14 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
                       << P_cur.at<double>(i, 3);
         }
 
-        for (int i = 0; i < prev_points.size(); i++) {
-            LOG(INFO) << "prev_points row " << i << ": " << prev_points[i].x << " "
-                      << prev_points[i].y;
+        for (int i = 0; i < undistorted_prev_points.size(); i++) {
+            LOG(INFO) << "undistorted_prev_points row " << i << ": " << undistorted_prev_points[i].x << " "
+                      << undistorted_prev_points[i].y;
         }
 
-        for (int i = 0; i < cur_points.size(); i++) {
-            LOG(INFO) << "cur_points row " << i << ": " << cur_points[i].x << " "
-                      << cur_points[i].y;
+        for (int i = 0; i < undistorted_cur_points.size(); i++) {
+            LOG(INFO) << "undistorted_cur_points row " << i << ": " << undistorted_cur_points[i].x << " "
+                      << undistorted_cur_points[i].y;
         }
 
         // Get transforms to convert from camera frames to world frame
@@ -1152,10 +1204,10 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
             double proj_cur_x = proj_cur_cv.at<double>(0) / proj_cur_cv.at<double>(2);
             double proj_cur_y = proj_cur_cv.at<double>(1) / proj_cur_cv.at<double>(2);
 
-            double reproj_error_prev = std::sqrt(std::pow(proj_prev_x - prev_points[i].x, 2) +
-                                                 std::pow(proj_prev_y - prev_points[i].y, 2));
-            double reproj_error_cur = std::sqrt(std::pow(proj_cur_x - cur_points[i].x, 2) +
-                                                std::pow(proj_cur_y - cur_points[i].y, 2));
+            double reproj_error_prev = std::sqrt(std::pow(proj_prev_x - undistorted_prev_points[i].x, 2) +
+                                                 std::pow(proj_prev_y - undistorted_prev_points[i].y, 2));
+            double reproj_error_cur = std::sqrt(std::pow(proj_cur_x - undistorted_cur_points[i].x, 2) +
+                                                std::pow(proj_cur_y - undistorted_cur_points[i].y, 2));
 
             if (reproj_error_prev > 5.0 || reproj_error_cur > 5.0) {
                 LOG(WARNING) << "Point " << i
@@ -1184,7 +1236,6 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
     const std::vector<cv::Point2f>& prev_points, const std::vector<cv::Point2f>& cur_points,
     const core::types::KeyFrame& prev_frame, const core::types::KeyFrame& cur_frame,
     const cv::Mat& K, std::vector<int>& valid_indices) {
-
     std::vector<Eigen::Vector3d> world_points;
     valid_indices.clear();
 
@@ -1207,6 +1258,49 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
         // Get relative transform from prev_camera to cur_camera
         Eigen::Isometry3d T_prev_cam_to_cur_cam =
             stf::getRelativeWithBaseLink1(cur_frame, prev_frame, *tft_, "base_link");
+
+        // Lambda to undistort points if distortion model is present
+        auto undistortPoints = [&K](const std::vector<cv::Point2f>& distorted_points,
+                                    const core::types::KeyFrame& frame) -> std::vector<cv::Point2f> {
+            const auto& cam_info = frame.getCameraInfo();
+
+            // Check if distortion model is set and has distortion coefficients
+            if (cam_info.distortion_model.empty() || cam_info.d.empty()) {
+                return distorted_points;
+            }
+
+            // Convert distortion coefficients to cv::Mat
+            cv::Mat distortion_coeffs(cam_info.d.size(), 1, CV_64F);
+            for (size_t i = 0; i < cam_info.d.size(); ++i) {
+                distortion_coeffs.at<double>(i) = cam_info.d[i];
+            }
+
+            // Undistort the points
+            std::vector<cv::Point2f> undistorted_points;
+            cv::undistortPoints(distorted_points, undistorted_points, K, distortion_coeffs);
+
+            // undistortPoints returns normalized coordinates, so we need to project them back
+            std::vector<cv::Point2f> pixel_points;
+            pixel_points.reserve(undistorted_points.size());
+
+            double fx = K.at<double>(0, 0);
+            double fy = K.at<double>(1, 1);
+            double cx = K.at<double>(0, 2);
+            double cy = K.at<double>(1, 2);
+
+            for (const auto& pt : undistorted_points) {
+                cv::Point2f pixel_pt;
+                pixel_pt.x = fx * pt.x + cx;
+                pixel_pt.y = fy * pt.y + cy;
+                pixel_points.push_back(pixel_pt);
+            }
+
+            return pixel_points;
+        };
+
+        // Undistort points if distortion model is present
+        std::vector<cv::Point2f> undistorted_prev_points = undistortPoints(prev_points, prev_frame);
+        std::vector<cv::Point2f> undistorted_cur_points = undistortPoints(cur_points, cur_frame);
 
         // Setup projection matrices for triangulation
         cv::Mat P_prev(3, 4, CV_64F);
@@ -1234,9 +1328,9 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
 
         P_cur = K * Rt_cur;
 
-        // Triangulate points using OpenCV
+        // Triangulate points using OpenCV with undistorted points
         cv::Mat points_homogeneous;
-        cv::triangulatePoints(P_prev, P_cur, prev_points, cur_points, points_homogeneous);
+        cv::triangulatePoints(P_prev, P_cur, undistorted_prev_points, undistorted_cur_points, points_homogeneous);
 
         // Get transforms to convert from camera frames to world frame
         auto T_base_prev_cam = tft_->getTransform(base_link_frame_id_, prev_cam_frame).transform;
@@ -1292,10 +1386,10 @@ std::vector<Eigen::Vector3d> OrbTracker::triangulateMatches(
             double proj_cur_x = proj_cur_cv.at<double>(0) / proj_cur_cv.at<double>(2);
             double proj_cur_y = proj_cur_cv.at<double>(1) / proj_cur_cv.at<double>(2);
 
-            double reproj_error_prev = std::sqrt(std::pow(proj_prev_x - prev_points[i].x, 2) +
-                                                 std::pow(proj_prev_y - prev_points[i].y, 2));
-            double reproj_error_cur = std::sqrt(std::pow(proj_cur_x - cur_points[i].x, 2) +
-                                                std::pow(proj_cur_y - cur_points[i].y, 2));
+            double reproj_error_prev = std::sqrt(std::pow(proj_prev_x - undistorted_prev_points[i].x, 2) +
+                                                 std::pow(proj_prev_y - undistorted_prev_points[i].y, 2));
+            double reproj_error_cur = std::sqrt(std::pow(proj_cur_x - undistorted_cur_points[i].x, 2) +
+                                                std::pow(proj_cur_y - undistorted_cur_points[i].y, 2));
 
             if (reproj_error_prev > 5.0 || reproj_error_cur > 5.0) {
                 continue;  // Skip

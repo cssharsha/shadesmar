@@ -74,6 +74,7 @@ Eigen::Vector3f PointCloudUtils::computeScaleFromKNN(const Eigen::Vector3f& posi
     }
     // Take square root to get actual distance (distances from KNN are squared)
     distance = std::sqrt(distance);
+    distance = 0.1f;
     // Return linear-space scale - log conversion happens in tensor conversion
     Eigen::Vector3f scale = Eigen::Vector3f(distance, distance, distance);
 

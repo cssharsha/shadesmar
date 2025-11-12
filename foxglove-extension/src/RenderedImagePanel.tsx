@@ -17,6 +17,13 @@ function RenderedImagePanel({ context }: { context: PanelExtensionContext }): Re
   const [renderedImage, setRenderedImage] = useState<string | undefined>();
   const [renderDone, setRenderDone] = useState<(() => void) | undefined>();
   const [lastUpdateTime, setLastUpdateTime] = useState<number>(0);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
+
+  const addDebugLog = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setDebugLogs((prev) => [...prev.slice(-20), `[${timestamp}] ${message}`]);
+  };
 
   // Setup rendering and subscriptions
   useLayoutEffect(() => {
@@ -29,23 +36,25 @@ function RenderedImagePanel({ context }: { context: PanelExtensionContext }): Re
           if (message.topic === config.renderedImageTopic) {
             const compressedImage = message.message as any;
 
+            addDebugLog(
+              `Received message: format=${compressedImage.format}, data_length=${compressedImage.data?.length}`,
+            );
+
             // Handle foxglove.CompressedImage format
             if (compressedImage.data) {
               let imageUrl: string;
 
               // Check if data is already a string (base64) or needs conversion
               if (typeof compressedImage.data === "string") {
-                // Data is already base64 string
                 const format = compressedImage.format || "jpeg";
                 imageUrl = `data:image/${format};base64,${compressedImage.data}`;
               } else if (compressedImage.data instanceof Uint8Array) {
-                // Data is a byte array, convert to base64
                 const bytes = Array.from(compressedImage.data) as number[];
                 const base64 = btoa(String.fromCharCode(...bytes));
                 const format = compressedImage.format || "jpeg";
                 imageUrl = `data:image/${format};base64,${base64}`;
               } else {
-                console.error("[RenderedImagePanel] Unsupported data type:", typeof compressedImage.data);
+                addDebugLog(`Unsupported data type: ${typeof compressedImage.data}`);
                 continue;
               }
 
@@ -70,6 +79,7 @@ function RenderedImagePanel({ context }: { context: PanelExtensionContext }): Re
   const formatTimeSince = (timestamp: number) => {
     if (timestamp === 0) return "Never";
     const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 1) return "just now";
     if (seconds < 60) return `${seconds}s ago`;
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m ago`;
@@ -93,13 +103,32 @@ function RenderedImagePanel({ context }: { context: PanelExtensionContext }): Re
           padding: "10px",
           backgroundColor: "#2a2a2a",
           borderBottom: "1px solid #444",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
         }}
       >
-        <div style={{ fontSize: "14px", fontWeight: "bold" }}>Rendered Image</div>
-        <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>
-          <div>Topic: {config.renderedImageTopic}</div>
-          <div>Last update: {formatTimeSince(lastUpdateTime)}</div>
+        <div>
+          <div style={{ fontSize: "14px", fontWeight: "bold" }}>Rendered Image</div>
+          <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>
+            <div>Topic: {config.renderedImageTopic}</div>
+            <div>Last update: {formatTimeSince(lastUpdateTime)}</div>
+          </div>
         </div>
+        <button
+          onClick={() => setShowDebug(!showDebug)}
+          style={{
+            padding: "4px 8px",
+            fontSize: "10px",
+            backgroundColor: "#444",
+            color: "#fff",
+            border: "none",
+            borderRadius: "3px",
+            cursor: "pointer",
+          }}
+        >
+          {showDebug ? "Hide Debug" : "Show Debug"}
+        </button>
       </div>
 
       <div
@@ -110,6 +139,7 @@ function RenderedImagePanel({ context }: { context: PanelExtensionContext }): Re
           justifyContent: "center",
           overflow: "hidden",
           padding: "10px",
+          position: "relative",
         }}
       >
         {renderedImage ? (
@@ -127,11 +157,52 @@ function RenderedImagePanel({ context }: { context: PanelExtensionContext }): Re
             <div style={{ fontSize: "48px", marginBottom: "10px" }}>📷</div>
             <div>Waiting for rendered image...</div>
             <div style={{ fontSize: "12px", marginTop: "5px" }}>
-              Move the camera in the 3D viewer to trigger rendering
+              Check for messages on topic: {config.renderedImageTopic}
             </div>
           </div>
         )}
       </div>
+      {showDebug && (
+        <div
+          style={{
+            height: "150px",
+            backgroundColor: "#0d0d0d",
+            borderTop: "1px solid #444",
+            padding: "8px",
+            overflowY: "auto",
+            fontFamily: "monospace",
+            fontSize: "11px",
+          }}
+        >
+          <div style={{ marginBottom: "8px", color: "#aaa" }}>
+            Debug Logs:
+            <button
+              onClick={() => setDebugLogs([])}
+              style={{
+                marginLeft: "10px",
+                padding: "2px 6px",
+                fontSize: "10px",
+                backgroundColor: "#333",
+                color: "#fff",
+                border: "none",
+                borderRadius: "2px",
+                cursor: "pointer",
+              }}
+            >
+              Clear
+            </button>
+          </div>
+          {debugLogs.length === 0 ? (
+            <div style={{ color: "#666" }}>No logs yet...</div>
+          ) : (
+            debugLogs.map((log, idx) => (
+              <div key={idx} style={{ marginBottom: "4px", color: "#ddd" }}>
+                {log}
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

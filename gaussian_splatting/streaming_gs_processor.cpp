@@ -726,13 +726,45 @@ bool StreamingGS::streamAndTrain() {
                                   << (foxglove_renderer_ != nullptr) << " running="
                                   << (foxglove_renderer_ ? foxglove_renderer_->isRunning() : false);
                         if (foxglove_renderer_ && foxglove_renderer_->isRunning()) {
-                            foxglove_renderer_->updateSplats(
-                                full_splat_batch.splats,
-                                static_cast<uint64_t>(
-                                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                        std::chrono::system_clock::now().time_since_epoch())
-                                        .count()));
+                            auto timestamp_ns = static_cast<uint64_t>(
+                                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count());
+
+                            foxglove_renderer_->updateSplats(full_splat_batch.splats, timestamp_ns);
                             foxglove_renderer_->testRenderFromFixedPose();
+
+                            // Sample and publish 10 keyframe poses evenly from all keyframes
+                            const size_t num_poses_to_publish = 10;
+                            if (keyframes_with_color.size() > 0 && iteration % 50 == 0) {
+                                std::vector<core::types::Pose> sampled_poses;
+                                size_t num_keyframes = keyframes_with_color.size();
+                                size_t sample_count = std::min(num_poses_to_publish, num_keyframes);
+
+                                for (size_t i = 0; i < sample_count; ++i) {
+                                    // Sample evenly across the keyframe list
+                                    size_t idx = (i * num_keyframes) / sample_count;
+                                    auto& kf = keyframes_with_color[idx];
+
+                                    // Transform from base_link to camera_frame
+                                    auto transform_result = tf_tree_->getTransform(
+                                        config_.base_link, config_.camera_frame);
+                                    auto camera_pose =
+                                        kf->pose.getEigenIsometry() * transform_result.transform;
+
+                                    core::types::Pose pose;
+                                    pose.position = camera_pose.translation();
+                                    pose.orientation = camera_pose.rotation();
+                                    pose.frame_id = "world";
+                                    pose.timestamp = kf->pose.timestamp;
+                                    sampled_poses.push_back(pose);
+                                }
+
+                                foxglove_renderer_->publishKeyframePoses(sampled_poses,
+                                                                         timestamp_ns);
+                                LOG(INFO) << "[StreamingGSProcessor] Published "
+                                          << sampled_poses.size() << " keyframe poses to Foxglove";
+                            }
                         }
                         // if (foxglove_renderer_ && foxglove_renderer_->isRunning()) {
                         //     LOG(INFO) << "Cloning training tensors for rendering";

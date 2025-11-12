@@ -15,13 +15,13 @@ template <typename GrowPolicy = DefaultGrowPolicy, typename PrunePolicy = Defaul
 class Strategy {
 public:
     static struct Config {
-        int max_iterations = 1000;        // set from the training config rather than from here
-        int reset_after_iterations = 50;  // Increased from 10 to reduce densification frequency
-        int refine_start_iteration = 50;  // Don't densify before this iteration
-        int64_t max_splat_count = 75000;  // Maximum number of splats to prevent OOM
-        double grad_threshold = 0.0002;   // from the paper
-        double grow_scale3d = 0.1;        // from the paper
-        double grow_scale2d = 0.1;        // from the paper
+        int max_iterations = 7000;         // set from the training config rather than from here
+        int reset_after_iterations = 200;  // Increased from 10 to reduce densification frequency
+        int refine_start_iteration = 200;  // Don't densify before this iteration
+        int64_t max_splat_count = 175000;  // Maximum number of splats to prevent OOM
+        double grad_threshold = 0.0002;    // from the paper
+        double grow_scale3d = 0.1;         // from the paper
+        double grow_scale2d = 0.1;         // from the paper
         double prune_opacity = 0.005;
         double prune_scale3d = 0.1;
         double prune_scale2d = 0.15;

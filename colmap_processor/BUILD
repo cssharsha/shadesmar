@@ -48,6 +48,31 @@ cc_binary(
     ],
 )
 
+cc_library(
+    name = "map_to_colmap_converter",
+    srcs = ["map_to_colmap_converter.cpp"],
+    hdrs = ["map_to_colmap_converter.hpp"],
+    includes = ["colmap_processor"],
+    linkopts = [
+        "-lstdc++fs",
+    ],
+    deps = [
+        "//core/storage",
+        "//utils:stf",
+        "@opencv//:core",
+        "@opencv//:imgcodecs",
+        "@opencv//:imgproc",
+    ],
+)
+
+cc_binary(
+    name = "map_to_colmap_main",
+    srcs = ["map_to_colmap_main.cpp"],
+    deps = [
+        ":map_to_colmap_converter",
+    ],
+)
+
 ros2_cpp_binary(
     name = "colmap_processor",
     srcs = ["colmap_processor.cpp"],

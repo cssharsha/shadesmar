@@ -24,11 +24,53 @@ Eigen::Vector2d projectPointWithTransform(const Eigen::Vector3d& point, const Ei
     return projectPointToPixel(transformed_point, K);
 }
 
+// Helper function to project a 3D point with distortion (plumb_bob model)
+Eigen::Vector2d projectPointToPixelWithDistortion(const Eigen::Vector3d& point,
+                                                   const Eigen::Matrix3d& K,
+                                                   const std::vector<double>& distortion_coeffs) {
+    // Normalize coordinates
+    double x = point.x() / point.z();
+    double y = point.y() / point.z();
+
+    // Apply plumb_bob (radial-tangential) distortion
+    // distortion_coeffs = [k1, k2, p1, p2, k3]
+    double k1 = distortion_coeffs.size() > 0 ? distortion_coeffs[0] : 0.0;
+    double k2 = distortion_coeffs.size() > 1 ? distortion_coeffs[1] : 0.0;
+    double p1 = distortion_coeffs.size() > 2 ? distortion_coeffs[2] : 0.0;
+    double p2 = distortion_coeffs.size() > 3 ? distortion_coeffs[3] : 0.0;
+    double k3 = distortion_coeffs.size() > 4 ? distortion_coeffs[4] : 0.0;
+
+    double r2 = x * x + y * y;
+    double r4 = r2 * r2;
+    double r6 = r4 * r2;
+
+    // Radial distortion
+    double radial_distortion = 1.0 + k1 * r2 + k2 * r4 + k3 * r6;
+
+    // Tangential distortion
+    double x_distorted = x * radial_distortion + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
+    double y_distorted = y * radial_distortion + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+
+    // Project to pixel coordinates
+    double fx = K(0, 0);
+    double fy = K(1, 1);
+    double cx = K(0, 2);
+    double cy = K(1, 2);
+
+    Eigen::Vector2d pixel;
+    pixel.x() = fx * x_distorted + cx;
+    pixel.y() = fy * y_distorted + cy;
+
+    return pixel;
+}
+
 // Helper function to create a KeyFrame with minimal required data
 core::types::KeyFrame createTestKeyframe(uint64_t id, const std::string& frame_id,
                                          const Eigen::Vector3d& position,
                                          const Eigen::Quaterniond& orientation,
-                                         const Eigen::Matrix3d& K) {
+                                         const Eigen::Matrix3d& K,
+                                         const std::string& distortion_model,
+                                         const std::vector<double>& distortion_coeffs) {
     core::types::KeyFrame kf;
     kf.id = id;
     kf.pose.position = position;
@@ -41,12 +83,12 @@ core::types::KeyFrame createTestKeyframe(uint64_t id, const std::string& frame_i
     cam_info.frame_id = frame_id;
     cam_info.width = 1280;
     cam_info.height = 720;
-    cam_info.distortion_model = "plumb_bob";
+    cam_info.distortion_model = distortion_model;
 
     // Convert Eigen matrix to row-major vector
     Eigen::Matrix<double, 3, 3, Eigen::RowMajor> K_rm = K;
     cam_info.k = std::vector<double>(K_rm.data(), K_rm.data() + K_rm.size());
-    cam_info.d = std::vector<double>(5, 0.0);  // No distortion
+    cam_info.d = distortion_coeffs;
     kf.camera_info = cam_info;
 
     // Create minimal image data
@@ -89,6 +131,11 @@ core::types::KeyFrame createTestKeyframe(uint64_t id, const std::string& frame_i
 //           0          -1 4.89653e-12
 //    Quaternion (w,x,y,z): 0.5, -0.5, 0.5, -0.5
 //    RPY (rad):   90 -180   90
+//    I20251109 20:48:47.270591 39373 orb_tracker.cpp:242] Priting image stuff:
+// CameraInfo: width=1280, height=720, frame_id=camera_color_optical_frame
+//   distortion_model=plumb_bob
+//   K=[636.642, 0, 635.58, 0, 636.185, 372.611, 0, 0, 1]
+//   D=[-0.0571575, 0.0627249, -0.000849086, 0.0001497, -0.0199087]
 
 class OrbTrackerTriangulateTest : public ::testing::Test {
 protected:
@@ -96,11 +143,17 @@ protected:
     double tolerance;
     std::shared_ptr<tracking::image::OrbTracker> tracker;
     std::shared_ptr<stf::TransformTree> tft;
+    std::string distortion_model;
+    std::vector<double> distortion_coeffs;
 
     OrbTrackerTriangulateTest() {
         // Realistic camera matrix (from actual rosbag data in comments)
         K << 636.642, 0, 635.58, 0, 636.185, 372.611, 0, 0, 1;
         tolerance = 0.05;  // 5cm tolerance for triangulation
+
+        // Set distortion parameters
+        distortion_model = "plumb_bob";
+        distortion_coeffs = {-0.0571575, 0.0627249, -0.000849086, 0.0001497, -0.0199087};
 
         // Create tracker
         tracker = std::make_shared<tracking::image::OrbTracker>(500, 1.2f, 8);
@@ -136,10 +189,12 @@ TEST_F(OrbTrackerTriangulateTest, SimpleForwardTranslation) {
     Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
 
     // Create keyframes
-    core::types::KeyFrame prev_kf =
-        createTestKeyframe(0, "camera_color_optical_frame", pos_prev, orientation, K);
+    core::types::KeyFrame prev_kf = createTestKeyframe(0, "camera_color_optical_frame", pos_prev,
+                                                       orientation, K, distortion_model,
+                                                       distortion_coeffs);
     core::types::KeyFrame cur_kf =
-        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K);
+        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K,
+                           distortion_model, distortion_coeffs);
 
     // Define a known 3D point in world frame (in front of both camera positions)
     Eigen::Vector3d world_point(1.0, 0.3, 0.5);  // 1m forward, 0.3m right, 0.5m up
@@ -202,6 +257,89 @@ TEST_F(OrbTrackerTriangulateTest, SimpleForwardTranslation) {
     EXPECT_NEAR(result[0].z(), world_point.z(), tolerance) << "Z coordinate mismatch";
 }
 
+// Test 1b: Simple translation with distortion applied
+TEST_F(OrbTrackerTriangulateTest, SimpleForwardTranslationWithDistortion) {
+    LOG(INFO) << "=== Test: Simple Forward Translation With Distortion ===";
+
+    // Setup: Robot moves 0.2m forward along X-axis
+    Eigen::Vector3d pos_prev(0.0, 0.0, 0.0);
+    Eigen::Vector3d pos_cur(0.2, 0.0, 0.0);
+    Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
+
+    // Create keyframes with distortion
+    core::types::KeyFrame prev_kf = createTestKeyframe(0, "camera_color_optical_frame", pos_prev,
+                                                       orientation, K, distortion_model,
+                                                       distortion_coeffs);
+    core::types::KeyFrame cur_kf =
+        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K,
+                           distortion_model, distortion_coeffs);
+
+    // Define a known 3D point in world frame (in front of both camera positions)
+    Eigen::Vector3d world_point(1.0, 0.3, 0.5);  // 1m forward, 0.3m right, 0.5m up
+
+    // Transform point to both camera frames for projection
+    Eigen::Isometry3d T_world_prev = prev_kf.pose.getEigenIsometry();
+    Eigen::Isometry3d T_world_cur = cur_kf.pose.getEigenIsometry();
+
+    Eigen::Vector3d point_prev_bl = T_world_prev.inverse() * world_point;
+    Eigen::Vector3d point_cur_bl = T_world_cur.inverse() * world_point;
+
+    auto T_base_camera = tft->getTransform("base_link", "camera_color_optical_frame").transform;
+    Eigen::Vector3d point_prev_cam = T_base_camera.inverse() * point_prev_bl;
+    Eigen::Vector3d point_cur_cam = T_base_camera.inverse() * point_cur_bl;
+
+    LOG(INFO) << "World point: " << world_point.transpose();
+    LOG(INFO) << "Prev camera point: " << point_prev_bl.transpose();
+    LOG(INFO) << "Cur camera point: " << point_cur_bl.transpose();
+    LOG(INFO) << "Prev camera point (camera frame): " << point_prev_cam.transpose();
+    LOG(INFO) << "Cur camera point (camera frame): " << point_cur_cam.transpose();
+
+    ASSERT_GT(point_prev_cam.z(), 0) << "Point must be in front of previous camera";
+    ASSERT_GT(point_cur_cam.z(), 0) << "Point must be in front of current camera";
+
+    // Project to pixel coordinates WITH distortion
+    Eigen::Vector2d pixel_prev = projectPointToPixelWithDistortion(point_prev_cam, K, distortion_coeffs);
+    Eigen::Vector2d pixel_cur = projectPointToPixelWithDistortion(point_cur_cam, K, distortion_coeffs);
+
+    LOG(INFO) << "Prev pixel (with distortion): " << pixel_prev.transpose();
+    LOG(INFO) << "Cur pixel (with distortion): " << pixel_cur.transpose();
+
+    // For comparison, also log undistorted pixels
+    Eigen::Vector2d pixel_prev_undist = projectPointToPixel(point_prev_cam, K);
+    Eigen::Vector2d pixel_cur_undist = projectPointToPixel(point_cur_cam, K);
+    LOG(INFO) << "Prev pixel (without distortion): " << pixel_prev_undist.transpose();
+    LOG(INFO) << "Cur pixel (without distortion): " << pixel_cur_undist.transpose();
+    LOG(INFO) << "Distortion effect on prev: " << (pixel_prev - pixel_prev_undist).transpose();
+    LOG(INFO) << "Distortion effect on cur: " << (pixel_cur - pixel_cur_undist).transpose();
+
+    // Create OpenCV point vectors
+    std::vector<cv::Point2f> prev_points = {cv::Point2f(pixel_prev.x(), pixel_prev.y())};
+    std::vector<cv::Point2f> cur_points = {cv::Point2f(pixel_cur.x(), pixel_cur.y())};
+
+    // Convert camera matrix to cv::Mat
+    cv::Mat K_cv(3, 3, CV_64F);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            K_cv.at<double>(i, j) = K(i, j);
+        }
+    }
+    LOG(INFO) << "K:\n" << K_cv;
+
+    // Call triangulateMatches
+    std::vector<Eigen::Vector3d> result =
+        tracker->triangulateMatches(prev_points, cur_points, prev_kf, cur_kf, K_cv);
+
+    // Verify results
+    ASSERT_EQ(result.size(), 1) << "Should triangulate exactly one point";
+
+    LOG(INFO) << "Triangulated point: " << result[0].transpose();
+    LOG(INFO) << "Error: " << (result[0] - world_point).norm() << "m";
+
+    EXPECT_NEAR(result[0].x(), world_point.x(), tolerance) << "X coordinate mismatch";
+    EXPECT_NEAR(result[0].y(), world_point.y(), tolerance) << "Y coordinate mismatch";
+    EXPECT_NEAR(result[0].z(), world_point.z(), tolerance) << "Z coordinate mismatch";
+}
+
 // Test 2: Translation with rotation (realistic robot motion)
 TEST_F(OrbTrackerTriangulateTest, TranslationWithRotation) {
     LOG(INFO) << "=== Test: Translation with Rotation ===";
@@ -215,10 +353,12 @@ TEST_F(OrbTrackerTriangulateTest, TranslationWithRotation) {
     Eigen::Quaterniond orient_cur(rotation_cur);
 
     // Create keyframes (using the rosbag transform set in constructor)
-    core::types::KeyFrame prev_kf =
-        createTestKeyframe(0, "camera_color_optical_frame", pos_prev, orient_prev, K);
+    core::types::KeyFrame prev_kf = createTestKeyframe(0, "camera_color_optical_frame", pos_prev,
+                                                       orient_prev, K, distortion_model,
+                                                       distortion_coeffs);
     core::types::KeyFrame cur_kf =
-        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orient_cur, K);
+        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orient_cur, K,
+                           distortion_model, distortion_coeffs);
 
     // Multiple 3D points in world frame
     std::vector<Eigen::Vector3d> world_points = {
@@ -296,9 +436,11 @@ TEST_F(OrbTrackerTriangulateTest, RealisticRosbagMotion) {
     K_real << 636.642, 0, 635.58, 0, 636.185, 372.611, 0, 0, 1;
 
     core::types::KeyFrame prev_kf =
-        createTestKeyframe(71, "camera_color_optical_frame", pos_prev, orient_prev, K_real);
+        createTestKeyframe(71, "camera_color_optical_frame", pos_prev, orient_prev, K_real,
+                           distortion_model, distortion_coeffs);
     core::types::KeyFrame cur_kf =
-        createTestKeyframe(72, "camera_color_optical_frame", pos_cur, orient_cur, K_real);
+        createTestKeyframe(72, "camera_color_optical_frame", pos_cur, orient_cur, K_real,
+                           distortion_model, distortion_coeffs);
 
     // Define points at typical indoor distances (0.5m - 5m)
     std::vector<Eigen::Vector3d> world_points = {
@@ -384,9 +526,11 @@ TEST_F(OrbTrackerTriangulateTest, SmallBaseline) {
     Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
 
     core::types::KeyFrame prev_kf =
-        createTestKeyframe(0, "camera_color_optical_frame", pos_prev, orientation, K);
+        createTestKeyframe(0, "camera_color_optical_frame", pos_prev, orientation, K,
+                           distortion_model, distortion_coeffs);
     core::types::KeyFrame cur_kf =
-        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K);
+        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K,
+                           distortion_model, distortion_coeffs);
 
     // Close point (small baseline requires close points for good triangulation)
     Eigen::Vector3d world_point(0.5, 0.1, 0.2);
@@ -433,9 +577,11 @@ TEST_F(OrbTrackerTriangulateTest, VaryingDepths) {
     Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
 
     core::types::KeyFrame prev_kf =
-        createTestKeyframe(0, "camera_color_optical_frame", pos_prev, orientation, K);
+        createTestKeyframe(0, "camera_color_optical_frame", pos_prev, orientation, K,
+                           distortion_model, distortion_coeffs);
     core::types::KeyFrame cur_kf =
-        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K);
+        createTestKeyframe(1, "camera_color_optical_frame", pos_cur, orientation, K,
+                           distortion_model, distortion_coeffs);
 
     // Points at different depths: close, medium, far
     std::vector<Eigen::Vector3d> world_points = {

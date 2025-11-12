@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,24 @@ public:
         Eigen::Matrix3d eigen_matrix = map_from_vector;
 
         return eigen_matrix;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const CameraInfo& info) {
+        os << "CameraInfo: width=" << info.width << ", height=" << info.height
+           << ", frame_id=" << info.frame_id
+           << "\n  distortion_model=" << info.distortion_model
+           << "\n  K=[";
+        for (size_t i = 0; i < info.k.size(); ++i) {
+            os << info.k[i];
+            if (i < info.k.size() - 1) os << ", ";
+        }
+        os << "]\n  D=[";
+        for (size_t i = 0; i < info.d.size(); ++i) {
+            os << info.d[i];
+            if (i < info.d.size() - 1) os << ", ";
+        }
+        os << "]";
+        return os;
     }
 };
 

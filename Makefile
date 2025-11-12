@@ -1,4 +1,4 @@
-.PHONY: help check-setup build install-foxglove-deps build-foxglove package-extension build-extension-full build-colmap-converter build-colmap-viz run run-no-spatial run-colmap-converter run-colmap-viz rerun shell clean test-connection docker-build docker-rebuild docker-up docker-down docker-restart setup-lfs add-data split-large-files reassemble-data
+.PHONY: help check-setup build build-target build-gs build-rosbag-viz install-foxglove-deps build-foxglove package-extension build-extension-full build-colmap-converter build-colmap-viz build-map-to-colmap run-vizbag run-no-spatial run-colmap-converter run-colmap-viz run-map-to-colmap rerun shell clean test-connection build-test run-test test docker-build docker-rebuild docker-up docker-down docker-restart setup-lfs add-data split-large-files reassemble-data
 
 # Default target
 help:
@@ -12,20 +12,30 @@ help:
 	@echo ""
 	@echo "Setup & Build:"
 	@echo "  make check-setup          - Verify container is initialized (checks for zsh)"
-	@echo "  make build                - Build streaming_gs_processor_main with CUDA"
+	@echo "  make build TARGET=<target>- Build any Bazel target with CUDA (generic)"
+	@echo "  make build-gs             - Build streaming_gs_processor_main with CUDA"
+	@echo "  make build-rosbag-viz     - Build visualize_rosbag with CUDA"
 	@echo "  make install-foxglove-deps- Install Foxglove extension dependencies (THREE.js, etc.)"
 	@echo "  make build-foxglove       - Build Foxglove extension"
 	@echo "  make package-extension    - Package Foxglove extension (.foxe file)"
 	@echo "  make build-extension-full - Full extension build (deps + build + package)"
-	@echo "  make build-colmap-converter - Build COLMAP converter tool"
-	@echo "  make build-colmap-viz     - Build COLMAP visualization tool"
+	@echo "  make build-colmap-converter - Build COLMAP → map converter tool"
+	@echo "  make build-map-to-colmap    - Build map → COLMAP exporter tool"
+	@echo "  make build-colmap-viz       - Build COLMAP visualization tool"
 	@echo ""
 	@echo "Run:"
-	@echo "  make run MAP=<path>       - Run processor with map path"
+	@echo "  make run TARGET=<target> MAP=<path>       - Run processor with map path"
+	@echo "  make run-vizbag MAP=<path> - Run processor with map path and visualize bag"
 	@echo "  make run-no-spatial MAP=<path> - Run without spatial partitioning"
 	@echo "  make run-with-foxglove MAP=<path> - Run with Foxglove enabled (default)"
 	@echo "  make run-colmap-converter COLMAP_PATH=<path> - Convert COLMAP reconstruction to map"
+	@echo "  make run-map-to-colmap MAP_PATH=<path> OUTPUT_PATH=<path> - Export map to COLMAP format"
 	@echo "  make run-colmap-viz MAP_PATH=<path> - Visualize COLMAP data with Rerun"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make build-test TEST=<target> - Build a specific test (e.g., TEST=tracking:reconstruct_test)"
+	@echo "  make run-test TEST=<target>   - Build and run a specific test"
+	@echo "  make test TEST=<target>       - Alias for run-test"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make rerun                - Start Rerun web viewer (kills existing instance)"
@@ -47,12 +57,17 @@ help:
 	@echo "  make docker-restart       - Full restart (down + rebuild + up)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make build"
+	@echo "  make build-gs"
+	@echo "  make build-rosbag-viz"
+	@echo "  make build TARGET=gaussian_splatting:streaming_gs_processor_main"
 	@echo "  make run MAP=/data/robot/house11_map"
 	@echo "  make run-no-spatial MAP=/data/robot/house11_map"
 	@echo "  make run MAP=/data/robot/house11_map FOXGLOVE_HOST=0.0.0.0 FOXGLOVE_PORT=8765"
 	@echo "  make run MAP=/data/robot/house11_map ARGS='--disable-foxglove'"
+	@echo "  make test TEST=tracking:reconstruct_test"
+	@echo "  make run-test TEST=tracking:reconstruct_test ARGS='--gtest_filter=OrbTrackerTriangulateTest.*'"
 	@echo "  make build-colmap-converter && make run-colmap-converter COLMAP_PATH=/data/train"
+	@echo "  make build-map-to-colmap && make run-map-to-colmap MAP_PATH=/data/robot/bags/house11_map OUTPUT_PATH=/tmp/colmap_output"
 	@echo "  make build-colmap-viz && make run-colmap-viz MAP_PATH=/data/train"
 	@echo "  make add-data SOURCE=/data/gscudasb/map DEST=gscuda/map"
 	@echo "  make add-data SOURCE=/data/gscuda/text DEST=gscuda/colmap"
@@ -60,9 +75,11 @@ help:
 	@echo ""
 	@echo "Configuration variables:"
 	@echo "  MAP               - Map base path (required for run targets)"
+	@echo "  TARGET            - Bazel target in format package:target (e.g., viz:visualize_rosbag)"
+	@echo "  TEST              - Test target in format package:target (e.g., tracking:reconstruct_test)"
 	@echo "  SOURCE            - Source file/directory path (required for add-data)"
 	@echo "  DEST              - Destination subpath in data/ (required for add-data)"
-	@echo "  ARGS              - Additional arguments to pass to binary"
+	@echo "  ARGS              - Additional arguments to pass to binary/test"
 	@echo "  FOXGLOVE_HOST     - Foxglove host (default: 0.0.0.0)"
 	@echo "  FOXGLOVE_PORT     - Foxglove port (default: 8765)"
 	@echo "  SPATIAL_PARTITION - Enable spatial partitioning (default: true)"
@@ -90,12 +107,40 @@ check-setup:
 		 echo "Wait for container initialization to finish." && exit 1)
 	@echo "✓ Container is initialized and ready"
 
-# Build the main streaming processor with CUDA
+# Generic build target for any Bazel target with CUDA
 build: check-setup
+ifndef TARGET
+	@echo "ERROR: TARGET variable is required"
+	@echo "Usage: make build TARGET=<package:target>"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make build TARGET=gaussian_splatting:streaming_gs_processor_main"
+	@echo "  make build TARGET=viz:visualize_rosbag"
+	@echo "  make build TARGET=tracking:reconstruct_test"
+	@echo ""
+	@echo "Or use specific build targets:"
+	@echo "  make build-gs              - Build Gaussian Splatting processor"
+	@echo "  make build-rosbag-viz      - Build rosbag visualizer"
+	@exit 1
+endif
+	@echo "Building //$(TARGET) with CUDA support..."
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+		bazel build --config=cuda //$(TARGET)"
+	@echo "✓ Build complete"
+
+# Build the main streaming processor with CUDA
+build-gs: check-setup
 	@echo "Building streaming_gs_processor_main with CUDA support..."
 	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
 		bazel build --config=cuda //gaussian_splatting:streaming_gs_processor_main"
 	@echo "✓ Build complete: ./bazel-bin/gaussian_splatting/streaming_gs_processor_main"
+
+# Build the rosbag visualizer with CUDA
+build-rosbag-viz: check-setup
+	@echo "Building visualize_rosbag with CUDA support..."
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+		bazel build --config=cuda //viz:visualize_rosbag"
+	@echo "✓ Build complete: ./bazel-bin/viz/visualize_rosbag"
 
 # Install Foxglove extension dependencies (including THREE.js)
 install-foxglove-deps: check-setup
@@ -123,7 +168,7 @@ build-extension-full: install-foxglove-deps build-foxglove package-extension
 	@echo "✓ Extension fully built and packaged"
 
 # Run the processor (basic version)
-run: check-setup
+run-vizbag: check-setup
 ifndef MAP
 	@echo "ERROR: MAP variable is required"
 	@echo "Usage: make run MAP=/path/to/map [ARGS='--additional-args']"
@@ -132,7 +177,7 @@ endif
 	@echo "Running streaming_gs_processor_main..."
 	@echo "Map path: $(MAP)"
 	docker exec -it $(CONTAINER_NAME) zsh -c "source ~/.cargo/env && cd $(WORKSPACE_DIR) && \
-		./bazel-bin/gaussian_splatting/streaming_gs_processor_main $(MAP) $(ARGS)"
+		bazel run --config=cuda //viz:visualize_rosbag -- $(MAP)"
 
 # Run without spatial partitioning
 run-no-spatial: check-setup
@@ -180,6 +225,60 @@ clean: check-setup
 	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
 		bazel clean --expunge"
 	@echo "✓ Build artifacts cleaned"
+
+# ============================================================================
+# Testing Commands
+# ============================================================================
+
+# Build a specific test target
+build-test: check-setup
+ifndef TEST
+	@echo "ERROR: TEST variable is required"
+	@echo "Usage: make build-test TEST=<package:target>"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make build-test TEST=tracking:reconstruct_test"
+	@echo "  make build-test TEST=gaussian_splatting:some_test"
+	@echo ""
+	@echo "Available tests can be found by searching for cc_test in BUILD files"
+	@exit 1
+endif
+	@echo "Building test target: //$(TEST)"
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+		bazel build --config=cuda //$(TEST)"
+	@echo "✓ Test built successfully"
+
+# Run a specific test target (builds and executes)
+run-test: check-setup
+ifndef TEST
+	@echo "ERROR: TEST variable is required"
+	@echo "Usage: make run-test TEST=<package:target> [ARGS='--gtest_filter=TestName.*']"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make run-test TEST=tracking:reconstruct_test"
+	@echo "  make run-test TEST=tracking:reconstruct_test ARGS='--gtest_filter=OrbTrackerTriangulateTest.*'"
+	@echo "  make run-test TEST=tracking:reconstruct_test ARGS='--gtest_filter=*.SimpleForwardTranslation'"
+	@echo ""
+	@echo "GTest flags you can use in ARGS:"
+	@echo "  --gtest_filter=PATTERN      - Run only tests matching pattern"
+	@echo "  --gtest_repeat=N            - Run tests N times"
+	@echo "  --gtest_list_tests          - List all tests without running"
+	@echo "  --gtest_break_on_failure    - Break on first failure"
+	@exit 1
+endif
+	@echo "Running test target: //$(TEST)"
+	@if [ -n "$(ARGS)" ]; then \
+		echo "With arguments: $(ARGS)"; \
+		docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+			bazel test --config=cuda --test_output=all //$(TEST) --test_arg='$(ARGS)'"; \
+	else \
+		docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+			bazel test --config=cuda --test_output=all //$(TEST)"; \
+	fi
+	@echo "✓ Test execution complete"
+
+# Alias for run-test (convenience)
+test: run-test
 
 # Test if Foxglove WebSocket port is accessible
 test-connection:
@@ -247,6 +346,33 @@ endif
 	@echo "Press Ctrl+C to exit"
 	docker exec -it $(CONTAINER_NAME) zsh -c "source ~/.cargo/env && cd $(WORKSPACE_DIR) && \
 		./bazel-bin/colmap_processor/colmap_viz_main $(MAP_PATH)"
+
+# Build map to COLMAP exporter
+build-map-to-colmap: check-setup
+	@echo "Building map to COLMAP exporter..."
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+		bazel build //colmap_processor:map_to_colmap_main"
+	@echo "✓ Build complete: ./bazel-bin/colmap_processor/map_to_colmap_main"
+
+# Run map to COLMAP exporter
+run-map-to-colmap: check-setup
+ifndef MAP_PATH
+	@echo "ERROR: MAP_PATH variable is required"
+	@echo "Usage: make run-map-to-colmap MAP_PATH=/path/to/map OUTPUT_PATH=/path/to/output"
+	@echo "Example: make run-map-to-colmap MAP_PATH=/data/robot/bags/house11_map OUTPUT_PATH=/tmp/colmap_output"
+	@exit 1
+endif
+ifndef OUTPUT_PATH
+	@echo "ERROR: OUTPUT_PATH variable is required"
+	@echo "Usage: make run-map-to-colmap MAP_PATH=/path/to/map OUTPUT_PATH=/path/to/output"
+	@echo "Example: make run-map-to-colmap MAP_PATH=/data/robot/bags/house11_map OUTPUT_PATH=/tmp/colmap_output"
+	@exit 1
+endif
+	@echo "Exporting map to COLMAP format..."
+	@echo "Map path: $(MAP_PATH)"
+	@echo "Output path: $(OUTPUT_PATH)"
+	docker exec $(CONTAINER_NAME) zsh -c "cd $(WORKSPACE_DIR) && \
+		./bazel-bin/colmap_processor/map_to_colmap_main $(MAP_PATH) $(OUTPUT_PATH)"
 
 # ============================================================================
 # Git LFS and Data Management
