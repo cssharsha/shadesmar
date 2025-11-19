@@ -147,8 +147,15 @@ cc_library(
 # Optimizer
 cc_library(
     name = "optimizer",
-    srcs = ["optimization/optimizer.cpp"],
-    hdrs = ["optimization/optimizer.hpp"],
+    srcs = [
+        "optimization/optimizer.cpp",
+        "optimization/scheduler.cpp",
+    ],
+    hdrs = [
+        "optimization/optimizer.hpp",
+        "optimization/config.hpp",
+        "optimization/scheduler.hpp",
+    ],
     deps = [
         ":tensor_config",
         "@libtorch//:torch",
@@ -160,14 +167,12 @@ cc_library(
 cc_library(
     name = "strategy",
     srcs = [
-        "optimization/scheduler.cpp",
-        "optimization/strategy.cpp",
-        "optimization/strategy_policies.cpp",
+        "optimization/strategy/strategy.cpp",
+        "optimization/strategy/default.cpp",
     ],
     hdrs = [
-        "optimization/scheduler.hpp",
-        "optimization/strategy.hpp",
-        "optimization/strategy_policies.hpp",
+        "optimization/strategy/strategy.hpp",
+        "optimization/strategy/default.hpp",
     ],
     deps = [
         ":tensor_config",

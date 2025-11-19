@@ -30,7 +30,7 @@ help:
 	@echo "  make run-with-foxglove MAP=<path> - Run with Foxglove enabled (default)"
 	@echo "  make run-colmap-converter COLMAP_PATH=<path> - Convert COLMAP reconstruction to map"
 	@echo "  make run-map-to-colmap MAP_PATH=<path> OUTPUT_PATH=<path> - Export map to COLMAP format"
-	@echo "  make run-colmap-viz MAP_PATH=<path> - Visualize COLMAP data with Rerun"
+	@echo "  make run-colmap-viz MAP_PATH=<path> [EXPORT_PATH=<path>] - Visualize COLMAP data with Rerun or export"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make build-test TEST=<target> - Build a specific test (e.g., TEST=tracking:reconstruct_test)"
@@ -68,7 +68,8 @@ help:
 	@echo "  make run-test TEST=tracking:reconstruct_test ARGS='--gtest_filter=OrbTrackerTriangulateTest.*'"
 	@echo "  make build-colmap-converter && make run-colmap-converter COLMAP_PATH=/data/train"
 	@echo "  make build-map-to-colmap && make run-map-to-colmap MAP_PATH=/data/robot/bags/house11_map OUTPUT_PATH=/tmp/colmap_output"
-	@echo "  make build-colmap-viz && make run-colmap-viz MAP_PATH=/data/train"
+	@echo "  make build-colmap-viz && make run-colmap-viz MAP_PATH=/data/robot/housenobookcase/map/map"
+	@echo "  make run-colmap-viz MAP_PATH=/data/robot/housenobookcase/map/map EXPORT_PATH=/tmp/o3d_export"
 	@echo "  make add-data SOURCE=/data/gscudasb/map DEST=gscuda/map"
 	@echo "  make add-data SOURCE=/data/gscuda/text DEST=gscuda/colmap"
 	@echo "  make docker-restart  # After modifying Dockerfile"
@@ -84,7 +85,9 @@ help:
 	@echo "  FOXGLOVE_PORT     - Foxglove port (default: 8765)"
 	@echo "  SPATIAL_PARTITION - Enable spatial partitioning (default: true)"
 	@echo "  COLMAP_PATH       - Path to COLMAP reconstruction (for colmap_converter)"
-	@echo "  MAP_PATH          - Path to map data (for colmap_viz)"
+	@echo "  MAP_PATH          - Path to map data (for colmap_viz and map_to_colmap)"
+	@echo "  EXPORT_PATH       - Path to export Open3D files (optional for colmap_viz)"
+	@echo "  OUTPUT_PATH       - Path to output directory (for map_to_colmap)"
 
 # Container and workspace configuration
 CONTAINER_NAME := docker-dev-1
@@ -337,15 +340,22 @@ endif
 run-colmap-viz: check-setup
 ifndef MAP_PATH
 	@echo "ERROR: MAP_PATH variable is required"
-	@echo "Usage: make run-colmap-viz MAP_PATH=/path/to/map"
+	@echo "Usage: make run-colmap-viz MAP_PATH=/path/to/map [EXPORT_PATH=/path/to/export]"
 	@echo "Example: make run-colmap-viz MAP_PATH=/data/train"
+	@echo "Example: make run-colmap-viz MAP_PATH=/data/train EXPORT_PATH=/tmp/o3d_export"
 	@exit 1
 endif
 	@echo "Running COLMAP visualization with Rerun..."
 	@echo "Map path: $(MAP_PATH)"
+ifdef EXPORT_PATH
+	@echo "Export path: $(EXPORT_PATH)"
+	docker exec -it $(CONTAINER_NAME) zsh -c "source ~/.cargo/env && cd $(WORKSPACE_DIR) && \
+		./bazel-bin/colmap_processor/colmap_viz_main --input $(MAP_PATH) --export_o3d $(EXPORT_PATH)"
+else
 	@echo "Press Ctrl+C to exit"
 	docker exec -it $(CONTAINER_NAME) zsh -c "source ~/.cargo/env && cd $(WORKSPACE_DIR) && \
-		./bazel-bin/colmap_processor/colmap_viz_main $(MAP_PATH)"
+		./bazel-bin/colmap_processor/colmap_viz_main --input $(MAP_PATH)"
+endif
 
 # Build map to COLMAP exporter
 build-map-to-colmap: check-setup

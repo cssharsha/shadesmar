@@ -5,27 +5,10 @@
 namespace gaussian_splatting {
 namespace optimization {
 
-// Default grow policy implementation
-// Uses the original densification algorithm: duplicate small splats with high gradients,
-// split large splats with high gradients
-class DefaultGrowPolicy {
-public:
-    template <typename StrategyType>
-    void operator()(StrategyType* strategy, int iter);
-};
-
-// Default prune policy implementation
-// Removes splats with low opacity
-class DefaultPrunePolicy {
-public:
-    template <typename StrategyType>
-    void operator()(StrategyType* strategy, int iter);
-};
-
 // MCMC grow policy implementation
 // Based on "3D Gaussian Splatting as Markov Chain Monte Carlo"
 // https://arxiv.org/abs/2404.09591
-class MCMCGrowPolicy {
+class MCMCUpdatePolicy {
 public:
     static struct Config {
         int cap_max = 1000000;         // Maximum number of Gaussians
@@ -79,16 +62,6 @@ private:
     // Helper: Sigmoid function for opacity-based weighting
     static float opacitySigmoid(float x, float k = 100.0f, float x0 = 0.995f) {
         return 1.0f / (1.0f + std::exp(-k * (x - x0)));
-    }
-};
-
-// MCMC prune policy implementation
-// MCMC doesn't prune - it relocates dead Gaussians instead
-class MCMCPrunePolicy {
-public:
-    template <typename StrategyType>
-    void operator()(StrategyType* strategy, int iter) {
-        // No-op: MCMC handles "dead" Gaussians via relocation in the grow policy
     }
 };
 

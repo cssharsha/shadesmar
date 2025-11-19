@@ -13,7 +13,7 @@
 #include "../utils/batch_gpu_manager.hpp"
 #include "core/storage/map_store.hpp"
 #include "core/types/gaussian_splat.hpp"
-#include "gaussian_splatting/optimization/strategy.hpp"
+#include "gaussian_splatting/optimization/strategy/strategy.hpp"
 #include "gaussian_splatting/rendering/rasterizer.hpp"
 #include "gaussian_splatting/training/gaussian_tensors.hpp"
 #include "gaussian_splatting/training/keyframe_batch.hpp"

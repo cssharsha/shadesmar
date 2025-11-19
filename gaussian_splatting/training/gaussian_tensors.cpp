@@ -54,7 +54,7 @@ bool GaussianTensors::fromSplats(const std::vector<core::types::GaussianSplat>& 
         const auto& splat = splats[i];
 
         // Set opacity in logit space: logit(x) = log(x / (1 - x))
-        opacities_ptr[i] = splat.opacity;
+        opacities_ptr[i] = std::log(splat.opacity / (1.0f - splat.opacity));
         confidences_ptr[i] = splat.confidence;
 
         // Copy positions (cast from double to float)

@@ -1,113 +1,13 @@
-#include "gaussian_splatting/optimization/strategy_policies.hpp"
+
 #include <logging/logging.hpp>
 #include "gaussian_splatting/common/tensor_config.hpp"
-#include "gaussian_splatting/optimization/strategy.hpp"
-#include "gaussian_splatting/utils/torch_utils.hpp"
 #include "gaussian_splatting/gsplat/gsplat/cuda/include/Ops.h"
+#include "gaussian_splatting/optimization/strategy.hpp"
+#include "gaussian_splatting/optimization/strategy_policies.hpp"
+#include "gaussian_splatting/utils/torch_utils.hpp"
 
 namespace gaussian_splatting {
 namespace optimization {
-
-template <typename StrategyType>
-void DefaultGrowPolicy::operator()(StrategyType* strategy, int iter) {
-    torch::NoGradGuard no_grad;
-    LOG(INFO) << "Doing grow splats";
-
-    // Check if we're at max capacity
-    int64_t current_splat_count = strategy->getGaussians()->get_positions().size(0);
-    if (current_splat_count >= strategy->getConfig().max_splat_count) {
-        LOG(WARNING) << "Reached max splat count: " << current_splat_count
-                     << ", skipping densification";
-        return;
-    }
-
-    // Average gradient per gaussian accross all iterations
-    const torch::Tensor grads = strategy->getGrad2d() / strategy->getCount().clamp_min(1);
-    LOG(INFO) << "Done getting the average gradient";
-
-    // Higher gradients -> unable to fit -> needs refinement
-    // Currently Im setting the scene scale to .75. Might need to
-    // revisit this to change later.
-    const torch::Tensor is_grad_high = grads > strategy->getConfig().grad_threshold;
-    LOG(INFO) << "Grads: " << grads.is_cuda() << ", is_grad_high: " << is_grad_high.is_cuda()
-              << "gaussians->get_scales(): " << strategy->getGaussians()->get_scales().is_cuda();
-    LOG(INFO) << "Check stuff: " << strategy->getGaussians()->check_stuff;
-
-    // Convert scales from log-space to linear space before comparison
-    const auto scales_linear = torch::exp(strategy->getGaussians()->get_scales());
-    const auto max_values = std::get<0>(torch::max(scales_linear, -1));
-    LOG(INFO) << "Max values: " << max_values.is_cuda();
-    const torch::Tensor is_small = max_values <= strategy->getConfig().grow_scale3d *
-                                                     strategy->getGaussians()->get_scene_scale();
-    const torch::Tensor is_duplicated = is_grad_high & is_small;
-    auto duplicate_count = is_duplicated.sum().item<int64_t>();
-    LOG(INFO) << "Duplicate count: " << duplicate_count;
-
-    const torch::Tensor is_large = ~is_small;
-    torch::Tensor is_split = is_grad_high & is_large;
-    is_split |= strategy->getRadii() > strategy->getConfig().grow_scale2d;
-    auto split_count = is_split.sum().item<int64_t>();
-    LOG(INFO) << "Split count: " << split_count;
-
-    if (duplicate_count > 0) {
-        strategy->duplicateSplats(is_duplicated);
-    }
-
-    LOG(INFO) << "Is split: " << is_split.sizes();
-    auto duplicates = torch::zeros(duplicate_count,
-                                   c10::TensorOptions().dtype(torch::kBool).device(grads.device()));
-    LOG(INFO) << "Duplicates: " << duplicates.sizes();
-    // Set the duplicated splats to zero so as to not split them
-    is_split = torch::cat(
-        {is_split, torch::zeros(duplicate_count,
-                                c10::TensorOptions().dtype(torch::kBool).device(grads.device()))});
-    if (split_count > 0) {
-        LOG(INFO) << "Calling split splats with is split: " << is_split.sizes();
-        strategy->splitSplats(is_split);
-    }
-
-    LOG(INFO) << "Duplicated: " << duplicate_count /*<< ", split: " << split_count*/;
-
-    return;
-}
-
-template <typename StrategyType>
-void DefaultPrunePolicy::operator()(StrategyType* strategy, int iter) {
-    torch::NoGradGuard no_grad;
-    LOG(INFO) << "Prune splats";
-
-    // Opacities are stored in logit space, so apply sigmoid before comparing to threshold
-    auto opacities_sigmoid = torch::sigmoid(strategy->getGaussians()->get_opacities());
-    torch::Tensor is_prune = opacities_sigmoid < strategy->getConfig().prune_opacity;
-
-    // Printing mean and std of opacities (in sigmoid space for interpretability)
-    LOG(INFO) << "Mean opacity: " << common::itemAs(torch::mean(opacities_sigmoid));
-    LOG(INFO) << "Std opacity: " << common::itemAs(torch::std(opacities_sigmoid));
-    LOG(INFO) << "Is prune: " << is_prune.sizes();
-
-    LOG(INFO) << iter << " is less than " << strategy->getConfig().reset_after_iterations;
-
-    LOG(INFO) << "Some comp: " << is_prune.sum().item();
-    const int64_t num_prunes = is_prune.sum().item<int64_t>();
-    if (num_prunes > 0) {
-        LOG(INFO) << "Need to remove splats";
-        strategy->removeSplats(is_prune);
-    }
-    return;
-}
-
-// Define the static config member for Default specialization (must come before template instantiation)
-template<>
-typename Strategy<DefaultGrowPolicy, DefaultPrunePolicy>::Config Strategy<DefaultGrowPolicy, DefaultPrunePolicy>::config = {};
-
-// Explicit template instantiations for the default Strategy type
-template class Strategy<DefaultGrowPolicy, DefaultPrunePolicy>;
-
-template void DefaultGrowPolicy::operator()(
-    Strategy<DefaultGrowPolicy, DefaultPrunePolicy>* strategy, int iter);
-template void DefaultPrunePolicy::operator()(
-    Strategy<DefaultGrowPolicy, DefaultPrunePolicy>* strategy, int iter);
-
 MCMCGrowPolicy::Config MCMCGrowPolicy::config;
 
 void MCMCGrowPolicy::initializeBinomialTable(const c10::Device& device) {
@@ -151,13 +51,8 @@ std::pair<torch::Tensor, torch::Tensor> MCMCGrowPolicy::computeRelocation(
     auto ratios_clamped = ratios.clamp(1, n_max - 1).to(torch::kInt32);
 
     // Use gsplat's optimized CUDA kernel for relocation (Equation 9)
-    auto [new_opacities, new_scales] = gsplat::relocation(
-        opacities,
-        scales,
-        ratios_clamped,
-        binoms_,
-        n_max
-    );
+    auto [new_opacities, new_scales] =
+        gsplat::relocation(opacities, scales, ratios_clamped, binoms_, n_max);
 
     return {new_opacities, new_scales};
 }
@@ -262,7 +157,8 @@ void MCMCGrowPolicy::relocateGaussians(StrategyType* strategy) {
     new_opacities = new_opacities.clamp(config.min_opacity, 1.0f - eps);
 
     // Convert back to logit space for opacities and log space for scales
-    auto new_opacities_logit = torch::logit(new_opacities).unsqueeze(-1);  // Add dimension to match [N, 1]
+    auto new_opacities_logit =
+        torch::logit(new_opacities).unsqueeze(-1);  // Add dimension to match [N, 1]
     auto new_scales_log = torch::log(new_scales);
 
     // Update parameters:
@@ -305,7 +201,8 @@ void MCMCGrowPolicy::relocateGaussians(StrategyType* strategy) {
             auto state_it = optimizer_state.find(param_key);
 
             if (state_it != optimizer_state.end()) {
-                auto* adam_state = dynamic_cast<torch::optim::AdamParamState*>(state_it->second.get());
+                auto* adam_state =
+                    dynamic_cast<torch::optim::AdamParamState*>(state_it->second.get());
                 if (adam_state) {
                     // Reset exp_avg and exp_avg_sq for sampled and dead indices
                     auto indices_to_reset = torch::cat({sampled_idxs, dead_indices});
@@ -316,8 +213,8 @@ void MCMCGrowPolicy::relocateGaussians(StrategyType* strategy) {
         }
     }
 
-    LOG(INFO) << "Reset optimizer state for " << sampled_idxs.size(0)
-              << " sampled and " << n_dead << " dead Gaussians";
+    LOG(INFO) << "Reset optimizer state for " << sampled_idxs.size(0) << " sampled and " << n_dead
+              << " dead Gaussians";
 
     LOG(INFO) << "Successfully relocated " << n_dead << " Gaussians";
 }
@@ -379,7 +276,8 @@ void MCMCGrowPolicy::addNewGaussians(StrategyType* strategy) {
     // Clamp and convert
     float eps = std::numeric_limits<float>::epsilon();
     new_opacities = new_opacities.clamp(config.min_opacity, 1.0f - eps);
-    auto new_opacities_logit = torch::logit(new_opacities).unsqueeze(-1);  // Add dimension to match [N, 1]
+    auto new_opacities_logit =
+        torch::logit(new_opacities).unsqueeze(-1);  // Add dimension to match [N, 1]
     auto new_scales_log = torch::log(new_scales);
 
     // First update the sampled indices with new values
@@ -445,20 +343,28 @@ void MCMCGrowPolicy::addNewGaussians(StrategyType* strategy) {
 
         // Determine which Gaussian parameter this is and get the updated tensor
         torch::Tensor* new_param_ptr = nullptr;
-        if (i == 0) new_param_ptr = &gaussians->get_positions();
-        else if (i == 1) new_param_ptr = &gaussians->get_scales();
-        else if (i == 2) new_param_ptr = &gaussians->get_rotations();
-        else if (i == 3) new_param_ptr = &gaussians->get_opacities();
-        else if (i == 4) new_param_ptr = &gaussians->get_sh_0();
-        else if (i == 5) new_param_ptr = &gaussians->get_sh_N();
+        if (i == 0)
+            new_param_ptr = &gaussians->get_positions();
+        else if (i == 1)
+            new_param_ptr = &gaussians->get_scales();
+        else if (i == 2)
+            new_param_ptr = &gaussians->get_rotations();
+        else if (i == 3)
+            new_param_ptr = &gaussians->get_opacities();
+        else if (i == 4)
+            new_param_ptr = &gaussians->get_sh_0();
+        else if (i == 5)
+            new_param_ptr = &gaussians->get_sh_N();
 
         if (new_param_ptr) {
             // Remove old state
             if (state_it != optimizer_state.end()) {
-                auto* adam_state = dynamic_cast<torch::optim::AdamParamState*>(state_it->second.get());
+                auto* adam_state =
+                    dynamic_cast<torch::optim::AdamParamState*>(state_it->second.get());
                 if (adam_state) {
                     // Expand exp_avg and exp_avg_sq with zeros for new Gaussians
-                    auto zeros = torch::zeros_like(new_param_ptr->slice(0, current_n, current_n + n_to_add));
+                    auto zeros =
+                        torch::zeros_like(new_param_ptr->slice(0, current_n, current_n + n_to_add));
                     adam_state->exp_avg(torch::cat({adam_state->exp_avg(), zeros}, 0));
                     adam_state->exp_avg_sq(torch::cat({adam_state->exp_avg_sq(), zeros}, 0));
                 }
@@ -470,7 +376,8 @@ void MCMCGrowPolicy::addNewGaussians(StrategyType* strategy) {
 
             // Re-add state with new key
             if (state_it != optimizer_state.end()) {
-                std::string new_param_key = c10::guts::to_string(new_param_ptr->unsafeGetTensorImpl());
+                std::string new_param_key =
+                    c10::guts::to_string(new_param_ptr->unsafeGetTensorImpl());
                 optimizer_state[new_param_key] = std::move(state_it->second);
             }
         }
@@ -559,8 +466,9 @@ void MCMCGrowPolicy::injectNoise(StrategyType* strategy, float lr) {
 }
 
 // Define the static config member for MCMC specialization (must come before template instantiation)
-template<>
-typename Strategy<MCMCGrowPolicy, MCMCPrunePolicy>::Config Strategy<MCMCGrowPolicy, MCMCPrunePolicy>::config = {};
+template <>
+typename Strategy<MCMCGrowPolicy, MCMCPrunePolicy>::Config
+    Strategy<MCMCGrowPolicy, MCMCPrunePolicy>::config = {};
 
 // Explicit template instantiations for MCMC Strategy
 template class Strategy<MCMCGrowPolicy, MCMCPrunePolicy>;
@@ -572,6 +480,5 @@ template void MCMCGrowPolicy::relocateGaussians(
 template void MCMCGrowPolicy::addNewGaussians(Strategy<MCMCGrowPolicy, MCMCPrunePolicy>* strategy);
 template void MCMCGrowPolicy::injectNoise(Strategy<MCMCGrowPolicy, MCMCPrunePolicy>* strategy,
                                           float lr);
-
 }  // namespace optimization
 }  // namespace gaussian_splatting

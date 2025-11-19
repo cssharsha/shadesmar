@@ -202,7 +202,7 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
 
         // Initialize opacity and confidence
         auto init_opacity = 0.5f;
-        splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        splat.opacity = init_opacity;
         splat.confidence = computeInitialConfidence(keypoint);
         splat.timestamp = current_timestamp;
 
@@ -274,7 +274,8 @@ bool intializeSplatsFromKeypoints(const std::vector<core::types::Keypoint>& keyp
 
         // Initialize opacity and confidence
         auto init_opacity = 0.5f;
-        splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        // splat.opacity = std::log(init_opacity / (1.0f - init_opacity));
+        splat.opacity = init_opacity;
         splat.confidence = computeInitialConfidence(keypoint);
         splat.timestamp = current_timestamp;
 

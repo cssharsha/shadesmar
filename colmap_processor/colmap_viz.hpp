@@ -10,7 +10,7 @@ class ColmapViz {
 public:
     ColmapViz() = default;
     void visuaulize();
-    void initialize();
+    void initialize(const std::string& input_dir);
     // Export minimal artifacts for a simple Python/Open3D viewer
     // Writes point cloud and trajectory files into the given directory.
     // - points.ply: ASCII PLY with x y z r g b

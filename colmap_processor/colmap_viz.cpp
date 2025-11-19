@@ -7,7 +7,7 @@
 
 namespace gs {
 
-void ColmapViz::initialize() {
+void ColmapViz::initialize(const std::string& input_dir) {
     viz_ = std::make_shared<viz::RerunVisualizer>("colmap", "building", "127.0.0.1", 9876);
     if (!viz_->initialize()) {
         std::cerr << "Failed to initialize visualizer" << std::endl;
@@ -15,7 +15,7 @@ void ColmapViz::initialize() {
     }
 
     try {
-        map_store_ = std::make_shared<core::storage::MapStore>("/data/robot/house11guicm/map/map",
+        map_store_ = std::make_shared<core::storage::MapStore>(input_dir,
                                                                core::storage::ProcessRole::READER);
 
         if (!map_store_) {

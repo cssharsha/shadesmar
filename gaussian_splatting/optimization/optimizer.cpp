@@ -8,9 +8,7 @@
 namespace gaussian_splatting {
 namespace optimization {
 
-Optimizer::Config Optimizer::config;
-
-void Optimizer::initialize(GaussianTensors& gaussians) {
+void Optimizer::initialize(GaussianTensors& gaussians, int iterations) {
     // Rather than having one optimizer for each of the parameters as in gsplat examples,
     // create an optimization param group that is passed to one single
     // handle of the optimizer
@@ -55,7 +53,8 @@ void Optimizer::initialize(GaussianTensors& gaussians) {
         static_cast<torch::optim::AdamOptions&>(g.options()).eps(1e-15);
 
     // Makebe use something else. We don't need to use Adam here.
-    optimizer_ = std::make_unique<torch::optim::Adam>(param_groups);
+    optimizer_ = std::make_unique<torch::optim::Adam>(param_groups,
+                                                      torch::optim::AdamOptions(0.f).eps(1e-15));
 
     LOG(INFO) << "After optimizer creation:";
     LOG(INFO) << "Optimizer param[0] address: "
@@ -69,6 +68,10 @@ void Optimizer::initialize(GaussianTensors& gaussians) {
         LOG(INFO) << "Why Mr Anderson why: Param group " << i << " LR: " << opts.lr();
     }
     LOG(INFO) << "=======================================";
+
+    // Initialize scheduler
+    const double gamma = std::pow(0.01, 1.0 / iterations);
+    scheduler_ = std::make_unique<Scheduler>(optimizer_.get(), gamma, 0);
 }
 
 void Optimizer::step() {
@@ -82,20 +85,26 @@ void Optimizer::step() {
         LOG(INFO) << "Optimizer param[0] (positions) address: "
                   << optimizer_->param_groups()[0].params()[0].data_ptr()
                   << (optimizer_->param_groups()[0].params()[0].grad().defined()
-                      ? ", grad address: " + std::to_string(reinterpret_cast<uintptr_t>(optimizer_->param_groups()[0].params()[0].grad().data_ptr()))
-                      : ", grad: UNDEFINED");
+                          ? ", grad address: " +
+                                std::to_string(reinterpret_cast<uintptr_t>(
+                                    optimizer_->param_groups()[0].params()[0].grad().data_ptr()))
+                          : ", grad: UNDEFINED");
 
         LOG(INFO) << "Optimizer param[1] (scales) address: "
                   << optimizer_->param_groups()[1].params()[0].data_ptr()
                   << (optimizer_->param_groups()[1].params()[0].grad().defined()
-                      ? ", grad address: " + std::to_string(reinterpret_cast<uintptr_t>(optimizer_->param_groups()[1].params()[0].grad().data_ptr()))
-                      : ", grad: UNDEFINED");
+                          ? ", grad address: " +
+                                std::to_string(reinterpret_cast<uintptr_t>(
+                                    optimizer_->param_groups()[1].params()[0].grad().data_ptr()))
+                          : ", grad: UNDEFINED");
 
         LOG(INFO) << "Optimizer param[3] (opacities) address: "
                   << optimizer_->param_groups()[3].params()[0].data_ptr()
                   << (optimizer_->param_groups()[3].params()[0].grad().defined()
-                      ? ", grad address: " + std::to_string(reinterpret_cast<uintptr_t>(optimizer_->param_groups()[3].params()[0].grad().data_ptr()))
-                      : ", grad: UNDEFINED");
+                          ? ", grad address: " +
+                                std::to_string(reinterpret_cast<uintptr_t>(
+                                    optimizer_->param_groups()[3].params()[0].grad().data_ptr()))
+                          : ", grad: UNDEFINED");
     }
     LOG(INFO) << "======================================";
 
@@ -111,22 +120,25 @@ void Optimizer::step() {
             std::ostringstream oss;
             oss << "Param group " << i << ": size=" << param.sizes()
                 << ", requires_grad=" << param.requires_grad()
-                << ", has_grad=" << (param.grad().defined() ? "yes" : "no")
-                << ", lr=" << lr;
+                << ", has_grad=" << (param.grad().defined() ? "yes" : "no") << ", lr=" << lr;
 
             if (param.grad().defined()) {
                 // Use double precision to check if float rounding is the issue
                 double grad_norm_double = param.grad().norm().item<double>();
                 float grad_norm_float = common::itemAs(param.grad().norm());
                 double grad_max = param.grad().abs().max().item<double>();
-                double grad_min_nonzero = param.grad().abs().masked_select(param.grad().abs() > 0).numel() > 0
-                    ? param.grad().abs().masked_select(param.grad().abs() > 0).min().item<double>()
-                    : 0.0;
+                double grad_min_nonzero =
+                    param.grad().abs().masked_select(param.grad().abs() > 0).numel() > 0
+                        ? param.grad()
+                              .abs()
+                              .masked_select(param.grad().abs() > 0)
+                              .min()
+                              .item<double>()
+                        : 0.0;
 
-                oss << ", grad_norm(double)=" << std::scientific << std::setprecision(15) << grad_norm_double
-                    << ", grad_norm(float)=" << grad_norm_float
-                    << ", grad_max=" << grad_max
-                    << ", grad_min_nonzero=" << grad_min_nonzero;
+                oss << ", grad_norm(double)=" << std::scientific << std::setprecision(15)
+                    << grad_norm_double << ", grad_norm(float)=" << grad_norm_float
+                    << ", grad_max=" << grad_max << ", grad_min_nonzero=" << grad_min_nonzero;
             }
             LOG(INFO) << oss.str();
         }
@@ -148,7 +160,8 @@ void Optimizer::step() {
 
     // Show expected update magnitude for each param group
     LOG(INFO) << "=== Expected Update Magnitude (lr * grad_norm) ===";
-    std::vector<std::string> param_names = {"positions", "scales", "rotations", "opacities", "sh_0", "sh_N"};
+    std::vector<std::string> param_names = {"positions", "scales", "rotations",
+                                            "opacities", "sh_0",   "sh_N"};
     for (size_t i = 0; i < optimizer_->param_groups().size(); ++i) {
         const auto& group = optimizer_->param_groups()[i];
         const auto& param = group.params()[0];
@@ -158,8 +171,7 @@ void Optimizer::step() {
         if (param.grad().defined()) {
             double grad_norm = param.grad().norm().item<double>();
             double expected_update = lr * grad_norm;
-            LOG(INFO) << param_names[i] << ": lr=" << lr
-                      << " * grad_norm=" << grad_norm
+            LOG(INFO) << param_names[i] << ": lr=" << lr << " * grad_norm=" << grad_norm
                       << " = expected_update=" << expected_update;
         }
     }
@@ -173,7 +185,8 @@ void Optimizer::step() {
     if (state_it != optimizer_->state().end()) {
         LOG(INFO) << "Adam state exists for positions";
     } else {
-        LOG(INFO) << "WARNING: No Adam state for positions! Optimizer will create it on first step.";
+        LOG(INFO)
+            << "WARNING: No Adam state for positions! Optimizer will create it on first step.";
     }
     LOG(INFO) << "Optimizer state:" << optimizer_->state().size();
 
@@ -200,13 +213,13 @@ void Optimizer::step() {
         double lr = opts.lr();
 
         LOG(INFO) << param_names[i] << " - max: " << std::scientific << std::setprecision(10)
-                  << max_diff << ", mean: " << mean_diff
-                  << " [lr=" << lr << "]";
+                  << max_diff << ", mean: " << mean_diff << " [lr=" << lr << "]";
     }
     LOG(INFO) << "=========================";
 
     optimizer_->zero_grad(true);
     LOG(INFO) << "Gradients zeroed";
+    scheduler_->step();
 }
 
 }  // namespace optimization

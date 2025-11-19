@@ -81,11 +81,12 @@ void BatchTrainer::setupTraining(const core::types::GaussianSplatBatch& batch) {
     current_gaussian_tensors_.setRequiresGrad(true);
 
     auto optimizer = std::make_unique<optimization::Optimizer>();
-    optimizer->initialize(current_gaussian_tensors_);
+    // These configs are all very all over the place and need to
+    // be centralized
+    optimizer->initialize(current_gaussian_tensors_, 2000);
     // Set the proper gamma
-    auto scheduler = std::make_unique<optimization::Scheduler>(optimizer->getOptimizer(), 0.5);
-    strategy_ = std::make_unique<optimization::DefaultStrategy>(
-        std::move(optimizer), std::move(scheduler), &current_gaussian_tensors_);
+    strategy_ = std::make_unique<optimization::DefaultStrategy>(&current_gaussian_tensors_,
+                                                                std::move(optimizer));
 }
 
 void BatchTrainer::copySplatsToBatch(std::vector<core::types::GaussianSplat>& splats) {
@@ -379,6 +380,7 @@ bool BatchTrainer::trainKeyframe(const core::storage::KeyFramePtr& keyframe,
 
     // Set retain_grad to true. This is what the gsplat example
     // does which is set in the preBackward step, so setting it here.
+    // This is required only for the default strategy
     render_result.means2d.retain_grad();
 
     auto ground_truth = current_keyframe_tensor_.getImage();

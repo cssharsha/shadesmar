@@ -1,6 +1,8 @@
 #pragma once
 
 #include <torch/torch.h>
+#include "gaussian_splatting/optimization/config.hpp"
+#include "gaussian_splatting/optimization/scheduler.hpp"
 #include "gaussian_splatting/training/gaussian_tensors.hpp"
 
 namespace gaussian_splatting {
@@ -8,26 +10,11 @@ namespace optimization {
 
 class Optimizer {
 public:
-    static struct Config {
-        int max_iterations = 100;
-        float learning_rate = 0.01f;  // General LR, not used for gaussians
-        // Standard learning rates from gsplat reference implementation
-        // Note: positions_lr will be scaled by scene_scale in initialize()
-        float positions_lr = 1.6e-4f;      // 0.00016 - scaled by scene_scale
-        float rotations_lr = 1.0e-3f;      // 0.001
-        float scales_lr = 5.0e-3f;         // 0.005
-        float opacities_lr = 5.0e-2f;      // 0.05
-        float sh_coefficients_lr = 2.5e-3f; // 0.0025
-        // Note: sh_N uses sh_coefficients_lr / 20 in initialize()
-    } config;
-
     Optimizer() = default;
-    void initialize(GaussianTensors& gaussians);
+    void initialize(GaussianTensors& gaussians, int iterations);
     torch::optim::Optimizer* getOptimizer() {
         return optimizer_.get();
     }
-
-    void step();
 
     template <typename ParamUpdateFunction, typename StateUpdateFunction>
     void updateParamAndState(ParamUpdateFunction param_fn, StateUpdateFunction state_fn,
@@ -68,14 +55,16 @@ public:
             std::string old_param_key = c10::guts::to_string(old_param.unsafeGetTensorImpl());
             old_param_keys.push_back(old_param_key);
 
-            // Check if state exists
             auto state_it = optimizer_->state().find(old_param_key);
             if (state_it != optimizer_->state().end()) {
-                // Clone the state before modifying
-                auto* adam_state =
-                    dynamic_cast<torch::optim::AdamParamState*>(state_it->second.get());
-                auto new_state = state_fn(*adam_state, new_param);
-                saved_states[i] = std::move(new_state);
+                if (auto* adam_state =
+                        dynamic_cast<torch::optim::AdamParamState*>(state_it->second.get())) {
+                    std::cout << "Found old state for param " << old_param_key << std::endl;
+                    auto new_state = state_fn(*adam_state, new_param);
+                    saved_states[i] = std::move(new_state);
+                } else {
+                    saved_states[i] = nullptr;
+                }
             } else {
                 saved_states[i] = nullptr;
             }
@@ -95,12 +84,9 @@ public:
             }
         }
 
-        *params[0] = new_params[0];  // positions
-        *params[1] = new_params[1];  // rotations
-        *params[2] = new_params[2];  // scales
-        *params[3] = new_params[3];  // opacities
-        *params[4] = new_params[4];  // sh_0
-        *params[5] = new_params[5];  // sh_N
+        for (size_t i = 0; i < param_size; ++i) {
+            *params[i] = new_params[i];
+        }
 
         std::cout << "Updated params: " << params[0]->sizes() << params[1]->sizes()
                   << params[2]->sizes() << params[3]->sizes() << params[4]->sizes() << std::endl;
@@ -110,10 +96,14 @@ public:
                   << gaussians->get_sh_0().sizes() << " " << gaussians->get_sh_N().sizes()
                   << std::endl;
     }
+    void step();
 
 private:
     // There is no SelectiveAdam directly available in libtorch :(
     std::unique_ptr<torch::optim::Adam> optimizer_;
+    optimizer::Config config;
+    std::unique_ptr<Scheduler> scheduler_;
+
     // std::map<std::string, std::unique_ptr<torch::optim::Adam>> optimizers_;
 };
 
